@@ -7,7 +7,7 @@ use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
-use super::types::{Edge, Node, NodeType};
+use super::types::{Edge, EditMode, Node, NodeType};
 use crate::api::load_brain_graph;
 
 #[component]
@@ -63,7 +63,8 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
     let active_types = RwSignal::new(HashSet::<NodeType>::new());
     let hovered = RwSignal::new(None::<u32>);
     let selected = RwSignal::new(None::<u32>);
-    let editing = RwSignal::new(false);
+    let edit_mode = RwSignal::new(EditMode::Closed);
+    let editing = Memo::new(move |_| !matches!(edit_mode.get(), EditMode::Closed));
 
     let visible_ids = Memo::new(move |_| {
         let tags = active_tags.get();
@@ -102,7 +103,15 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                     }).collect_view()}
                     <button
                         class="ml-4 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
-                        on:click=move |_| editing.set(!editing.get_untracked())
+                        on:click=move |_| {
+                            edit_mode.update(|m| {
+                                *m = if matches!(m, EditMode::Closed) {
+                                    EditMode::New
+                                } else {
+                                    EditMode::Closed
+                                };
+                            });
+                        }
                     >
                         {move || if editing.get() { "Close Editor" } else { "+ New" }}
                     </button>
@@ -115,7 +124,11 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                     active_types=active_types
                 />
                 <Show when=move || editing.get()>
-                    <EditorPanel node_titles=node_titles.clone() all_tags=all_tags.clone() />
+                    <EditorPanel
+                        node_titles=node_titles.clone()
+                        all_tags=all_tags.clone()
+                        edit_mode=edit_mode
+                    />
                 </Show>
                 <GraphCanvas
                     nodes=nodes
@@ -127,6 +140,7 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                 <DetailPanel
                     nodes=nodes
                     selected=selected
+                    edit_mode=edit_mode
                 />
             </div>
             <DetailBar

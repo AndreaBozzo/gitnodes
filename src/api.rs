@@ -114,8 +114,17 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         .build()
         .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
 
-    // Build the markdown content with auto-generated frontmatter
-    let markdown = generate_markdown(&payload, &user);
+    // On update (sha present): regenerate frontmatter only, preserve body verbatim.
+    // On create: use the full template from generate_markdown.
+    let markdown = if payload.sha.is_some() {
+        format!(
+            "{}\n{}",
+            generate_frontmatter(&payload, &user),
+            payload.body
+        )
+    } else {
+        generate_markdown(&payload, &user)
+    };
 
     // Determine the file path
     let file_path = match &payload.path {
@@ -443,5 +452,44 @@ tags: {tags}
             // Tags are virtual nodes, not files
             String::new()
         }
+    }
+}
+
+/// Generate just the YAML frontmatter block (including the trailing `---\n`).
+/// Used on update so we rewrite metadata while preserving the existing body verbatim.
+#[cfg(feature = "ssr")]
+fn generate_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
+    let today = time::OffsetDateTime::now_utc();
+    let date = format!(
+        "{:04}-{:02}-{:02}",
+        today.year(),
+        today.month() as u8,
+        today.day()
+    );
+    let tags_str = format!(
+        "[{}]",
+        payload
+            .tags
+            .iter()
+            .map(|t| format!("\"{}\"", t))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    match payload.node_type {
+        NodeType::Concept => format!(
+            "---\ntype: concept\ntopic: \"{title}\"\ndate_created: {date}\nauthor: {author}\ntags: {tags}\n---\n",
+            title = payload.title,
+            tags = tags_str,
+        ),
+        NodeType::Decision => format!(
+            "---\ntype: adr\nstatus: draft\ndate: {date}\nauthor: {author}\ntags: {tags}\n---\n",
+            tags = tags_str,
+        ),
+        NodeType::Meeting => format!(
+            "---\ntype: meeting\ndate: {date}\nauthor: {author}\ntags: {tags}\n---\n",
+            tags = tags_str,
+        ),
+        NodeType::Tag => String::new(),
     }
 }

@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use super::types::NodeType;
+use super::types::{EditMode, NodeType};
 use crate::api::get_current_user;
 
 /// Smart editor form that enforces Brain templates programmatically.
@@ -14,6 +14,8 @@ pub fn EditorPanel(
     node_titles: Vec<(String, String)>,
     /// Existing tag vocabulary across the repo.
     all_tags: Vec<String>,
+    /// Current editor mode — lets us detect create vs. edit and access the prefill.
+    edit_mode: RwSignal<EditMode>,
 ) -> impl IntoView {
     let node_type = RwSignal::new(NodeType::Concept);
     let title = RwSignal::new(String::new());
@@ -26,10 +28,49 @@ pub fn EditorPanel(
     let status_msg = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
     let show_preview = RwSignal::new(false);
+    // Populated when edit_mode is Edit(_); sent back on update.
+    let edit_path = RwSignal::new(Option::<String>::None);
+    let edit_sha = RwSignal::new(Option::<String>::None);
 
-    // Auto-fill author from the current GitHub session (once).
+    // Prefill from EditMode::Edit(prefill). Runs once per transition into Edit mode.
+    let prefilled_for = RwSignal::new(Option::<String>::None); // path we've already prefilled
+    Effect::new(move |_| {
+        if let EditMode::Edit(p) = edit_mode.get() {
+            if prefilled_for.get_untracked().as_deref() == Some(&p.path) {
+                return;
+            }
+            prefilled_for.set(Some(p.path.clone()));
+            if let Some(nt) = p.node_type {
+                node_type.set(nt);
+            }
+            title.set(p.title);
+            if !p.author.is_empty() {
+                author.set(p.author);
+            }
+            tags.set(p.tags);
+            body.set(p.body);
+            selected_related.set(p.related);
+            edit_path.set(Some(p.path));
+            edit_sha.set(Some(p.sha));
+        } else {
+            // Reset prefill tracking when editor closes or flips to New.
+            prefilled_for.set(None);
+            if matches!(edit_mode.get(), EditMode::New) {
+                edit_path.set(None);
+                edit_sha.set(None);
+            }
+        }
+    });
+
+    let is_edit = Memo::new(move |_| edit_sha.with(|s| s.is_some()));
+
+    // Auto-fill author from the current GitHub session (once), but only in New mode
+    // — in Edit mode we use the author already in the frontmatter.
     let session_user = Resource::new(|| (), |_| async { get_current_user().await });
     Effect::new(move |_| {
+        if is_edit.get() {
+            return;
+        }
         if let Some(Ok(Some(login))) = session_user.get()
             && author.with_untracked(|a| a.is_empty())
         {
@@ -93,6 +134,7 @@ pub fn EditorPanel(
         if !pending.trim().is_empty() {
             add_tag(pending);
         }
+        let updating = is_edit.get_untracked();
         let _payload = crate::knowledge::types::BrainFilePayload {
             node_type: node_type.get_untracked(),
             title: title.get_untracked(),
@@ -100,12 +142,16 @@ pub fn EditorPanel(
             tags: tags.get_untracked(),
             body: body.get_untracked(),
             related: selected_related.get_untracked(),
-            path: None,
-            sha: None,
+            path: edit_path.get_untracked(),
+            sha: edit_sha.get_untracked(),
         };
 
         saving.set(true);
-        status_msg.set("Saving…".to_string());
+        status_msg.set(if updating {
+            "Updating…".to_string()
+        } else {
+            "Saving…".to_string()
+        });
 
         #[cfg(not(feature = "ssr"))]
         {
@@ -113,26 +159,42 @@ pub fn EditorPanel(
             leptos::task::spawn_local(async move {
                 match save_brain_file(_payload).await {
                     Ok(path) => {
-                        status_msg.set(format!("Created: {path}"));
-                        title.set(String::new());
-                        body.set(String::new());
-                        tags.set(vec![]);
-                        selected_related.set(vec![]);
+                        status_msg.set(if updating {
+                            format!("Updated: {path} · reloading…")
+                        } else {
+                            format!("Created: {path} · reloading…")
+                        });
+                        if let Some(w) = web_sys::window() {
+                            let _ = w.location().reload();
+                        }
                     }
                     Err(e) => {
                         status_msg.set(format!("Error: {e}"));
+                        saving.set(false);
                     }
                 }
-                saving.set(false);
             });
         }
     };
 
     view! {
         <aside class="w-[420px] shrink-0 border-r border-slate-800 bg-slate-900/60 p-5 space-y-4 overflow-y-auto">
-            <h2 class="text-xs font-semibold tracking-widest uppercase text-teal-400 mb-2">
-                "New Document"
-            </h2>
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="text-xs font-semibold tracking-widest uppercase text-teal-400">
+                    {move || if is_edit.get() { "Edit Document" } else { "New Document" }}
+                </h2>
+                <button
+                    class="text-slate-500 hover:text-slate-200 text-xs"
+                    on:click=move |_| edit_mode.set(EditMode::Closed)
+                >
+                    "Cancel"
+                </button>
+            </div>
+            <Show when=move || is_edit.get()>
+                <div class="text-[10px] text-slate-500 -mt-1 mb-1">
+                    {move || edit_path.get().unwrap_or_default()}
+                </div>
+            </Show>
 
             <div>
                 <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"Type"</label>
@@ -344,7 +406,12 @@ pub fn EditorPanel(
                     disabled=move || saving.get() || title.with(|t| t.is_empty())
                     on:click=on_submit
                 >
-                    {move || if saving.get() { "Saving…" } else { "Create & Commit" }}
+                    {move || match (saving.get(), is_edit.get()) {
+                        (true, true) => "Updating…",
+                        (true, false) => "Saving…",
+                        (false, true) => "Update & Commit",
+                        (false, false) => "Create & Commit",
+                    }}
                 </button>
                 <p class="text-[11px] text-slate-400 mt-2 text-center">
                     {move || status_msg.get()}

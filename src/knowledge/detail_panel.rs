@@ -1,12 +1,15 @@
 use leptos::prelude::*;
 
-use super::types::Node;
+use super::types::{EditMode, EditPrefill, Node};
+#[cfg(not(feature = "ssr"))]
+use crate::api::delete_brain_file;
 use crate::api::{BrainFile, read_brain_file};
 
 #[component]
 pub fn DetailPanel(
     nodes: StoredValue<Vec<Node>>,
     selected: RwSignal<Option<u32>>,
+    edit_mode: RwSignal<EditMode>,
 ) -> impl IntoView {
     let current = move || {
         selected
@@ -25,6 +28,52 @@ pub fn DetailPanel(
             read_brain_file(path).await.map(Some)
         },
     );
+
+    let deleting = RwSignal::new(false);
+    let delete_error = RwSignal::new(String::new());
+
+    let loaded_file = move || match file.get() {
+        Some(Ok(Some(bf))) => Some(bf),
+        _ => None,
+    };
+    let loaded_sha = move || loaded_file().map(|bf| bf.sha);
+
+    let on_delete = move |path: String, sha: String| {
+        #[cfg(not(feature = "ssr"))]
+        {
+            let confirmed = web_sys::window()
+                .and_then(|w| {
+                    w.confirm_with_message(&format!(
+                        "Delete {path}? This commits to the Brain repo."
+                    ))
+                    .ok()
+                })
+                .unwrap_or(false);
+            if !confirmed {
+                return;
+            }
+            deleting.set(true);
+            delete_error.set(String::new());
+            let path_for_task = path.clone();
+            leptos::task::spawn_local(async move {
+                match delete_brain_file(path_for_task, sha).await {
+                    Ok(()) => {
+                        if let Some(w) = web_sys::window() {
+                            let _ = w.location().reload();
+                        }
+                    }
+                    Err(e) => {
+                        delete_error.set(format!("Delete failed: {e}"));
+                        deleting.set(false);
+                    }
+                }
+            });
+        }
+        #[cfg(feature = "ssr")]
+        {
+            let _ = (path, sha);
+        }
+    };
 
     view! {
         <Show when=move || current().map(|n| !n.path.is_empty()).unwrap_or(false)>
@@ -73,17 +122,63 @@ pub fn DetailPanel(
                                         "View on GitHub ↗"
                                     </a>
                                     <span class="text-slate-600">"·"</span>
-                                    <span class="text-slate-500 truncate">{path}</span>
+                                    <span class="text-slate-500 truncate">{path.clone()}</span>
                                 </div>
                             </div>
-                            <button
-                                class="text-slate-500 hover:text-slate-200 text-lg leading-none shrink-0"
-                                aria-label="Close"
-                                on:click=move |_| selected.set(None)
-                            >
-                                "×"
-                            </button>
+                            <div class="flex items-center gap-2 shrink-0">
+                                {
+                                    let path_for_edit = path.clone();
+                                    view! {
+                                        <button
+                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/40 text-teal-200 hover:bg-teal-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            aria-label="Edit"
+                                            disabled=move || loaded_file().is_none()
+                                            on:click=move |_| {
+                                                if let Some(bf) = loaded_file() {
+                                                    let prefill = EditPrefill::from_raw(
+                                                        &path_for_edit,
+                                                        &bf.sha,
+                                                        &bf.content,
+                                                    );
+                                                    edit_mode.set(EditMode::Edit(prefill));
+                                                }
+                                            }
+                                        >
+                                            "Edit"
+                                        </button>
+                                    }
+                                }
+                                {
+                                    let path_for_delete = path.clone();
+                                    view! {
+                                        <button
+                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            aria-label="Delete"
+                                            disabled=move || deleting.get() || loaded_sha().is_none()
+                                            on:click=move |_| {
+                                                if let Some(sha) = loaded_sha() {
+                                                    on_delete(path_for_delete.clone(), sha);
+                                                }
+                                            }
+                                        >
+                                            {move || if deleting.get() { "Deleting…" } else { "Delete" }}
+                                        </button>
+                                    }
+                                }
+                                <button
+                                    class="text-slate-500 hover:text-slate-200 text-lg leading-none"
+                                    aria-label="Close"
+                                    on:click=move |_| selected.set(None)
+                                >
+                                    "×"
+                                </button>
+                            </div>
                         </div>
+                        <Show when=move || !delete_error.get().is_empty()>
+                            <div class="px-6 py-2 text-[11px] text-rose-300 border-b border-rose-500/20 bg-rose-500/5">
+                                {move || delete_error.get()}
+                            </div>
+                        </Show>
                         <div class="flex-1 overflow-y-auto px-6 py-5">
                             <Suspense fallback=move || view! {
                                 <div class="text-slate-500 text-xs">"Loading document…"</div>

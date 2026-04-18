@@ -85,6 +85,132 @@ pub struct Edge {
     pub to: u32,
 }
 
+/// Snapshot of an existing doc's structured fields, used to prefill the editor on edit.
+#[derive(Clone, Debug, Default)]
+pub struct EditPrefill {
+    pub path: String,
+    pub sha: String,
+    pub node_type: Option<NodeType>,
+    pub title: String,
+    pub author: String,
+    pub tags: Vec<String>,
+    /// Full body (everything after the frontmatter), preserved verbatim.
+    pub body: String,
+    pub related: Vec<String>,
+}
+
+/// What the editor panel should do when open.
+#[derive(Clone, Debug, Default)]
+pub enum EditMode {
+    #[default]
+    Closed,
+    New,
+    Edit(EditPrefill),
+}
+
+impl EditPrefill {
+    /// Parse a raw markdown file (with YAML frontmatter) from the Brain repo
+    /// into the structured fields the editor expects. Body is preserved verbatim.
+    pub fn from_raw(path: &str, sha: &str, raw: &str) -> Self {
+        let (front, body) = split_frontmatter(raw);
+        let mut out = EditPrefill {
+            path: path.to_string(),
+            sha: sha.to_string(),
+            body: body.to_string(),
+            ..Default::default()
+        };
+
+        for line in front.lines() {
+            let line = line.trim_end();
+            if let Some(rest) = line.strip_prefix("type:") {
+                out.node_type = match rest.trim().trim_matches('"') {
+                    "concept" => Some(NodeType::Concept),
+                    "adr" => Some(NodeType::Decision),
+                    "meeting" => Some(NodeType::Meeting),
+                    _ => None,
+                };
+            } else if let Some(rest) = line.strip_prefix("topic:") {
+                out.title = rest.trim().trim_matches('"').to_string();
+            } else if let Some(rest) = line.strip_prefix("author:") {
+                out.author = rest.trim().trim_matches('"').to_string();
+            } else if let Some(rest) = line.strip_prefix("tags:") {
+                let v = rest.trim();
+                if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                    out.tags = inner
+                        .split(',')
+                        .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect();
+                }
+            }
+        }
+
+        // If no `topic:` field, derive title from the first heading.
+        if out.title.is_empty() {
+            for line in body.lines() {
+                let l = line.trim_start();
+                if let Some(rest) = l.strip_prefix("# ") {
+                    let mut t = rest.trim().to_string();
+                    for prefix in ["Concept: ", "ADR: ", "Meeting: "] {
+                        if t.starts_with(prefix) {
+                            t = t.trim_start_matches(prefix).to_string();
+                        }
+                    }
+                    out.title = t;
+                    break;
+                }
+            }
+        }
+
+        // Extract related links under "## Related / See also".
+        let mut in_related = false;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("## ") {
+                in_related = trimmed.to_lowercase().contains("related")
+                    || trimmed.to_lowercase().contains("see also");
+                continue;
+            }
+            if in_related
+                && let Some(rest) = trimmed.strip_prefix("- ")
+                && let Some(open) = rest.find("](")
+                && let Some(close) = rest[open + 2..].find(')')
+            {
+                let url = &rest[open + 2..open + 2 + close];
+                let cleaned = url
+                    .trim_start_matches("../")
+                    .split('#')
+                    .next()
+                    .unwrap_or(url);
+                if cleaned.ends_with(".md") && !cleaned.starts_with("http") {
+                    out.related.push(cleaned.to_string());
+                }
+            }
+        }
+
+        out
+    }
+}
+
+fn split_frontmatter(raw: &str) -> (&str, &str) {
+    let Some(rest) = raw
+        .strip_prefix("---\n")
+        .or_else(|| raw.strip_prefix("---\r\n"))
+    else {
+        return ("", raw);
+    };
+    let Some(end) = rest.find("\n---") else {
+        return ("", raw);
+    };
+    let front = &rest[..end];
+    let after = &rest[end..];
+    let body = after
+        .strip_prefix("\n---\n")
+        .or_else(|| after.strip_prefix("\n---\r\n"))
+        .unwrap_or("");
+    (front, body)
+}
+
 /// Payload sent from the editor form to create/update a Brain file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BrainFilePayload {

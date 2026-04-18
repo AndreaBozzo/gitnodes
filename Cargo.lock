@@ -257,6 +257,7 @@ dependencies = [
  "tower-sessions",
  "tower-sessions-sqlx-store",
  "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
