@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM rust:1.88-slim AS builder
+FROM rust:1.90-slim AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev curl && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-unknown-unknown
