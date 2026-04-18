@@ -6,15 +6,31 @@ pub enum NodeType {
     Concept,
     Decision,
     Meeting,
+    PostMortem,
+    Preventivo,
+    Runbook,
     Tag,
 }
 
 impl NodeType {
-    pub const ALL: [NodeType; 4] = [
+    pub const ALL: [NodeType; 7] = [
         NodeType::Concept,
         NodeType::Decision,
         NodeType::Meeting,
+        NodeType::PostMortem,
+        NodeType::Preventivo,
+        NodeType::Runbook,
         NodeType::Tag,
+    ];
+
+    /// Types a user can create via the editor (excludes Tag, which is virtual).
+    pub const CREATABLE: [NodeType; 6] = [
+        NodeType::Concept,
+        NodeType::Decision,
+        NodeType::Meeting,
+        NodeType::PostMortem,
+        NodeType::Preventivo,
+        NodeType::Runbook,
     ];
 
     pub fn label(self) -> &'static str {
@@ -22,6 +38,9 @@ impl NodeType {
             NodeType::Concept => "Concept",
             NodeType::Decision => "ADR",
             NodeType::Meeting => "Meeting",
+            NodeType::PostMortem => "Post-mortem",
+            NodeType::Preventivo => "Preventivo",
+            NodeType::Runbook => "Runbook",
             NodeType::Tag => "Tag",
         }
     }
@@ -31,6 +50,9 @@ impl NodeType {
             NodeType::Concept => "#2dd4bf",
             NodeType::Decision => "#f59e0b",
             NodeType::Meeting => "#a78bfa",
+            NodeType::PostMortem => "#f87171",
+            NodeType::Preventivo => "#38bdf8",
+            NodeType::Runbook => "#4ade80",
             NodeType::Tag => "#64748b",
         }
     }
@@ -41,6 +63,9 @@ impl NodeType {
             NodeType::Concept => "concepts",
             NodeType::Decision => "adrs",
             NodeType::Meeting => "meetings",
+            NodeType::PostMortem => "post-mortems",
+            NodeType::Preventivo => "preventivi",
+            NodeType::Runbook => "runbooks",
             NodeType::Tag => "",
         }
     }
@@ -51,7 +76,22 @@ impl NodeType {
             NodeType::Concept => "concept",
             NodeType::Decision => "adr",
             NodeType::Meeting => "meeting",
+            NodeType::PostMortem => "post-mortem",
+            NodeType::Preventivo => "preventivo",
+            NodeType::Runbook => "runbook",
             NodeType::Tag => "",
+        }
+    }
+
+    /// Filename under `templates/` in the Brain repo. None = no template (e.g. Meeting, Tag).
+    pub fn template_filename(self) -> Option<&'static str> {
+        match self {
+            NodeType::Concept => Some("ConceptNote.md"),
+            NodeType::Decision => Some("ADR.md"),
+            NodeType::PostMortem => Some("PostMortem.md"),
+            NodeType::Preventivo => Some("Preventivo.md"),
+            NodeType::Runbook => Some("Runbook.md"),
+            NodeType::Meeting | NodeType::Tag => None,
         }
     }
 }
@@ -127,6 +167,9 @@ impl EditPrefill {
                     "concept" => Some(NodeType::Concept),
                     "adr" => Some(NodeType::Decision),
                     "meeting" => Some(NodeType::Meeting),
+                    "post-mortem" => Some(NodeType::PostMortem),
+                    "preventivo" => Some(NodeType::Preventivo),
+                    "runbook" => Some(NodeType::Runbook),
                     _ => None,
                 };
             } else if let Some(rest) = line.strip_prefix("topic:") {

@@ -107,6 +107,28 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     Ok(crate::server::auth::get_session_user(&session).await)
 }
 
+/// Fetch the template body for a given NodeType. Returns the markdown body
+/// (frontmatter stripped) so the editor can prefill the textarea with the scaffold.
+#[server(LoadBrainTemplate, "/api")]
+pub async fn load_brain_template(
+    node_type: crate::knowledge::types::NodeType,
+) -> Result<String, ServerFnError> {
+    use tower_sessions::Session;
+    let Some(filename) = node_type.template_filename() else {
+        return Ok(String::new());
+    };
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
+    let token = crate::server::auth::get_session_token(&session)
+        .await
+        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
+    let raw = crate::knowledge::runtime::load_template(&token, filename)
+        .await
+        .map_err(ServerFnError::new)?;
+    let (body, _front) = crate::markdown::split_frontmatter(&raw);
+    Ok(body.trim_start_matches('\n').to_string())
+}
+
 /// Load the full knowledge graph (nodes + edges) live from the Brain repo.
 /// Runs on every `/knowledge` render — replaces the compile-time bake from `build.rs`.
 #[server(LoadBrainGraph, "/api")]
@@ -191,17 +213,14 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         .build()
         .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
 
-    // On update (sha present): regenerate frontmatter only, preserve body verbatim.
-    // On create: use the full template from generate_markdown.
-    let markdown = if payload.sha.is_some() {
-        format!(
-            "{}\n{}",
-            generate_frontmatter(&payload, &user),
-            payload.body
-        )
-    } else {
-        generate_markdown(&payload, &user)
-    };
+    // Both create and update: frontmatter from template + body verbatim.
+    // On create the editor prefills body with the fetched template body, so the
+    // resulting file matches the Brain template structure.
+    let markdown = format!(
+        "{}\n{}",
+        generate_frontmatter(&payload, &user),
+        payload.body
+    );
 
     // Determine the file path
     let file_path = match &payload.path {
@@ -431,138 +450,8 @@ pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     Ok(folders)
 }
 
-/// Generate the full markdown (frontmatter + body) from a payload.
-/// Enforces the Brain templates programmatically.
-#[cfg(feature = "ssr")]
-fn generate_markdown(payload: &BrainFilePayload, author: &str) -> String {
-    let today = time::OffsetDateTime::now_utc();
-    let date = format!(
-        "{:04}-{:02}-{:02}",
-        today.year(),
-        today.month() as u8,
-        today.day()
-    );
-
-    let tags_str = format!(
-        "[{}]",
-        payload
-            .tags
-            .iter()
-            .map(|t| format!("\"{}\"", t))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    let related_section = if payload.related.is_empty() {
-        "- (none yet)".to_string()
-    } else {
-        payload
-            .related
-            .iter()
-            .map(|r| format!("- [{}](../{})", r, r))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    match payload.node_type {
-        NodeType::Concept => {
-            format!(
-                r#"---
-type: concept
-topic: "{title}"
-date_created: {date}
-author: {author}
-tags: {tags}
----
-
-# Concept: {title}
-
-## Summary
-{body}
-
-## Detailed Explanation
-(To be expanded.)
-
-## Related / See also
-{related}
-"#,
-                title = payload.title,
-                date = date,
-                author = author,
-                tags = tags_str,
-                body = payload.body,
-                related = related_section,
-            )
-        }
-        NodeType::Decision => {
-            format!(
-                r#"---
-type: adr
-status: draft
-date: {date}
-author: {author}
-tags: {tags}
----
-
-# ADR: {title}
-
-## Context
-{body}
-
-## Decision
-(To be documented.)
-
-## Consequences
-(To be documented.)
-
-## Related / See also
-{related}
-"#,
-                title = payload.title,
-                date = date,
-                author = author,
-                tags = tags_str,
-                body = payload.body,
-                related = related_section,
-            )
-        }
-        NodeType::Meeting => {
-            format!(
-                r#"---
-type: meeting
-date: {date}
-author: {author}
-tags: {tags}
----
-
-# Meeting: {title}
-
-## Summary
-{body}
-
-## Action Items
-- [ ] (To be added)
-
-## Related / See also
-{related}
-"#,
-                title = payload.title,
-                date = date,
-                author = author,
-                tags = tags_str,
-                body = payload.body,
-                related = related_section,
-            )
-        }
-        NodeType::Tag => {
-            // Tags are virtual nodes, not files
-            String::new()
-        }
-    }
-}
-
 /// Generate just the YAML frontmatter block (including the trailing `---\n`).
-/// Used on update so we rewrite metadata while preserving the existing body verbatim.
+/// Each NodeType gets the frontmatter fields its template in the Brain repo uses.
 #[cfg(feature = "ssr")]
 fn generate_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
     let today = time::OffsetDateTime::now_utc();
@@ -594,6 +483,19 @@ fn generate_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
         ),
         NodeType::Meeting => format!(
             "---\ntype: meeting\ndate: {date}\nauthor: {author}\ntags: {tags}\n---\n",
+            tags = tags_str,
+        ),
+        NodeType::PostMortem => format!(
+            "---\ntype: post-mortem\nincident_date: {date}\nseverity: \nauthor: {author}\ntags: {tags}\n---\n",
+            tags = tags_str,
+        ),
+        NodeType::Preventivo => format!(
+            "---\ntype: preventivo\nstatus: draft\ndate: {date}\nauthor: {author}\ncliente: \nprogetto: \"{title}\"\nmodello: T&M\ntags: {tags}\n---\n",
+            title = payload.title,
+            tags = tags_str,
+        ),
+        NodeType::Runbook => format!(
+            "---\ntype: runbook\nservice: \nlast_updated: {date}\nauthor: {author}\ntags: {tags}\n---\n",
             tags = tags_str,
         ),
         NodeType::Tag => String::new(),

@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use super::types::{EditMode, NodeType};
-use crate::api::get_current_user;
+use crate::api::{get_current_user, load_brain_template};
 
 /// Smart editor form that enforces Brain templates programmatically.
 /// - Structured fields for title, author, tags (no raw frontmatter editing)
@@ -63,6 +63,47 @@ pub fn EditorPanel(
     });
 
     let is_edit = Memo::new(move |_| edit_sha.with(|s| s.is_some()));
+
+    // Fetch the Brain template and prefill the body textarea when in New mode
+    // and either (a) no type has been prefilled yet, or (b) the user switched type
+    // and hasn't typed anything into the body.
+    let template_applied_for = RwSignal::new(Option::<NodeType>::None);
+    Effect::new(move |_| {
+        if is_edit.get() {
+            return;
+        }
+        if !matches!(edit_mode.get(), EditMode::New) {
+            template_applied_for.set(None);
+            return;
+        }
+        let nt = node_type.get();
+        if template_applied_for.get_untracked() == Some(nt) {
+            return;
+        }
+        let current_body = body.get_untracked();
+        let last_applied = template_applied_for.get_untracked();
+        // Only auto-apply if the body is empty OR matches the previously-applied template.
+        // This way switching types refreshes the scaffold, but preserves real user edits.
+        let safe_to_replace = current_body.trim().is_empty() || last_applied.is_some();
+        if !safe_to_replace {
+            return;
+        }
+        template_applied_for.set(Some(nt));
+        #[cfg(not(feature = "ssr"))]
+        {
+            leptos::task::spawn_local(async move {
+                match load_brain_template(nt).await {
+                    Ok(t) if !t.is_empty() => body.set(t),
+                    Ok(_) => {}
+                    Err(_) => {}
+                }
+            });
+        }
+        #[cfg(feature = "ssr")]
+        {
+            let _ = load_brain_template;
+        }
+    });
 
     // Auto-fill author from the current GitHub session (once), but only in New mode
     // — in Edit mode we use the author already in the frontmatter.
@@ -198,8 +239,8 @@ pub fn EditorPanel(
 
             <div>
                 <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"Type"</label>
-                <div class="flex gap-2">
-                    {[NodeType::Concept, NodeType::Decision, NodeType::Meeting].iter().map(|t| {
+                <div class="flex flex-wrap gap-2">
+                    {NodeType::CREATABLE.iter().map(|t| {
                         let t = *t;
                         let is_active = Memo::new(move |_| node_type.get() == t);
                         view! {
@@ -298,6 +339,9 @@ pub fn EditorPanel(
                             NodeType::Concept => "Summary",
                             NodeType::Decision => "Context",
                             NodeType::Meeting => "Summary / Notes",
+                            NodeType::PostMortem => "Incident Summary",
+                            NodeType::Preventivo => "Riepilogo",
+                            NodeType::Runbook => "Description",
                             NodeType::Tag => "Body",
                         }}
                     </label>

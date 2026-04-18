@@ -30,6 +30,77 @@ struct CacheEntry {
 
 static CACHE: Mutex<Option<CacheEntry>> = Mutex::new(None);
 
+/// Longer TTL for template bodies — they rarely change.
+const TEMPLATE_TTL: Duration = Duration::from_secs(600);
+
+struct TemplateEntry {
+    stored_at: Instant,
+    body: String,
+}
+
+static TEMPLATE_CACHE: Mutex<Option<std::collections::HashMap<String, TemplateEntry>>> =
+    Mutex::new(None);
+
+fn template_cache_get(filename: &str) -> Option<String> {
+    let guard = TEMPLATE_CACHE.lock().ok()?;
+    let map = guard.as_ref()?;
+    let entry = map.get(filename)?;
+    if entry.stored_at.elapsed() > TEMPLATE_TTL {
+        return None;
+    }
+    Some(entry.body.clone())
+}
+
+fn template_cache_store(filename: &str, body: &str) {
+    if let Ok(mut guard) = TEMPLATE_CACHE.lock() {
+        let map = guard.get_or_insert_with(std::collections::HashMap::new);
+        map.insert(
+            filename.to_string(),
+            TemplateEntry {
+                stored_at: Instant::now(),
+                body: body.to_string(),
+            },
+        );
+    }
+}
+
+/// Fetch a template file from `templates/{filename}` in the Brain repo.
+/// Returns the raw markdown (frontmatter + body). Cached for 10 minutes.
+pub async fn load_template(token: &str, filename: &str) -> Result<String, String> {
+    if let Some(hit) = template_cache_get(filename) {
+        return Ok(hit);
+    }
+    let client = reqwest::Client::builder()
+        .user_agent("brain_ui")
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let url = format!(
+        "https://api.github.com/repos/{OWNER}/{REPO}/contents/templates/{filename}?ref=main"
+    );
+    let body: ContentResponse = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("template fetch: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("template status: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("template parse: {e}"))?;
+    let cleaned: String = body
+        .content
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(cleaned)
+        .map_err(|e| format!("template b64: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("template utf8: {e}"))?;
+    template_cache_store(filename, &text);
+    Ok(text)
+}
+
 /// Drop any cached graph. Called after a successful write (save/delete) so the
 /// next `/knowledge` render picks up the change immediately instead of waiting
 /// for the TTL.
@@ -92,6 +163,9 @@ enum NodeTypeTag {
     Concept,
     Decision,
     Meeting,
+    PostMortem,
+    Preventivo,
+    Runbook,
 }
 
 impl NodeTypeTag {
@@ -100,6 +174,9 @@ impl NodeTypeTag {
             NodeTypeTag::Concept => "Concept",
             NodeTypeTag::Decision => "Decision",
             NodeTypeTag::Meeting => "Meeting",
+            NodeTypeTag::PostMortem => "PostMortem",
+            NodeTypeTag::Preventivo => "Preventivo",
+            NodeTypeTag::Runbook => "Runbook",
         }
     }
     fn to_node_type(self) -> NodeType {
@@ -107,6 +184,9 @@ impl NodeTypeTag {
             NodeTypeTag::Concept => NodeType::Concept,
             NodeTypeTag::Decision => NodeType::Decision,
             NodeTypeTag::Meeting => NodeType::Meeting,
+            NodeTypeTag::PostMortem => NodeType::PostMortem,
+            NodeTypeTag::Preventivo => NodeType::Preventivo,
+            NodeTypeTag::Runbook => NodeType::Runbook,
         }
     }
 }
@@ -301,6 +381,9 @@ fn parse_file(raw: &str, rel: &str, sha: &str) -> Option<Parsed> {
                 "concept" => Some(NodeTypeTag::Concept),
                 "adr" => Some(NodeTypeTag::Decision),
                 "meeting" => Some(NodeTypeTag::Meeting),
+                "post-mortem" => Some(NodeTypeTag::PostMortem),
+                "preventivo" => Some(NodeTypeTag::Preventivo),
+                "runbook" => Some(NodeTypeTag::Runbook),
                 _ => None,
             };
         } else if let Some(rest) = line.strip_prefix("topic:") {
@@ -536,6 +619,9 @@ fn layout(
         ("Concept", 22.0, 38.0, 14.0),
         ("Decision", 52.0, 20.0, 10.0),
         ("Meeting", 80.0, 74.0, 9.0),
+        ("PostMortem", 78.0, 28.0, 9.0),
+        ("Preventivo", 25.0, 78.0, 9.0),
+        ("Runbook", 50.0, 80.0, 9.0),
     ];
     for (name, cx, cy, r) in clusters {
         if let Some(ids) = by_type.get(name) {
