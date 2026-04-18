@@ -1,9 +1,9 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::knowledge::types::BrainFilePayload;
 #[cfg(feature = "ssr")]
 use crate::knowledge::types::NodeType;
+use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 
 #[cfg(feature = "ssr")]
 const OWNER: &str = "Dritara-Digital";
@@ -28,6 +28,22 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     let session =
         use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
     Ok(crate::server::auth::get_session_user(&session).await)
+}
+
+/// Load the full knowledge graph (nodes + edges) live from the Brain repo.
+/// Runs on every `/knowledge` render — replaces the compile-time bake from `build.rs`.
+#[server(LoadBrainGraph, "/api")]
+pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
+    use tower_sessions::Session;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
+    let token = crate::server::auth::get_session_token(&session)
+        .await
+        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
+
+    crate::knowledge::runtime::load_graph(&token)
+        .await
+        .map_err(ServerFnError::new)
 }
 
 /// Read a single file from the Brain repo.

@@ -2,18 +2,40 @@ use std::collections::HashSet;
 
 use leptos::prelude::*;
 
-use super::data;
 use super::detail_bar::DetailBar;
 use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
-use super::types::NodeType;
+use super::types::{Edge, Node, NodeType};
+use crate::api::load_brain_graph;
 
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
-    let nodes = StoredValue::new(data::nodes());
-    let edges = StoredValue::new(data::edges());
+    let graph = Resource::new_blocking(|| (), |_| async { load_brain_graph().await });
+
+    view! {
+        <Suspense fallback=|| view! {
+            <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
+                "Loading knowledge graph…"
+            </div>
+        }>
+            {move || graph.get().map(|res| match res {
+                Ok((nodes, edges)) => KnowledgeView(KnowledgeViewProps { nodes, edges }).into_any(),
+                Err(e) => view! {
+                    <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
+                        {format!("Failed to load graph: {e}")}
+                    </div>
+                }.into_any(),
+            })}
+        </Suspense>
+    }
+}
+
+#[component]
+fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
+    let nodes = StoredValue::new(nodes);
+    let edges = StoredValue::new(edges);
 
     let all_tags: Vec<String> = {
         let mut set: HashSet<String> = HashSet::new();
