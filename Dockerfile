@@ -13,14 +13,33 @@ FROM rust:1.95-slim AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev curl perl make && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-unknown-unknown
-RUN cargo install cargo-leptos --locked
+
+# Cache cargo-leptos install across builds
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install cargo-leptos --locked
 
 WORKDIR /app
+
+# Copy only dependency manifests first to cache dep compilation
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY build.rs ./
+RUN mkdir -p src && echo 'fn main(){}' > src/main.rs && echo '' > src/lib.rs
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --features ssr 2>/dev/null || true
+
+# Now copy real sources
 COPY . .
-# Overwrite the source main.css with the compiled Tailwind output.
 COPY --from=css-builder /app/style/main.css ./style/main.css
 
-RUN cargo leptos build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo leptos build --release && \
+    cp target/release/brain_ui /app/brain_ui_bin && \
+    cp -r target/site /app/site_out
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
@@ -29,8 +48,8 @@ RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/brain_ui .
-COPY --from=builder /app/target/site ./target/site
+COPY --from=builder /app/brain_ui_bin ./brain_ui
+COPY --from=builder /app/site_out ./target/site
 
 # Railway provides PORT at runtime; default to 3000 for local docker builds.
 ENV LEPTOS_OUTPUT_NAME="brain_ui"
@@ -40,5 +59,4 @@ ENV LEPTOS_SITE_PKG_DIR="pkg"
 ENV SESSION_COOKIE_SECURE="1"
 EXPOSE 3000
 
-# Use a shell entrypoint so $LEPTOS_SITE_ADDR is expanded at runtime.
 CMD sh -c "./brain_ui"
