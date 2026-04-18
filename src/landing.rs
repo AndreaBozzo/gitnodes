@@ -47,6 +47,7 @@ pub fn Landing() -> impl IntoView {
                     <div class="flex justify-center">
                         <a
                             href="/auth/login"
+                            rel="external"
                             class="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-100 text-sm font-medium hover:bg-teal-500/30 transition-colors"
                         >
                             <svg class="w-4 h-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">

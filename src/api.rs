@@ -93,7 +93,11 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
 }
 
 /// Create or update a file in the Brain repo.
-#[server(SaveBrainFile, "/api")]
+#[server(
+    SaveBrainFile,
+    "/api",
+    input = server_fn::codec::Json,
+)]
 pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, ServerFnError> {
     use tower_sessions::Session;
     let session =
