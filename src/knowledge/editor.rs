@@ -70,22 +70,29 @@ pub fn EditorPanel(
         })
     });
 
-    let add_tag = move |t: String| {
-        let t = t.trim().to_string();
-        if t.is_empty() {
-            return;
-        }
-        tags.update(|v| {
-            if !v.contains(&t) {
-                v.push(t);
+    let add_tag = move |raw: String| {
+        for piece in raw.split(|c: char| c.is_whitespace() || c == ',') {
+            let t = piece.trim().trim_start_matches('#').trim().to_string();
+            if t.is_empty() {
+                continue;
             }
-        });
+            tags.update(|v| {
+                if !v.contains(&t) {
+                    v.push(t);
+                }
+            });
+        }
         tag_input.set(String::new());
     };
 
     let preview_html = Memo::new(move |_| crate::markdown::render(&body.get()));
 
     let on_submit = move |_| {
+        // Flush any unconfirmed text in the tag input (user forgot to press Enter).
+        let pending = tag_input.get_untracked();
+        if !pending.trim().is_empty() {
+            add_tag(pending);
+        }
         let _payload = crate::knowledge::types::BrainFilePayload {
             node_type: node_type.get_untracked(),
             title: title.get_untracked(),
@@ -199,11 +206,13 @@ pub fn EditorPanel(
                     prop:value=move || tag_input.get()
                     on:input=move |ev| tag_input.set(event_target_value(&ev))
                     on:keydown=move |ev| {
-                        if ev.key() == "Enter" {
+                        let k = ev.key();
+                        if k == "Enter" || k == "," || k == " " {
                             ev.prevent_default();
                             add_tag(tag_input.get_untracked());
                         }
                     }
+                    on:blur=move |_| add_tag(tag_input.get_untracked())
                 />
                 <div class="flex flex-wrap gap-1 mt-1">
                     {move || tag_suggestions.get().into_iter().map(|t| {
