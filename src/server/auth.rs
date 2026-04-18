@@ -20,9 +20,7 @@ fn client_secret() -> String {
 /// Returns the GitHub OAuth authorize URL for the "Login with GitHub" button.
 pub fn authorize_url() -> String {
     let client_id = client_id();
-    format!(
-        "https://github.com/login/oauth/authorize?client_id={client_id}&scope=repo"
-    )
+    format!("https://github.com/login/oauth/authorize?client_id={client_id}&scope=repo")
 }
 
 #[derive(Deserialize)]
@@ -92,7 +90,11 @@ pub async fn oauth_callback(
 
 /// Retrieve the GitHub token from the current session (server-side only).
 pub async fn get_session_token(session: &Session) -> Option<String> {
-    session.get::<String>(SESSION_TOKEN_KEY).await.ok().flatten()
+    session
+        .get::<String>(SESSION_TOKEN_KEY)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Retrieve the GitHub username from the current session.

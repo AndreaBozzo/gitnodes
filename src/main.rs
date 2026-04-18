@@ -2,11 +2,11 @@
 #[tokio::main]
 async fn main() {
     use axum::Router;
-    use leptos::logging::log;
-    use leptos::prelude::*;
-    use leptos_axum::{generate_route_list, LeptosRoutes};
     use brain_ui::app::*;
     use brain_ui::server::auth;
+    use leptos::logging::log;
+    use leptos::prelude::*;
+    use leptos_axum::{LeptosRoutes, generate_route_list};
     use tower_sessions::{MemoryStore, SessionManagerLayer};
 
     dotenvy::dotenv().ok();

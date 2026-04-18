@@ -22,8 +22,8 @@ pub struct BrainFile {
 #[server(GetCurrentUser, "/api")]
 pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     use tower_sessions::Session;
-    let session = use_context::<Session>()
-        .ok_or_else(|| ServerFnError::new("No session available"))?;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
     Ok(crate::server::auth::get_session_user(&session).await)
 }
 
@@ -31,8 +31,8 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
 #[server(ReadBrainFile, "/api")]
 pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     use tower_sessions::Session;
-    let session = use_context::<Session>()
-        .ok_or_else(|| ServerFnError::new("No session available"))?;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
     let token = crate::server::auth::get_session_token(&session)
         .await
         .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
@@ -73,8 +73,8 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
 #[server(SaveBrainFile, "/api")]
 pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, ServerFnError> {
     use tower_sessions::Session;
-    let session = use_context::<Session>()
-        .ok_or_else(|| ServerFnError::new("No session available"))?;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
     let token = crate::server::auth::get_session_token(&session)
         .await
         .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
@@ -132,9 +132,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         }
     }
 
-    let url = format!(
-        "https://api.github.com/repos/{OWNER}/{REPO}/contents/{file_path}"
-    );
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{file_path}");
 
     let response = crab
         ._put(url, Some(&body))
@@ -145,9 +143,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         Ok(file_path)
     } else {
         let status = response.status();
-        Err(ServerFnError::new(format!(
-            "GitHub API error {status}"
-        )))
+        Err(ServerFnError::new(format!("GitHub API error {status}")))
     }
 }
 
@@ -155,8 +151,8 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
 #[server(DeleteBrainFile, "/api")]
 pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFnError> {
     use tower_sessions::Session;
-    let session = use_context::<Session>()
-        .ok_or_else(|| ServerFnError::new("No session available"))?;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
     let token = crate::server::auth::get_session_token(&session)
         .await
         .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
@@ -179,9 +175,7 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
         }
     });
 
-    let url = format!(
-        "https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}"
-    );
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}");
 
     let response = crab
         ._delete(url, Some(&body))

@@ -49,14 +49,13 @@ fn main() {
         let from = path_to_id[&p.rel];
         let dir = Path::new(&p.rel).parent().unwrap_or(Path::new(""));
         for link in &p.links {
-            if let Some(resolved) = resolve_link(dir, link) {
-                if let Some(&to) = path_to_id.get(&resolved) {
-                    if from != to {
-                        let key = if from < to { (from, to) } else { (to, from) };
-                        if seen.insert(key) {
-                            edges.push((from, to));
-                        }
-                    }
+            if let Some(resolved) = resolve_link(dir, link)
+                && let Some(&to) = path_to_id.get(&resolved)
+                && from != to
+            {
+                let key = if from < to { (from, to) } else { (to, from) };
+                if seen.insert(key) {
+                    edges.push((from, to));
                 }
             }
         }
@@ -238,7 +237,9 @@ fn parse_file(path: &Path, rel: &str) -> Option<Parsed> {
 }
 
 fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
-    let rest = raw.strip_prefix("---\n").or_else(|| raw.strip_prefix("---\r\n"))?;
+    let rest = raw
+        .strip_prefix("---\n")
+        .or_else(|| raw.strip_prefix("---\r\n"))?;
     let end = rest.find("\n---")?;
     let front = &rest[..end];
     let after = &rest[end..];
@@ -268,13 +269,13 @@ fn clean_heading(h: &str) -> String {
     }
     if s.len() > 60 {
         s.truncate(57);
-        s.push_str("…");
+        s.push('…');
     }
     s
 }
 
 fn title_case(s: &str) -> String {
-    let s = s.replace('-', " ").replace('_', " ");
+    let s = s.replace(['-', '_'], " ");
     s.split_whitespace()
         .map(|w| {
             let mut c = w.chars();
@@ -337,20 +338,20 @@ fn strip_md(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
-        if c == '[' {
-            if let Some(close) = s[i..].find("](") {
-                let text_end = i + close;
-                out.push_str(&s[i + 1..text_end]);
-                if let Some(paren) = s[text_end..].find(')') {
-                    let skip_to = text_end + paren + 1;
-                    while let Some(&(j, _)) = chars.peek() {
-                        if j >= skip_to {
-                            break;
-                        }
-                        chars.next();
+        if c == '['
+            && let Some(close) = s[i..].find("](")
+        {
+            let text_end = i + close;
+            out.push_str(&s[i + 1..text_end]);
+            if let Some(paren) = s[text_end..].find(')') {
+                let skip_to = text_end + paren + 1;
+                while let Some(&(j, _)) = chars.peek() {
+                    if j >= skip_to {
+                        break;
                     }
-                    continue;
+                    chars.next();
                 }
+                continue;
             }
         }
         if c == '*' || c == '_' || c == '`' {
@@ -375,16 +376,18 @@ fn extract_links(body: &str) -> Vec<String> {
     let bytes = body.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b']' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
-            if let Some(end) = body[i + 2..].find(')') {
-                let url = &body[i + 2..i + 2 + end];
-                if url.ends_with(".md") && !url.starts_with("http") {
-                    let clean = url.split('#').next().unwrap_or(url).to_string();
-                    out.push(clean);
-                }
-                i = i + 2 + end + 1;
-                continue;
+        if bytes[i] == b']'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'('
+            && let Some(end) = body[i + 2..].find(')')
+        {
+            let url = &body[i + 2..i + 2 + end];
+            if url.ends_with(".md") && !url.starts_with("http") {
+                let clean = url.split('#').next().unwrap_or(url).to_string();
+                out.push(clean);
             }
+            i = i + 2 + end + 1;
+            continue;
         }
         i += 1;
     }
@@ -451,11 +454,7 @@ fn layout(
                 n += 1.0;
             }
         }
-        let (mut x, mut y) = if n > 0.0 {
-            (sx / n, sy / n)
-        } else {
-            center
-        };
+        let (mut x, mut y) = if n > 0.0 { (sx / n, sy / n) } else { center };
         // Bias toward canvas center, then jitter deterministically by tag hash.
         x = x * 0.55 + center.0 * 0.45;
         y = y * 0.55 + center.1 * 0.45;

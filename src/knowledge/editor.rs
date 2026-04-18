@@ -46,7 +46,7 @@ pub fn EditorPanel(
             .filter(|s| !s.is_empty())
             .collect();
 
-        let payload = crate::knowledge::types::BrainFilePayload {
+        let _payload = crate::knowledge::types::BrainFilePayload {
             node_type: node_type.get_untracked(),
             title: title.get_untracked(),
             author: author.get_untracked(),
@@ -64,7 +64,7 @@ pub fn EditorPanel(
         {
             use crate::api::save_brain_file;
             leptos::task::spawn_local(async move {
-                match save_brain_file(payload).await {
+                match save_brain_file(_payload).await {
                     Ok(path) => {
                         status_msg.set(format!("Created: {path}"));
                         title.set(String::new());

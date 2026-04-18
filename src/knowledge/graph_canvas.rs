@@ -28,9 +28,8 @@ pub fn GraphCanvas(
     let positions: StoredValue<HashMap<u32, (f32, f32)>> =
         StoredValue::new(nodes.with_value(|ns| ns.iter().map(|n| (n.id, (n.x, n.y))).collect()));
 
-    let degrees: StoredValue<HashMap<u32, usize>> = StoredValue::new(
-        adjacency.with_value(|a| a.iter().map(|(k, v)| (*k, v.len())).collect()),
-    );
+    let degrees: StoredValue<HashMap<u32, usize>> =
+        StoredValue::new(adjacency.with_value(|a| a.iter().map(|(k, v)| (*k, v.len())).collect()));
 
     let edges_view = move || {
         let vis = visible_ids.get();
@@ -86,7 +85,6 @@ pub fn GraphCanvas(
         nodes.with_value(|ns| {
             ns.iter()
                 .filter(|n| vis.contains(&n.id))
-                .cloned()
                 .map(|n| {
                     let id = n.id;
                     let accent = n.node_type.accent();

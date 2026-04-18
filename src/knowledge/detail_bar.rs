@@ -11,7 +11,8 @@ pub fn DetailBar(
 ) -> impl IntoView {
     let current_id = Memo::new(move |_| selected.get().or_else(|| hovered.get()));
 
-    let body = move || match current_id.get() {
+    let body = move || {
+        match current_id.get() {
         None => view! {
             <div class="text-slate-500 text-xs">
                 "Hover a node to peek at it · click to lock it here."
@@ -76,6 +77,7 @@ pub fn DetailBar(
             }
             .into_any()
         }),
+    }
     };
 
     view! {

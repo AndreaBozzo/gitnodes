@@ -1,8 +1,8 @@
+pub mod api;
 pub mod app;
 pub mod knowledge;
 #[cfg(feature = "ssr")]
 pub mod server;
-pub mod api;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
