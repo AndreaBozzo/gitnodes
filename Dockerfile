@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev curl perl make &&
 RUN rustup target add wasm32-unknown-unknown
 
 # Cache cargo-leptos install across builds
-RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/git,target=/usr/local/cargo/git \
     cargo install cargo-leptos --locked
 
 WORKDIR /app
@@ -25,18 +25,18 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY build.rs ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs && echo '' > src/lib.rs
-RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=app-target,target=/app/target \
+RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/app/target,target=/app/target \
     cargo build --release --features ssr 2>/dev/null || true
 
 # Now copy real sources
 COPY . .
 COPY --from=css-builder /app/style/main.css ./style/main.css
 
-RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=app-target,target=/app/target \
+RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/app/target,target=/app/target \
     cargo leptos build --release && \
     cp target/release/brain_ui /app/brain_ui_bin && \
     cp -r target/site /app/site_out
