@@ -145,6 +145,11 @@ pub async fn oauth_callback(
     }
 
     // --- Persist session (await errors instead of ignoring) ---
+    // Cycle the session ID to prevent session fixation and to guarantee
+    // the Set-Cookie header is present on the redirect response.
+    if session.cycle_id().await.is_err() {
+        return Redirect::to("/?error=session_write").into_response();
+    }
     if session.insert(SESSION_TOKEN_KEY, &token).await.is_err() {
         return Redirect::to("/?error=session_write").into_response();
     }
