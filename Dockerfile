@@ -23,7 +23,6 @@ WORKDIR /app
 
 # Copy only dependency manifests first to cache dep compilation
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY build.rs ./
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs && echo '' > src/lib.rs
 RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/git,target=/usr/local/cargo/git \

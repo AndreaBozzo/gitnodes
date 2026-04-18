@@ -39,11 +39,15 @@ async fn main() {
         .connect_with(sqlite_opts)
         .await
         .expect("failed to open sessions SQLite pool");
-    let session_store = SqliteStore::new(pool);
+    let session_store = SqliteStore::new(pool.clone());
     session_store
         .migrate()
         .await
         .expect("session store migration");
+    brain_ui::server::audit::migrate(&pool)
+        .await
+        .expect("audit table migration");
+    brain_ui::server::audit::init(pool.clone());
     // OAuth callback is a cross-site redirect back from github.com, so the session
     // cookie must be SameSite=Lax (Strict would drop it and kill CSRF state check).
     // Secure=false allows http://127.0.0.1 in dev; set SESSION_COOKIE_SECURE=1 in prod.
@@ -74,7 +78,10 @@ async fn main() {
     // Path-aware auth gate: blocks anything under `/knowledge` for anonymous users.
     async fn protect_knowledge(session: Session, request: Request<Body>, next: Next) -> Response {
         let path = request.uri().path();
-        let needs_auth = path == "/knowledge" || path.starts_with("/knowledge/");
+        let needs_auth = path == "/knowledge"
+            || path.starts_with("/knowledge/")
+            || path == "/admin"
+            || path.starts_with("/admin/");
         if needs_auth && !auth::is_authenticated(&session).await {
             Redirect::to("/").into_response()
         } else {

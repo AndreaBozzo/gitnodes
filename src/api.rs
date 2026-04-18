@@ -5,6 +5,83 @@ use serde::{Deserialize, Serialize};
 use crate::knowledge::types::NodeType;
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub ts: String,
+    pub kind: String,
+    pub actor: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionEntry {
+    pub id: String,
+    pub expiry_date: String,
+}
+
+#[server(LoadAuditLog, "/api")]
+pub async fn load_audit_log(
+    kind: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<AuditEntry>, ServerFnError> {
+    use tower_sessions::Session;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
+    if !crate::server::auth::is_authenticated(&session).await {
+        return Err(ServerFnError::new("Not authenticated"));
+    }
+    let rows = crate::server::audit::recent(limit.unwrap_or(200), kind.as_deref())
+        .await
+        .map_err(|e| ServerFnError::new(format!("DB: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| AuditEntry {
+            id: r.id,
+            ts: r.ts,
+            kind: r.kind,
+            actor: r.actor,
+            detail: r.detail,
+        })
+        .collect())
+}
+
+#[server(ListSessions, "/api")]
+pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
+    use tower_sessions::Session;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
+    if !crate::server::auth::is_authenticated(&session).await {
+        return Err(ServerFnError::new("Not authenticated"));
+    }
+    let rows = crate::server::audit::list_sessions(100)
+        .await
+        .map_err(|e| ServerFnError::new(format!("DB: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SessionEntry {
+            id: r.id,
+            expiry_date: r.expiry_date,
+        })
+        .collect())
+}
+
+#[server(RevokeSession, "/api")]
+pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
+    use tower_sessions::Session;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
+    if !crate::server::auth::is_authenticated(&session).await {
+        return Err(ServerFnError::new("Not authenticated"));
+    }
+    let actor = crate::server::auth::get_session_user(&session).await;
+    let n = crate::server::audit::revoke_session(&id)
+        .await
+        .map_err(|e| ServerFnError::new(format!("DB: {e}")))?;
+    crate::server::audit::log("revoke_session", actor.as_deref(), &id).await;
+    Ok(n)
+}
+
 #[cfg(feature = "ssr")]
 const OWNER: &str = "Dritara-Digital";
 #[cfg(feature = "ssr")]
@@ -177,9 +254,21 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
 
     if response.status().is_success() {
         crate::knowledge::runtime::invalidate();
+        let kind = if payload.sha.is_some() {
+            "update"
+        } else {
+            "create"
+        };
+        crate::server::audit::log(kind, Some(&user), &file_path).await;
         Ok(file_path)
     } else {
         let status = response.status();
+        crate::server::audit::log(
+            "api_error",
+            Some(&user),
+            &format!("save {file_path}: {status}"),
+        )
+        .await;
         Err(ServerFnError::new(format!("GitHub API error {status}")))
     }
 }
@@ -221,9 +310,16 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
 
     if response.status().is_success() {
         crate::knowledge::runtime::invalidate();
+        crate::server::audit::log("delete", Some(&user), &path).await;
         Ok(())
     } else {
         let status = response.status();
+        crate::server::audit::log(
+            "api_error",
+            Some(&user),
+            &format!("delete {path}: {status}"),
+        )
+        .await;
         Err(ServerFnError::new(format!("GitHub API error {status}")))
     }
 }
@@ -287,9 +383,16 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
 
     if response.status().is_success() {
         crate::knowledge::runtime::invalidate();
+        crate::server::audit::log("create_folder", Some(&user), sanitized).await;
         Ok(file_path)
     } else {
         let status = response.status();
+        crate::server::audit::log(
+            "api_error",
+            Some(&user),
+            &format!("create_folder {sanitized}: {status}"),
+        )
+        .await;
         Err(ServerFnError::new(format!("GitHub API error {status}")))
     }
 }

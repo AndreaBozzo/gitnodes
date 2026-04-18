@@ -5,6 +5,7 @@ use leptos_router::{
     components::{Route, Router, Routes},
 };
 
+use crate::admin::AdminPage;
 use crate::knowledge::KnowledgePage;
 use crate::landing::Landing;
 
@@ -40,6 +41,7 @@ pub fn App() -> impl IntoView {
             <Routes fallback=|| "Page not found.".into_view()>
                 <Route path=StaticSegment("") view=Landing/>
                 <Route path=StaticSegment("knowledge") view=KnowledgePage/>
+                <Route path=StaticSegment("admin") view=AdminPage/>
             </Routes>
         </Router>
     }

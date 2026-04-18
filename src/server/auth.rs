@@ -50,7 +50,9 @@ pub async fn login(session: Session) -> impl IntoResponse {
 
 /// Handler for `GET /auth/logout`.
 pub async fn logout(session: Session) -> impl IntoResponse {
+    let user = get_session_user(&session).await;
     let _ = session.flush().await;
+    crate::server::audit::log("logout", user.as_deref(), "").await;
     Redirect::to("/").into_response()
 }
 
@@ -85,7 +87,10 @@ pub async fn oauth_callback(
 
     match (&expected_state, &params.state) {
         (Some(expected), Some(got)) if expected == got => {}
-        _ => return Redirect::to("/?error=state_mismatch").into_response(),
+        _ => {
+            crate::server::audit::log("login_fail", None, "state_mismatch").await;
+            return Redirect::to("/?error=state_mismatch").into_response();
+        }
     }
 
     let client = reqwest::Client::new();
@@ -105,9 +110,15 @@ pub async fn oauth_callback(
     let token = match token_res {
         Ok(resp) => match resp.json::<TokenResponse>().await {
             Ok(t) => t.access_token,
-            Err(_) => return Redirect::to("/?error=token_parse").into_response(),
+            Err(_) => {
+                crate::server::audit::log("login_fail", None, "token_parse").await;
+                return Redirect::to("/?error=token_parse").into_response();
+            }
         },
-        Err(_) => return Redirect::to("/?error=token_exchange").into_response(),
+        Err(_) => {
+            crate::server::audit::log("login_fail", None, "token_exchange").await;
+            return Redirect::to("/?error=token_exchange").into_response();
+        }
     };
 
     // --- Fetch GitHub username ---
@@ -121,9 +132,15 @@ pub async fn oauth_callback(
     let login = match user_res {
         Ok(resp) => match resp.json::<GitHubUser>().await {
             Ok(u) => u.login,
-            Err(_) => return Redirect::to("/?error=user_fetch").into_response(),
+            Err(_) => {
+                crate::server::audit::log("login_fail", None, "user_fetch").await;
+                return Redirect::to("/?error=user_fetch").into_response();
+            }
         },
-        Err(_) => return Redirect::to("/?error=user_fetch").into_response(),
+        Err(_) => {
+            crate::server::audit::log("login_fail", None, "user_fetch").await;
+            return Redirect::to("/?error=user_fetch").into_response();
+        }
     };
 
     // --- Verify the user is a member of the Dritara-Digital org ---
@@ -141,6 +158,7 @@ pub async fn oauth_callback(
     };
 
     if !membership_ok {
+        crate::server::audit::log("login_fail", Some(&login), "not_org_member").await;
         return Redirect::to("/?error=not_org_member").into_response();
     }
 
@@ -160,6 +178,7 @@ pub async fn oauth_callback(
         return Redirect::to("/?error=session_save").into_response();
     }
 
+    crate::server::audit::log("login_ok", Some(&login), "").await;
     Redirect::to("/knowledge").into_response()
 }
 

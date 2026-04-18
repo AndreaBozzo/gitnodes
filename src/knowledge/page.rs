@@ -93,6 +93,13 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                     "Brain · Knowledge"
                 </h1>
                 <span class="text-xs text-slate-500 ml-2">"admin · /knowledge"</span>
+                <a
+                    href="/admin"
+                    rel="external"
+                    class="text-xs text-slate-500 hover:text-slate-300 ml-2"
+                >
+                    "· /admin"
+                </a>
                 <div class="ml-auto flex items-center gap-2">
                     {stats.into_iter().map(|(t, count)| view! {
                         <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400">
