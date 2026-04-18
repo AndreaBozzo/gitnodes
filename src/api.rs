@@ -197,6 +197,105 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
     }
 }
 
+/// Create a folder (section) in the Brain repo.
+/// GitHub doesn't support empty directories; we create a README.md placeholder.
+#[server(CreateFolder, "/api")]
+pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError> {
+    use tower_sessions::Session;
+
+    // Validate: no path traversal, only alphanumeric / hyphens / underscores / slashes
+    let sanitized = folder_path.trim().trim_matches('/');
+    if sanitized.is_empty()
+        || sanitized.contains("..")
+        || !sanitized
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/')
+    {
+        return Err(ServerFnError::new("Invalid folder name"));
+    }
+
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
+    let token = crate::server::auth::get_session_token(&session)
+        .await
+        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
+    let user = crate::server::auth::get_session_user(&session)
+        .await
+        .unwrap_or_else(|| "brain_ui".to_string());
+
+    let crab = octocrab::Octocrab::builder()
+        .personal_token(token)
+        .build()
+        .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
+
+    let folder_title = sanitized.rsplit('/').next().unwrap_or(sanitized);
+
+    let readme_content = format!("# {folder_title}\n\n(Section created via Brain UI)\n");
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        readme_content.as_bytes(),
+    );
+
+    let file_path = format!("{sanitized}/README.md");
+    let body = serde_json::json!({
+        "message": format!("Create section {sanitized}/ via Brain UI"),
+        "content": encoded,
+        "branch": "main",
+        "committer": {
+            "name": user,
+            "email": format!("{}@users.noreply.github.com", user),
+        }
+    });
+
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{file_path}");
+
+    let response = crab
+        ._put(url, Some(&body))
+        .await
+        .map_err(|e| ServerFnError::new(format!("GitHub PUT: {e}")))?;
+
+    if response.status().is_success() {
+        Ok(file_path)
+    } else {
+        let status = response.status();
+        Err(ServerFnError::new(format!("GitHub API error {status}")))
+    }
+}
+
+/// List top-level directories in the Brain repo (for the folder picker).
+#[server(ListBrainFolders, "/api")]
+pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
+    use tower_sessions::Session;
+    let session =
+        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
+    let token = crate::server::auth::get_session_token(&session)
+        .await
+        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
+
+    let crab = octocrab::Octocrab::builder()
+        .personal_token(token)
+        .build()
+        .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
+
+    let content = crab
+        .repos(OWNER, REPO)
+        .get_content()
+        .path("")
+        .r#ref("main")
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(format!("GitHub API: {e}")))?;
+
+    let folders: Vec<String> = content
+        .items
+        .iter()
+        .filter(|item| item.r#type == "dir")
+        .map(|item| item.path.clone())
+        .collect();
+
+    Ok(folders)
+}
+
 /// Generate the full markdown (frontmatter + body) from a payload.
 /// Enforces the Brain templates programmatically.
 #[cfg(feature = "ssr")]

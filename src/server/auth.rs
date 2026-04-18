@@ -11,6 +11,9 @@ const SESSION_TOKEN_KEY: &str = "github_token";
 const SESSION_USER_KEY: &str = "github_user";
 const SESSION_STATE_KEY: &str = "oauth_state";
 
+/// The GitHub org that owns the Brain repo.
+const REQUIRED_ORG: &str = "Dritara-Digital";
+
 fn client_id() -> String {
     std::env::var("GITHUB_CLIENT_ID").expect("GITHUB_CLIENT_ID must be set")
 }
@@ -29,14 +32,18 @@ fn generate_state() -> String {
 
 /// Handler for `GET /auth/login`.
 /// Generates a CSRF state, stores it in the session, and redirects to GitHub.
+/// Requests `repo` + `read:org` scopes so we can verify org membership.
 pub async fn login(session: Session) -> impl IntoResponse {
     let state = generate_state();
     if session.insert(SESSION_STATE_KEY, &state).await.is_err() {
         return Redirect::to("/?error=session_init").into_response();
     }
+    if session.save().await.is_err() {
+        return Redirect::to("/?error=session_save").into_response();
+    }
     let client_id = client_id();
     let url = format!(
-        "https://github.com/login/oauth/authorize?client_id={client_id}&scope=repo&state={state}"
+        "https://github.com/login/oauth/authorize?client_id={client_id}&scope=repo+read:org&state={state}"
     );
     Redirect::to(&url).into_response()
 }
@@ -64,8 +71,8 @@ struct GitHubUser {
 }
 
 /// Handler for `GET /auth/callback?code=...&state=...`.
-/// Verifies CSRF state, exchanges code for token, stores token + user in session,
-/// then redirects to `/knowledge`.
+/// Verifies CSRF state, exchanges code for token, checks org membership,
+/// stores token + user in session, then redirects to `/knowledge`.
 pub async fn oauth_callback(
     Query(params): Query<CallbackParams>,
     session: Session,
@@ -83,6 +90,7 @@ pub async fn oauth_callback(
 
     let client = reqwest::Client::new();
 
+    // --- Exchange code for access token ---
     let token_res = client
         .post("https://github.com/login/oauth/access_token")
         .header("Accept", "application/json")
@@ -102,6 +110,7 @@ pub async fn oauth_callback(
         Err(_) => return Redirect::to("/?error=token_exchange").into_response(),
     };
 
+    // --- Fetch GitHub username ---
     let user_res = client
         .get("https://api.github.com/user")
         .header("Authorization", format!("Bearer {token}"))
@@ -112,13 +121,39 @@ pub async fn oauth_callback(
     let login = match user_res {
         Ok(resp) => match resp.json::<GitHubUser>().await {
             Ok(u) => u.login,
-            Err(_) => "unknown".to_string(),
+            Err(_) => return Redirect::to("/?error=user_fetch").into_response(),
         },
-        Err(_) => "unknown".to_string(),
+        Err(_) => return Redirect::to("/?error=user_fetch").into_response(),
     };
 
-    let _ = session.insert(SESSION_TOKEN_KEY, &token).await;
-    let _ = session.insert(SESSION_USER_KEY, &login).await;
+    // --- Verify the user is a member of the Dritara-Digital org ---
+    // GET /orgs/{org}/members/{username} → 204 = member, 404/302 = not
+    let membership_url = format!("https://api.github.com/orgs/{REQUIRED_ORG}/members/{login}");
+    let membership_ok = match client
+        .get(&membership_url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "brain_ui")
+        .send()
+        .await
+    {
+        Ok(resp) => resp.status() == reqwest::StatusCode::NO_CONTENT,
+        Err(_) => false,
+    };
+
+    if !membership_ok {
+        return Redirect::to("/?error=not_org_member").into_response();
+    }
+
+    // --- Persist session (await errors instead of ignoring) ---
+    if session.insert(SESSION_TOKEN_KEY, &token).await.is_err() {
+        return Redirect::to("/?error=session_write").into_response();
+    }
+    if session.insert(SESSION_USER_KEY, &login).await.is_err() {
+        return Redirect::to("/?error=session_write").into_response();
+    }
+    if session.save().await.is_err() {
+        return Redirect::to("/?error=session_save").into_response();
+    }
 
     Redirect::to("/knowledge").into_response()
 }

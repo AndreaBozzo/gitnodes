@@ -1,7 +1,25 @@
 use leptos::prelude::*;
+use leptos_router::hooks::use_query_map;
 
 #[component]
 pub fn Landing() -> impl IntoView {
+    let query = use_query_map();
+
+    let error_msg = Memo::new(move |_| {
+        let params = query.get();
+        match params.get_str("error") {
+            Some("not_org_member") => Some(
+                "Access denied — you must be a member of the Dritara-Digital GitHub organisation."
+                    .to_string(),
+            ),
+            Some("state_mismatch") => {
+                Some("Login failed (state mismatch). Please try again.".to_string())
+            }
+            Some(_) => Some("Login failed. Please try again.".to_string()),
+            None => None,
+        }
+    });
+
     view! {
         <div class="min-h-screen flex flex-col bg-slate-950 text-slate-100">
             <header class="px-6 py-4 border-b border-slate-800 flex items-center gap-3">
@@ -21,6 +39,11 @@ pub fn Landing() -> impl IntoView {
                             "Read concepts, decisions, and meeting notes — and write them back to GitHub."
                         </p>
                     </div>
+                    <Show when=move || error_msg.get().is_some()>
+                        <div class="mx-auto max-w-md px-4 py-3 rounded-md bg-red-500/10 border border-red-400/30 text-red-200 text-sm">
+                            {move || error_msg.get().unwrap_or_default()}
+                        </div>
+                    </Show>
                     <div class="flex justify-center">
                         <a
                             href="/auth/login"
@@ -33,7 +56,7 @@ pub fn Landing() -> impl IntoView {
                         </a>
                     </div>
                     <p class="text-xs text-slate-600">
-                        "Access is restricted to repository collaborators."
+                        "Access restricted to Dritara-Digital organisation members."
                     </p>
                 </div>
             </main>

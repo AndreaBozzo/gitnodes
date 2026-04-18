@@ -136,8 +136,11 @@ pub fn EditorPanel(
                         view! {
                             <button
                                 class="px-3 py-1 rounded-full text-xs border transition-colors flex items-center gap-2"
-                                class=("bg-slate-100 text-slate-900 border-slate-100", move || is_active.get())
-                                class=("text-slate-300 border-slate-700", move || !is_active.get())
+                                class=("bg-slate-100", move || is_active.get())
+                                class=("text-slate-900", move || is_active.get())
+                                class=("border-slate-100", move || is_active.get())
+                                class=("text-slate-300", move || !is_active.get())
+                                class=("border-slate-700", move || !is_active.get())
                                 on:click=move |_| node_type.set(t)
                             >
                                 <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", t.accent())></span>
@@ -285,7 +288,8 @@ pub fn EditorPanel(
                             view! {
                                 <button
                                     class="w-full text-left px-2 py-1 rounded text-xs hover:bg-slate-700 transition-colors"
-                                    class=("text-teal-300 bg-slate-700/50", move || already.get())
+                                    class=("text-teal-300", move || already.get())
+                                    class=("bg-slate-700/50", move || already.get())
                                     class=("text-slate-300", move || !already.get())
                                     on:click=move |_| {
                                         let p = path_clone.clone();
