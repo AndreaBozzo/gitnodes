@@ -101,11 +101,11 @@ fn main() {
         let tags_lit = p
             .tags
             .iter()
-            .map(|t| format!("{:?}", t))
+            .map(|t| format!("{:?}.to_string()", t))
             .collect::<Vec<_>>()
             .join(", ");
         s.push_str(&format!(
-            "        Node {{ id: {id}, title: {title:?}, summary: {summary:?}, node_type: NodeType::{nt}, tags: &[{tags}], x: {x:.3}, y: {y:.3} }},\n",
+            "        Node {{ id: {id}, title: {title:?}.to_string(), summary: {summary:?}.to_string(), node_type: NodeType::{nt}, tags: vec![{tags}], x: {x:.3}, y: {y:.3}, path: {path:?}.to_string(), sha: String::new() }},\n",
             id = id,
             title = p.title,
             summary = p.summary,
@@ -113,6 +113,7 @@ fn main() {
             tags = tags_lit,
             x = x,
             y = y,
+            path = p.rel,
         ));
     }
     for (tag, id, docs) in &tag_nodes {
@@ -120,7 +121,7 @@ fn main() {
         let title = format!("#{tag}");
         let summary = format!("Tag connecting {} docs.", docs.len());
         s.push_str(&format!(
-            "        Node {{ id: {id}, title: {title:?}, summary: {summary:?}, node_type: NodeType::Tag, tags: &[{tag:?}], x: {x:.3}, y: {y:.3} }},\n",
+            "        Node {{ id: {id}, title: {title:?}.to_string(), summary: {summary:?}.to_string(), node_type: NodeType::Tag, tags: vec![{tag:?}.to_string()], x: {x:.3}, y: {y:.3}, path: String::new(), sha: String::new() }},\n",
             id = id,
             title = title,
             summary = summary,

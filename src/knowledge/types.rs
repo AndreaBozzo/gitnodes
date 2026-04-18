@@ -1,6 +1,7 @@
 use std::fmt;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeType {
     Concept,
     Decision,
@@ -34,6 +35,25 @@ impl NodeType {
         }
     }
 
+    /// Returns the Brain repo directory for this type.
+    pub fn directory(self) -> &'static str {
+        match self {
+            NodeType::Concept => "concepts",
+            NodeType::Decision => "adrs",
+            NodeType::Meeting => "meetings",
+            NodeType::Tag => "",
+        }
+    }
+
+    /// Returns the Brain template frontmatter type value.
+    pub fn frontmatter_type(self) -> &'static str {
+        match self {
+            NodeType::Concept => "concept",
+            NodeType::Decision => "adr",
+            NodeType::Meeting => "meeting",
+            NodeType::Tag => "",
+        }
+    }
 }
 
 impl fmt::Display for NodeType {
@@ -42,19 +62,40 @@ impl fmt::Display for NodeType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub id: u32,
-    pub title: &'static str,
-    pub summary: &'static str,
+    pub title: String,
+    pub summary: String,
     pub node_type: NodeType,
-    pub tags: &'static [&'static str],
+    pub tags: Vec<String>,
     pub x: f32,
     pub y: f32,
+    /// Relative path in the Brain repo (e.g. "concepts/Foo.md").
+    #[serde(default)]
+    pub path: String,
+    /// GitHub file SHA for optimistic concurrency on updates.
+    #[serde(default)]
+    pub sha: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Edge {
     pub from: u32,
     pub to: u32,
+}
+
+/// Payload sent from the editor form to create/update a Brain file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BrainFilePayload {
+    pub node_type: NodeType,
+    pub title: String,
+    pub author: String,
+    pub tags: Vec<String>,
+    pub body: String,
+    /// Related file paths chosen via forced-linking.
+    pub related: Vec<String>,
+    /// For updates: the file path and sha.
+    pub path: Option<String>,
+    pub sha: Option<String>,
 }

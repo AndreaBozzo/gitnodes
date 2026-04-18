@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use leptos::*;
+use leptos::prelude::*;
 
 use super::types::NodeType;
 
@@ -14,7 +14,7 @@ pub fn FilterPanel(
         .iter()
         .map(|t| {
             let t = *t;
-            let is_on = create_memo(move |_| active_types.with(|s| s.contains(&t)));
+            let is_on = Memo::new(move |_| active_types.with(|s| s.contains(&t)));
             let toggle = move |_| {
                 active_types.update(|s| {
                     if !s.remove(&t) {
@@ -44,7 +44,7 @@ pub fn FilterPanel(
         .into_iter()
         .map(|tag| {
             let tag_cmp = tag.clone();
-            let is_on = create_memo(move |_| active_tags.with(|s| s.contains(&tag_cmp)));
+            let is_on = Memo::new(move |_| active_tags.with(|s| s.contains(&tag_cmp)));
             let tag_toggle = tag.clone();
             let toggle = move |_| {
                 let t = tag_toggle.clone();

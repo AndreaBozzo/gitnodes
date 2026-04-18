@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use leptos::*;
+use leptos::prelude::*;
 
 use super::types::{Edge, Node, NodeType};
 
@@ -23,7 +23,7 @@ pub fn GraphCanvas(
         m
     });
 
-    let focus = create_memo(move |_| selected.get().or_else(|| hovered.get()));
+    let focus = Memo::new(move |_| selected.get().or_else(|| hovered.get()));
 
     let positions: StoredValue<HashMap<u32, (f32, f32)>> =
         StoredValue::new(nodes.with_value(|ns| ns.iter().map(|n| (n.id, (n.x, n.y))).collect()));
@@ -44,7 +44,6 @@ pub fn GraphCanvas(
                         let (x2, y2) = pos[&e.to];
                         let mx = (x1 + x2) / 2.0;
                         let my = (y1 + y2) / 2.0;
-                        // Perpendicular offset for a gentle curve.
                         let dx = x2 - x1;
                         let dy = y2 - y1;
                         let len = (dx * dx + dy * dy).sqrt().max(0.001);
@@ -92,7 +91,7 @@ pub fn GraphCanvas(
                     let id = n.id;
                     let accent = n.node_type.accent();
                     let is_tag = matches!(n.node_type, NodeType::Tag);
-                    let title = n.title;
+                    let title = n.title.clone();
                     let x = n.x;
                     let y = n.y;
                     let deg = degrees.with_value(|d| *d.get(&id).unwrap_or(&0));
@@ -102,14 +101,14 @@ pub fn GraphCanvas(
                         1.5_f32 + (deg as f32).min(6.0) * 0.18
                     };
 
-                    let bright = create_memo(move |_| match focus.get() {
+                    let bright = Memo::new(move |_| match focus.get() {
                         None => true,
                         Some(f) if f == id => true,
                         Some(f) => adjacency
                             .with_value(|a| a.get(&f).map(|s| s.contains(&id)).unwrap_or(false)),
                     });
-                    let is_selected = create_memo(move |_| selected.get() == Some(id));
-                    let is_hovered = create_memo(move |_| hovered.get() == Some(id));
+                    let is_selected = Memo::new(move |_| selected.get() == Some(id));
+                    let is_hovered = Memo::new(move |_| hovered.get() == Some(id));
 
                     let label_size = if is_tag { 1.1 } else { 1.55 };
                     let label_offset = base_r + 2.4;

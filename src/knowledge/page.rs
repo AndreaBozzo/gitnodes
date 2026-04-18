@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
-use leptos::*;
+use leptos::prelude::*;
 
 use super::data;
 use super::detail_bar::DetailBar;
+use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
 use super::types::NodeType;
@@ -17,8 +18,8 @@ pub fn KnowledgePage() -> impl IntoView {
         let mut set: HashSet<String> = HashSet::new();
         nodes.with_value(|ns| {
             for n in ns {
-                for t in n.tags {
-                    set.insert((*t).to_string());
+                for t in &n.tags {
+                    set.insert(t.clone());
                 }
             }
         });
@@ -35,21 +36,29 @@ pub fn KnowledgePage() -> impl IntoView {
         })
         .collect();
 
-    let active_tags = create_rw_signal::<HashSet<String>>(HashSet::new());
-    let active_types = create_rw_signal::<HashSet<NodeType>>(HashSet::new());
-    let hovered = create_rw_signal::<Option<u32>>(None);
-    let selected = create_rw_signal::<Option<u32>>(None);
+    let active_tags = RwSignal::new(HashSet::<String>::new());
+    let active_types = RwSignal::new(HashSet::<NodeType>::new());
+    let hovered = RwSignal::new(None::<u32>);
+    let selected = RwSignal::new(None::<u32>);
+    let editing = RwSignal::new(false);
 
-    let visible_ids = create_memo(move |_| {
+    let visible_ids = Memo::new(move |_| {
         let tags = active_tags.get();
         let types = active_types.get();
         nodes.with_value(|ns| {
             ns.iter()
                 .filter(|n| types.is_empty() || types.contains(&n.node_type))
-                .filter(|n| tags.is_empty() || n.tags.iter().any(|t| tags.contains(*t)))
+                .filter(|n| tags.is_empty() || n.tags.iter().any(|t| tags.contains(t)))
                 .map(|n| n.id)
                 .collect::<HashSet<u32>>()
         })
+    });
+
+    let node_titles: Vec<(String, String)> = nodes.with_value(|ns| {
+        ns.iter()
+            .filter(|n| !n.path.is_empty())
+            .map(|n| (n.path.clone(), n.title.clone()))
+            .collect()
     });
 
     view! {
@@ -68,7 +77,12 @@ pub fn KnowledgePage() -> impl IntoView {
                             <span>{t.label()}</span>
                         </span>
                     }).collect_view()}
-                    <span class="ml-2 text-[10px] text-slate-500 tracking-widest uppercase">"Built with Leptos"</span>
+                    <button
+                        class="ml-4 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
+                        on:click=move |_| editing.set(!editing.get_untracked())
+                    >
+                        {move || if editing.get() { "Close Editor" } else { "+ New" }}
+                    </button>
                 </div>
             </header>
             <div class="flex-1 flex min-h-0">
@@ -77,6 +91,9 @@ pub fn KnowledgePage() -> impl IntoView {
                     active_tags=active_tags
                     active_types=active_types
                 />
+                <Show when=move || editing.get()>
+                    <EditorPanel node_titles=node_titles.clone() />
+                </Show>
                 <GraphCanvas
                     nodes=nodes
                     edges=edges

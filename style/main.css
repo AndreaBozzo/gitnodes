@@ -1,0 +1,19 @@
+/* Brain UI — main stylesheet */
+/* cargo-leptos will compile this into the site pkg directory */
+
+html, body {
+    height: 100%;
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Tailwind is handled via cargo-leptos built-in support or a separate step.
+   For now, Tailwind classes are applied via the class attribute in Leptos components.
+   If you want full Tailwind CSS, run:
+     npx tailwindcss -i input.css -o style/main.css --watch
+   or integrate via cargo-leptos style-file config. */
+
+@keyframes brain-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}
