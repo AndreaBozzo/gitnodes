@@ -11,7 +11,7 @@ RUN npx tailwindcss -i style/tailwind.css -o style/main.css --minify
 # ---- Rust build stage ----
 FROM rust:1.95-slim AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev curl perl make && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-unknown-unknown
 RUN cargo install cargo-leptos --locked
 
