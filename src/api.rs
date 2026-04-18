@@ -16,6 +16,9 @@ pub struct BrainFile {
     pub path: String,
     pub sha: String,
     pub content: String,
+    /// Sanitized HTML rendered from the markdown body (frontmatter stripped).
+    #[serde(default)]
+    pub rendered_html: String,
 }
 
 /// Get the current user's GitHub login (or None if not logged in).
@@ -62,10 +65,14 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
         .decoded_content()
         .ok_or_else(|| ServerFnError::new("Cannot decode file content"))?;
 
+    let (body, _fm) = crate::markdown::split_frontmatter(&decoded);
+    let rendered_html = crate::markdown::render(body);
+
     Ok(BrainFile {
         path,
         sha,
         content: decoded,
+        rendered_html,
     })
 }
 
@@ -126,10 +133,10 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         }
     });
 
-    if let Some(sha) = &payload.sha {
-        if !sha.is_empty() {
-            body["sha"] = serde_json::json!(sha);
-        }
+    if let Some(sha) = &payload.sha
+        && !sha.is_empty()
+    {
+        body["sha"] = serde_json::json!(sha);
     }
 
     let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{file_path}");

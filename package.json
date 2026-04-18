@@ -1,0 +1,14 @@
+{
+  "name": "brain_ui-styles",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Build-time Tailwind pipeline for brain_ui. Runtime is pure Rust.",
+  "scripts": {
+    "build:css": "tailwindcss -i style/tailwind.css -o style/main.css --minify",
+    "watch:css": "tailwindcss -i style/tailwind.css -o style/main.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/typography": "^0.5.15",
+    "tailwindcss": "^3.4.17"
+  }
+}

@@ -1,14 +1,16 @@
 use axum::{
-    extract::Query,
-    response::{IntoResponse, Redirect},
+    body::Body,
+    extract::{Query, Request},
+    middleware::Next,
+    response::{IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
 use tower_sessions::Session;
 
 const SESSION_TOKEN_KEY: &str = "github_token";
 const SESSION_USER_KEY: &str = "github_user";
+const SESSION_STATE_KEY: &str = "oauth_state";
 
-/// Environment-driven config. Set these in `.env` or your hosting env.
 fn client_id() -> String {
     std::env::var("GITHUB_CLIENT_ID").expect("GITHUB_CLIENT_ID must be set")
 }
@@ -17,15 +19,38 @@ fn client_secret() -> String {
     std::env::var("GITHUB_CLIENT_SECRET").expect("GITHUB_CLIENT_SECRET must be set")
 }
 
-/// Returns the GitHub OAuth authorize URL for the "Login with GitHub" button.
-pub fn authorize_url() -> String {
+/// Generate a random, URL-safe CSRF state string.
+fn generate_state() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes)
+}
+
+/// Handler for `GET /auth/login`.
+/// Generates a CSRF state, stores it in the session, and redirects to GitHub.
+pub async fn login(session: Session) -> impl IntoResponse {
+    let state = generate_state();
+    if session.insert(SESSION_STATE_KEY, &state).await.is_err() {
+        return Redirect::to("/?error=session_init").into_response();
+    }
     let client_id = client_id();
-    format!("https://github.com/login/oauth/authorize?client_id={client_id}&scope=repo")
+    let url = format!(
+        "https://github.com/login/oauth/authorize?client_id={client_id}&scope=repo&state={state}"
+    );
+    Redirect::to(&url).into_response()
+}
+
+/// Handler for `GET /auth/logout`.
+pub async fn logout(session: Session) -> impl IntoResponse {
+    let _ = session.flush().await;
+    Redirect::to("/").into_response()
 }
 
 #[derive(Deserialize)]
 pub struct CallbackParams {
     code: String,
+    state: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -38,15 +63,26 @@ struct GitHubUser {
     login: String,
 }
 
-/// Axum handler for `/auth/callback?code=...`
-/// Exchanges the OAuth code for an access token, stores it in the session.
+/// Handler for `GET /auth/callback?code=...&state=...`.
+/// Verifies CSRF state, exchanges code for token, stores token + user in session,
+/// then redirects to `/knowledge`.
 pub async fn oauth_callback(
     Query(params): Query<CallbackParams>,
     session: Session,
 ) -> impl IntoResponse {
+    let expected_state = session
+        .remove::<String>(SESSION_STATE_KEY)
+        .await
+        .ok()
+        .flatten();
+
+    match (&expected_state, &params.state) {
+        (Some(expected), Some(got)) if expected == got => {}
+        _ => return Redirect::to("/?error=state_mismatch").into_response(),
+    }
+
     let client = reqwest::Client::new();
 
-    // Exchange code for token
     let token_res = client
         .post("https://github.com/login/oauth/access_token")
         .header("Accept", "application/json")
@@ -66,7 +102,6 @@ pub async fn oauth_callback(
         Err(_) => return Redirect::to("/?error=token_exchange").into_response(),
     };
 
-    // Fetch the user's login to store in session
     let user_res = client
         .get("https://api.github.com/user")
         .header("Authorization", format!("Bearer {token}"))
@@ -85,10 +120,18 @@ pub async fn oauth_callback(
     let _ = session.insert(SESSION_TOKEN_KEY, &token).await;
     let _ = session.insert(SESSION_USER_KEY, &login).await;
 
-    Redirect::to("/").into_response()
+    Redirect::to("/knowledge").into_response()
 }
 
-/// Retrieve the GitHub token from the current session (server-side only).
+/// Axum middleware that redirects unauthenticated requests to `/`.
+/// Expects the `tower-sessions` layer to run before it.
+pub async fn require_auth(session: Session, request: Request<Body>, next: Next) -> Response {
+    match session.get::<String>(SESSION_TOKEN_KEY).await {
+        Ok(Some(_)) => next.run(request).await,
+        _ => Redirect::to("/").into_response(),
+    }
+}
+
 pub async fn get_session_token(session: &Session) -> Option<String> {
     session
         .get::<String>(SESSION_TOKEN_KEY)
@@ -97,7 +140,11 @@ pub async fn get_session_token(session: &Session) -> Option<String> {
         .flatten()
 }
 
-/// Retrieve the GitHub username from the current session.
 pub async fn get_session_user(session: &Session) -> Option<String> {
     session.get::<String>(SESSION_USER_KEY).await.ok().flatten()
+}
+
+/// Server-side helper: is the current session authenticated?
+pub async fn is_authenticated(session: &Session) -> bool {
+    matches!(session.get::<String>(SESSION_TOKEN_KEY).await, Ok(Some(_)))
 }

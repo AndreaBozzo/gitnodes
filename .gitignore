@@ -1,5 +1,8 @@
 /target
 /dist
+/node_modules
+/style/main.css
+/data
 .DS_Store
 *.code-workspace
 .env

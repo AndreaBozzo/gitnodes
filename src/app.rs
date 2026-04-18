@@ -6,6 +6,7 @@ use leptos_router::{
 };
 
 use crate::knowledge::KnowledgePage;
+use crate::landing::Landing;
 
 /// The shell rendered on the server for every page.
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -33,11 +34,12 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Stylesheet id="leptos" href="/pkg/brain_ui.css"/>
-        <Title text="Brain · Knowledge"/>
+        <Title text="Dritara Brain"/>
 
         <Router>
             <Routes fallback=|| "Page not found.".into_view()>
-                <Route path=StaticSegment("") view=KnowledgePage/>
+                <Route path=StaticSegment("") view=Landing/>
+                <Route path=StaticSegment("knowledge") view=KnowledgePage/>
             </Routes>
         </Router>
     }

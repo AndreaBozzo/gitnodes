@@ -1,6 +1,10 @@
+#![recursion_limit = "512"]
+
 pub mod api;
 pub mod app;
 pub mod knowledge;
+pub mod landing;
+pub mod markdown;
 #[cfg(feature = "ssr")]
 pub mod server;
 

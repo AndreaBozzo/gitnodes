@@ -4,6 +4,7 @@ use leptos::prelude::*;
 
 use super::data;
 use super::detail_bar::DetailBar;
+use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
@@ -87,18 +88,22 @@ pub fn KnowledgePage() -> impl IntoView {
             </header>
             <div class="flex-1 flex min-h-0">
                 <FilterPanel
-                    all_tags=all_tags
+                    all_tags=all_tags.clone()
                     active_tags=active_tags
                     active_types=active_types
                 />
                 <Show when=move || editing.get()>
-                    <EditorPanel node_titles=node_titles.clone() />
+                    <EditorPanel node_titles=node_titles.clone() all_tags=all_tags.clone() />
                 </Show>
                 <GraphCanvas
                     nodes=nodes
                     edges=edges
                     visible_ids=visible_ids.into()
                     hovered=hovered
+                    selected=selected
+                />
+                <DetailPanel
+                    nodes=nodes
                     selected=selected
                 />
             </div>
