@@ -176,6 +176,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         .map_err(|e| ServerFnError::new(format!("GitHub PUT: {e}")))?;
 
     if response.status().is_success() {
+        crate::knowledge::runtime::invalidate();
         Ok(file_path)
     } else {
         let status = response.status();
@@ -219,6 +220,7 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
         .map_err(|e| ServerFnError::new(format!("GitHub DELETE: {e}")))?;
 
     if response.status().is_success() {
+        crate::knowledge::runtime::invalidate();
         Ok(())
     } else {
         let status = response.status();
@@ -284,6 +286,7 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
         .map_err(|e| ServerFnError::new(format!("GitHub PUT: {e}")))?;
 
     if response.status().is_success() {
+        crate::knowledge::runtime::invalidate();
         Ok(file_path)
     } else {
         let status = response.status();

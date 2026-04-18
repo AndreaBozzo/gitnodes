@@ -6,6 +6,8 @@
 //! every page load, not just what was present at `cargo build` time.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::Deserialize;
@@ -14,6 +16,47 @@ use super::types::{Edge, Node, NodeType};
 
 const OWNER: &str = "Dritara-Digital";
 const REPO: &str = "Brain";
+
+/// In-memory TTL cache for the full graph. The repo contents are identical for
+/// every authed org member, so a process-wide cache is safe — no need to key
+/// by user. Kept short (30s) so edits made outside the UI still surface quickly.
+const CACHE_TTL: Duration = Duration::from_secs(30);
+
+struct CacheEntry {
+    stored_at: Instant,
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+}
+
+static CACHE: Mutex<Option<CacheEntry>> = Mutex::new(None);
+
+/// Drop any cached graph. Called after a successful write (save/delete) so the
+/// next `/knowledge` render picks up the change immediately instead of waiting
+/// for the TTL.
+pub fn invalidate() {
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = None;
+    }
+}
+
+fn cache_get() -> Option<(Vec<Node>, Vec<Edge>)> {
+    let guard = CACHE.lock().ok()?;
+    let entry = guard.as_ref()?;
+    if entry.stored_at.elapsed() > CACHE_TTL {
+        return None;
+    }
+    Some((entry.nodes.clone(), entry.edges.clone()))
+}
+
+fn cache_store(nodes: &[Node], edges: &[Edge]) {
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some(CacheEntry {
+            stored_at: Instant::now(),
+            nodes: nodes.to_vec(),
+            edges: edges.to_vec(),
+        });
+    }
+}
 
 #[derive(Deserialize)]
 struct TreeResponse {
@@ -69,6 +112,10 @@ impl NodeTypeTag {
 }
 
 pub async fn load_graph(token: &str) -> Result<(Vec<Node>, Vec<Edge>), String> {
+    if let Some(hit) = cache_get() {
+        return Ok(hit);
+    }
+
     let client = reqwest::Client::builder()
         .user_agent("brain_ui")
         .build()
@@ -219,6 +266,7 @@ pub async fn load_graph(token: &str) -> Result<(Vec<Node>, Vec<Edge>), String> {
         .into_iter()
         .map(|(from, to)| Edge { from, to })
         .collect();
+    cache_store(&nodes, &edges);
     Ok((nodes, edges))
 }
 
