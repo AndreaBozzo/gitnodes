@@ -64,7 +64,7 @@ COPY --from=builder /app/brain_ui_bin ./brain-app
 COPY --from=builder /app/site_out ./target/site
 
 # Railway provides PORT at runtime; default to 3000 for local docker builds.
-ENV LEPTOS_OUTPUT_NAME="brain-app"
+ENV LEPTOS_OUTPUT_NAME="brain_ui"
 ENV LEPTOS_SITE_ROOT="target/site"
 ENV LEPTOS_SITE_PKG_DIR="pkg"
 # Cookie must be Secure on Railway (HTTPS).
