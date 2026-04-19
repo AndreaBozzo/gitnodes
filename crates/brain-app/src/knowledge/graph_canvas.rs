@@ -176,7 +176,7 @@ pub fn GraphCanvas(
                         {"@keyframes brain-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }"}
                     </style>
                 </defs>
-                <rect width="100" height="100" fill="url(#bg-glow)"/>
+                <rect width="100" height="100" fill="url(#bg-glow)" pointer-events="none"/>
                 <g>{edges_view}</g>
                 <g>{nodes_view}</g>
             </svg>

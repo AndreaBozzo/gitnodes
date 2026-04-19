@@ -151,10 +151,29 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
 
+    let related_section = if payload.related.is_empty() {
+        String::new()
+    } else {
+        let links: Vec<String> = payload
+            .related
+            .iter()
+            .map(|path| {
+                let label = path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(path)
+                    .trim_end_matches(".md");
+                format!("- [{}](../{})", label, path)
+            })
+            .collect();
+        format!("\n## Related / See also\n\n{}\n", links.join("\n"))
+    };
+
     let markdown = format!(
-        "{}\n{}",
+        "{}\n{}{}",
         generate_frontmatter(&payload, &user),
-        payload.body
+        payload.body,
+        related_section,
     );
 
     let file_path = match &payload.path {

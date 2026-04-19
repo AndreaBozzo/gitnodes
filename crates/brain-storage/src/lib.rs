@@ -363,9 +363,12 @@ impl Storage for GithubStorage {
             invalidate();
             Ok(path.to_string())
         } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             Err(BrainError::github(format!(
-                "API error {}",
-                response.status()
+                "API error {} — {}",
+                status,
+                body.chars().take(200).collect::<String>()
             )))
         }
     }
@@ -403,9 +406,12 @@ impl Storage for GithubStorage {
             invalidate();
             Ok(())
         } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             Err(BrainError::github(format!(
-                "API error {}",
-                response.status()
+                "API error {} — {}",
+                status,
+                body.chars().take(200).collect::<String>()
             )))
         }
     }

@@ -142,6 +142,7 @@ pub fn EditorPanel(
                         } else {
                             format!("Created: {path}")
                         });
+                        saving.set(false);
                         graph_version.update(|v| *v += 1);
                     }
                     Err(e) => {
