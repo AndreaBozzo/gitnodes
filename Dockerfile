@@ -51,7 +51,7 @@ RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/c
     --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/app/target,target=/app/target \
     cargo leptos build --release -p brain-app && \
     cp target/release/brain-app /app/brain_ui_bin && \
-    cp -r target/site /app/site_out
+    cp -r $(find target -type d -name site | head -n 1) /app/site_out
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
