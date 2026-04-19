@@ -23,6 +23,11 @@ pub fn EditorPanel(
     let tags = RwSignal::new(Vec::<String>::new());
     let body = RwSignal::new(String::new());
     let selected_related = RwSignal::new(Vec::<String>::new());
+    let folder = RwSignal::new(String::new());
+    let all_folders = Resource::new(
+        || (),
+        |_| async { crate::api::list_brain_folders().await.unwrap_or_default() },
+    );
     let status_msg = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
     let edit_path = RwSignal::new(Option::<String>::None);
@@ -48,11 +53,13 @@ pub fn EditorPanel(
             selected_related.set(p.related);
             edit_path.set(Some(p.path));
             edit_sha.set(Some(p.sha));
+            folder.set(String::new());
         } else {
             prefilled_for.set(None);
             if matches!(edit_mode.get(), EditMode::New) {
                 edit_path.set(None);
                 edit_sha.set(None);
+                folder.set(String::new());
             }
         }
     });
@@ -176,12 +183,13 @@ pub fn EditorPanel(
         let tg = tags.get();
         let b = body.get();
         let r = selected_related.get();
+        let f = folder.get();
         let Some(key) = draft_key.get() else {
             return;
         };
         // Don't persist an empty, unmodified form — avoids writing a blank
         // draft on every mount just from default signal reads.
-        if t.is_empty() && b.is_empty() && tg.is_empty() && r.is_empty() {
+        if t.is_empty() && b.is_empty() && tg.is_empty() && r.is_empty() && f.is_empty() {
             return;
         }
         let base_sha = edit_sha.get_untracked();
@@ -195,6 +203,7 @@ pub fn EditorPanel(
                 tags: tg,
                 body: b,
                 related: r,
+                folder: Some(f),
                 saved_at: draft::now_secs(),
                 base_sha,
             };
@@ -222,6 +231,9 @@ pub fn EditorPanel(
         tags.set(d.tags);
         body.set(d.body);
         selected_related.set(d.related);
+        if let Some(f) = d.folder {
+            folder.set(f);
+        }
         restore_banner.set(None);
     };
     let discard_draft = move || {
@@ -243,6 +255,7 @@ pub fn EditorPanel(
             tags: tags.get_untracked(),
             body: body.get_untracked(),
             related: selected_related.get_untracked(),
+            folder: Some(folder.get_untracked()),
             path: edit_path.get_untracked(),
             sha: edit_sha.get_untracked(),
         };
@@ -340,6 +353,7 @@ pub fn EditorPanel(
             </Show>
 
             <FrontmatterFields node_type=node_type title=title author=author />
+            <LocationPicker folder=folder node_type=node_type all_folders=all_folders is_edit=is_edit />
             <TagInput tags=tags all_tags=all_tags_stored />
             <MarkdownPreview node_type=node_type.into() body=body />
             <RelatedLinksPicker selected_related=selected_related node_titles=node_titles_stored />
@@ -741,5 +755,41 @@ fn RelatedLinksPicker(
                 }).collect_view()}
             </div>
         </div>
+    }
+}
+
+#[component]
+fn LocationPicker(
+    folder: RwSignal<String>,
+    node_type: RwSignal<NodeType>,
+    all_folders: Resource<Vec<String>>,
+    is_edit: Memo<bool>,
+) -> impl IntoView {
+    view! {
+        <Show when=move || !is_edit.get()>
+            <div>
+                <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"Location"</label>
+                <div class="relative">
+                    <input
+                        type="text"
+                        list="brain-folders"
+                        class="w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-sm focus:border-teal-400 focus:outline-none"
+                        placeholder=move || node_type.get().directory()
+                        prop:value=move || folder.get()
+                        on:input=move |ev| folder.set(event_target_value(&ev))
+                    />
+                    <datalist id="brain-folders">
+                        <Suspense fallback=|| ()>
+                            {move || all_folders.get().unwrap_or_default().into_iter().map(|f| {
+                                view! { <option value=f /> }
+                            }).collect_view()}
+                        </Suspense>
+                    </datalist>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                    "Leave blank for default. Create new folders implicitly by typing a path like 'drafts/q3'."
+                </p>
+            </div>
+        </Show>
     }
 }

@@ -19,6 +19,7 @@ pub struct Draft {
     pub tags: Vec<String>,
     pub body: String,
     pub related: Vec<String>,
+    pub folder: Option<String>,
     /// Unix seconds. Used by the restore banner to show "saved N minutes ago".
     pub saved_at: i64,
     /// Sha of the file the draft was forked from (edit mode only). Lets us

@@ -260,6 +260,7 @@ pub struct BrainFilePayload {
     pub body: String,
     /// Related file paths chosen via forced-linking.
     pub related: Vec<String>,
+    pub folder: Option<String>,
     /// For updates: the file path and sha.
     pub path: Option<String>,
     pub sha: Option<String>,

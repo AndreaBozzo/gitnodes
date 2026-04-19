@@ -30,7 +30,6 @@ pub fn register_server_functions() {
     register_explicit::<ReadBrainFile>();
     register_explicit::<SaveBrainFile>();
     register_explicit::<DeleteBrainFile>();
-    register_explicit::<CreateFolder>();
     register_explicit::<ListBrainFolders>();
     register_explicit::<GetAppConfig>();
     register_explicit::<UploadAsset>();
@@ -226,7 +225,17 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
                 .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '-')
                 .collect::<String>();
-            format!("{}/{}.md", payload.node_type.directory(), slug)
+            let dir = payload
+                .folder
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| payload.node_type.directory())
+                .trim_matches('/');
+            if dir.is_empty() {
+                format!("{}.md", slug)
+            } else {
+                format!("{}/{}.md", dir, slug)
+            }
         }
     };
 
@@ -564,47 +573,6 @@ fn relativize(from_dir: &std::path::Path, target: &str) -> String {
     }
     out.push_str(&target_parts[common..].join("/"));
     out
-}
-
-#[server(CreateFolder, "/api", endpoint = "create_folder")]
-pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError> {
-    use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
-
-    let sanitized = folder_path.trim().trim_matches('/');
-    if sanitized.is_empty()
-        || sanitized.contains("..")
-        || !sanitized
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/')
-    {
-        return Err(sfe(BrainError::parse("Invalid folder name")));
-    }
-
-    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let user = session::session_user_or_fallback(&s).await;
-    let commit_msg = format!("Create section {sanitized}/ via Brain UI");
-    let author_email = format!("{}@users.noreply.github.com", user);
-
-    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
-    match storage
-        .create_folder(&token, sanitized, &commit_msg, &user, &author_email)
-        .await
-    {
-        Ok(path) => {
-            crate::server::audit::log("create_folder", Some(&user), sanitized).await;
-            Ok(path)
-        }
-        Err(e) => {
-            crate::server::audit::log(
-                "api_error",
-                Some(&user),
-                &format!("create_folder {sanitized}: {e}"),
-            )
-            .await;
-            Err(sfe(e))
-        }
-    }
 }
 
 /// Max size for a single asset upload. GitHub Contents API accepts larger, but

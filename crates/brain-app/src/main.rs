@@ -50,16 +50,28 @@ async fn main() {
         .init();
 
     // Persistent session store backed by SQLite.
-    // Path is configurable via SESSION_DB_PATH; defaults to ./data/sessions.db.
-    let db_path =
-        std::env::var("SESSION_DB_PATH").unwrap_or_else(|_| "data/sessions.db".to_string());
-    if let Some(parent) = std::path::Path::new(&db_path).parent()
-        && !parent.as_os_str().is_empty()
-    {
-        let _ = std::fs::create_dir_all(parent);
+    // Use a standard URL format. Default to local sqlite.
+    let db_url =
+        std::env::var("SESSION_DB_URL").unwrap_or_else(|_| "sqlite://data/sessions.db".to_string());
+
+    // Only attempt to create parent directories if it's a local SQLite file
+    if db_url.starts_with("sqlite://") && !db_url.starts_with("sqlite://:memory:") {
+        let file_path = db_url.strip_prefix("sqlite://").unwrap();
+        if let Some(parent) = std::path::Path::new(file_path).parent() {
+            if !parent.as_os_str().is_empty() {
+                // Do not swallow the error! Fail fast if permissions are wrong.
+                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to create session DB directory at {:?}: {}",
+                        parent, e
+                    )
+                });
+            }
+        }
     }
-    let sqlite_opts = SqliteConnectOptions::from_str(&format!("sqlite://{db_path}"))
-        .expect("valid SESSION_DB_PATH")
+
+    let sqlite_opts = SqliteConnectOptions::from_str(&db_url)
+        .expect("Valid database connection string")
         .create_if_missing(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
