@@ -28,7 +28,7 @@ pub struct SessionEntry {
     pub expiry_date: String,
 }
 
-#[server(LoadAuditLog, "/api")]
+#[server(LoadAuditLog, "/api", endpoint = "load_audit_log")]
 pub async fn load_audit_log(
     kind: Option<String>,
     limit: Option<i64>,
@@ -50,7 +50,7 @@ pub async fn load_audit_log(
         .collect())
 }
 
-#[server(ListSessions, "/api")]
+#[server(ListSessions, "/api", endpoint = "list_sessions")]
 pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
     use crate::server::session;
     let _ = session::require_authenticated().await.map_err(sfe)?;
@@ -66,7 +66,7 @@ pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
         .collect())
 }
 
-#[server(RevokeSession, "/api")]
+#[server(RevokeSession, "/api", endpoint = "revoke_session")]
 pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
     use crate::server::session;
     let s = session::require_authenticated().await.map_err(sfe)?;
@@ -87,14 +87,14 @@ pub struct BrainFile {
     pub rendered_html: String,
 }
 
-#[server(GetCurrentUser, "/api")]
+#[server(GetCurrentUser, "/api", endpoint = "get_current_user")]
 pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     use crate::server::session;
     let s = session::session().map_err(sfe)?;
     Ok(crate::server::auth::get_session_user(&s).await)
 }
 
-#[server(LoadBrainTemplate, "/api")]
+#[server(LoadBrainTemplate, "/api", endpoint = "load_brain_template")]
 pub async fn load_brain_template(
     node_type: crate::knowledge::types::NodeType,
 ) -> Result<String, ServerFnError> {
@@ -110,7 +110,7 @@ pub async fn load_brain_template(
     Ok(body.trim_start_matches('\n').to_string())
 }
 
-#[server(LoadBrainGraph, "/api")]
+#[server(LoadBrainGraph, "/api", endpoint = "load_brain_graph")]
 pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
@@ -119,7 +119,7 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError>
     storage.load_graph(&token).await.map_err(sfe)
 }
 
-#[server(ReadBrainFile, "/api")]
+#[server(ReadBrainFile, "/api", endpoint = "read_brain_file")]
 pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
@@ -143,6 +143,7 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     SaveBrainFile,
     "/api",
     input = server_fn::codec::Json,
+    endpoint = "save_brain_file",
 )]
 pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, ServerFnError> {
     use crate::server::session;
@@ -227,7 +228,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     }
 }
 
-#[server(DeleteBrainFile, "/api")]
+#[server(DeleteBrainFile, "/api", endpoint = "delete_brain_file")]
 pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
@@ -254,7 +255,7 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
     }
 }
 
-#[server(CreateFolder, "/api")]
+#[server(CreateFolder, "/api", endpoint = "create_folder")]
 pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
@@ -295,7 +296,7 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
     }
 }
 
-#[server(ListBrainFolders, "/api")]
+#[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]
 pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
