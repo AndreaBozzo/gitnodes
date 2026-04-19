@@ -49,11 +49,9 @@ RUN find crates -type f -name "*.rs" -exec touch {} +
 RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
     --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/app/target,target=/app/target \
-    cargo leptos build --release -p brain-app && \
+    LEPTOS_SITE_ROOT=/app/.docker-site LEPTOS_SITE_PKG_DIR=pkg cargo leptos build --release -p brain-app && \
     cp target/release/brain-app /app/brain_ui_bin && \
-    site_pkg_dir="$(find /app -type d -path '*/site/pkg' -print -quit)" && \
-    test -n "$site_pkg_dir" && \
-    cp -r "${site_pkg_dir%/pkg}" /app/site_out
+    cp -r /app/.docker-site /app/site_out
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
