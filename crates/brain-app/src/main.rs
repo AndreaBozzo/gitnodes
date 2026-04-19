@@ -57,16 +57,16 @@ async fn main() {
     // Only attempt to create parent directories if it's a local SQLite file
     if db_url.starts_with("sqlite://") && !db_url.starts_with("sqlite://:memory:") {
         let file_path = db_url.strip_prefix("sqlite://").unwrap();
-        if let Some(parent) = std::path::Path::new(file_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                // Do not swallow the error! Fail fast if permissions are wrong.
-                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to create session DB directory at {:?}: {}",
-                        parent, e
-                    )
-                });
-            }
+        if let Some(parent) = std::path::Path::new(file_path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            // Do not swallow the error! Fail fast if permissions are wrong.
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to create session DB directory at {:?}: {}",
+                    parent, e
+                )
+            });
         }
     }
 
