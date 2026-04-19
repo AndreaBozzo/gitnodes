@@ -518,6 +518,8 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
 fn MarkdownPreview(node_type: Signal<NodeType>, body: RwSignal<String>) -> impl IntoView {
     let show_preview = RwSignal::new(false);
     let preview_html = Memo::new(move |_| crate::markdown::render(&body.get()));
+    let upload_status = RwSignal::new(String::new());
+    let dragging = RwSignal::new(false);
 
     view! {
         <div>
@@ -544,10 +546,27 @@ fn MarkdownPreview(node_type: Signal<NodeType>, body: RwSignal<String>) -> impl 
                 when=move || show_preview.get()
                 fallback=move || view! {
                     <textarea
-                        class="w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-sm focus:border-teal-400 focus:outline-none min-h-[180px] resize-y font-mono"
-                        placeholder="Write the main content here (Markdown supported)…"
+                        class="w-full px-3 py-2 rounded-md bg-slate-800 border text-slate-100 text-sm focus:border-teal-400 focus:outline-none min-h-[180px] resize-y font-mono transition-colors"
+                        class=("bg-slate-800", move || !dragging.get())
+                        class=("border-slate-700", move || !dragging.get())
+                        class=("bg-teal-500/10", move || dragging.get())
+                        class=("border-teal-400", move || dragging.get())
+                        placeholder="Write the main content here (Markdown supported). Drop images to upload."
                         prop:value=move || body.get()
                         on:input=move |ev| body.set(event_target_value(&ev))
+                        on:dragover=move |ev| {
+                            ev.prevent_default();
+                            dragging.set(true);
+                        }
+                        on:dragleave=move |_| dragging.set(false)
+                        on:drop=move |ev| {
+                            ev.prevent_default();
+                            dragging.set(false);
+                            #[cfg(feature = "hydrate")]
+                            handle_image_drop(ev, body, upload_status);
+                            #[cfg(not(feature = "hydrate"))]
+                            { let _ = (upload_status, &body); }
+                        }
                     />
                 }
             >
@@ -569,7 +588,75 @@ fn MarkdownPreview(node_type: Signal<NodeType>, body: RwSignal<String>) -> impl 
                     }}
                 </div>
             </Show>
+            <Show when=move || !upload_status.get().is_empty()>
+                <p class="text-[10px] text-teal-300 mt-1">{move || upload_status.get()}</p>
+            </Show>
         </div>
+    }
+}
+
+/// Upload every image file from a drop event, inserting a markdown image tag
+/// into the body for each one as it completes. Non-image files are skipped
+/// silently; per-file errors surface in `status` but don't abort siblings.
+#[cfg(feature = "hydrate")]
+fn handle_image_drop(ev: leptos::ev::DragEvent, body: RwSignal<String>, status: RwSignal<String>) {
+    use crate::api::upload_asset;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    let Some(dt) = ev.data_transfer() else {
+        return;
+    };
+    let Some(files) = dt.files() else {
+        return;
+    };
+    let count = files.length();
+    if count == 0 {
+        return;
+    }
+    for i in 0..count {
+        let Some(file) = files.get(i) else { continue };
+        let mime = file.type_();
+        if !mime.starts_with("image/") {
+            continue;
+        }
+        let filename = file.name();
+        let file_for_task = file.clone();
+        status.set(format!("Uploading {filename}…"));
+        leptos::task::spawn_local(async move {
+            let buf_promise = file_for_task.array_buffer();
+            let buf = match JsFuture::from(buf_promise).await {
+                Ok(v) => v,
+                Err(_) => {
+                    status.set(format!("Read failed: {filename}"));
+                    return;
+                }
+            };
+            let Ok(array) = buf.dyn_into::<js_sys::ArrayBuffer>() else {
+                status.set(format!("Read failed: {filename}"));
+                return;
+            };
+            let bytes = js_sys::Uint8Array::new(&array).to_vec();
+            let alt = strip_ext(&filename);
+            match upload_asset(filename.clone(), bytes).await {
+                Ok(path) => {
+                    let snippet = format!("\n\n![{alt}](/{path})\n");
+                    body.update(|b| b.push_str(&snippet));
+                    status.set(format!("Uploaded {path}"));
+                }
+                Err(e) => {
+                    status.set(format!("Upload failed ({filename}): {e}"));
+                }
+            }
+        });
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn strip_ext(filename: &str) -> String {
+    match filename.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem.to_string(),
+        _ => filename.to_string(),
     }
 }
 

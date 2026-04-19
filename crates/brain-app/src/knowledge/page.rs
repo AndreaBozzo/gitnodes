@@ -170,6 +170,7 @@ fn KnowledgeView(
                 />
                 <DetailPanel
                     nodes=nodes
+                    edges=edges
                     selected=selected
                     edit_mode=edit_mode
                     graph_version=graph_version

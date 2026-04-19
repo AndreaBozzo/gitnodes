@@ -33,6 +33,8 @@ pub fn register_server_functions() {
     register_explicit::<CreateFolder>();
     register_explicit::<ListBrainFolders>();
     register_explicit::<GetAppConfig>();
+    register_explicit::<UploadAsset>();
+    register_explicit::<RenameBrainFile>();
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -293,6 +295,277 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RenameResult {
+    pub new_path: String,
+    /// Paths of files whose links were rewritten to point at `new_path`.
+    pub updated_referrers: Vec<String>,
+}
+
+/// Move a file to a new path and rewrite every markdown link that pointed at
+/// the old path. Issues one commit per touched file (referrers, then the move
+/// itself); we accept the commit churn to stay on the simple Contents API
+/// rather than assembling a Git Data tree.
+#[server(RenameBrainFile, "/api", endpoint = "rename_brain_file")]
+pub async fn rename_brain_file(
+    old_path: String,
+    new_path: String,
+    old_sha: String,
+) -> Result<RenameResult, ServerFnError> {
+    use crate::server::session;
+    use brain_storage::{GithubStorage, Storage};
+
+    let old_path = old_path.trim().trim_matches('/').to_string();
+    let new_path = new_path.trim().trim_matches('/').to_string();
+
+    if new_path.is_empty() || old_path.is_empty() {
+        return Err(sfe(BrainError::parse("Empty path")));
+    }
+    if new_path == old_path {
+        return Err(sfe(BrainError::parse("New path matches old path")));
+    }
+    if !new_path.ends_with(".md") {
+        return Err(sfe(BrainError::parse("New path must end in .md")));
+    }
+    if new_path.contains("..") || new_path.starts_with('/') {
+        return Err(sfe(BrainError::parse("Invalid new path")));
+    }
+
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let author_email = format!("{}@users.noreply.github.com", user);
+    let cfg = session::target_cfg().map_err(sfe)?;
+    let storage = GithubStorage::new(cfg);
+
+    // Sanity: the source file still exists at the sha the client saw.
+    let (old_content, live_sha) = storage.read_file(&token, &old_path).await.map_err(sfe)?;
+    if live_sha != old_sha {
+        return Err(sfe(BrainError::other(
+            "File was modified since you opened it; reload and retry",
+        )));
+    }
+
+    // Find every file that links to old_path. Walk the tree once, read each
+    // candidate, and string-scan for link targets that resolve to old_path.
+    let (_nodes, _edges) = storage.load_graph(&token).await.map_err(sfe)?;
+    let all_paths = collect_repo_md_paths(&token, &storage).await.map_err(sfe)?;
+
+    let mut updated_referrers = Vec::<String>::new();
+    for candidate in &all_paths {
+        if candidate == &old_path {
+            continue;
+        }
+        let (content, sha) = match storage.read_file(&token, candidate).await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(rewritten) = rewrite_links(&content, candidate, &old_path, &new_path) else {
+            continue;
+        };
+        let msg = format!("Update links in {candidate} after rename via Brain UI");
+        storage
+            .save_file(
+                &token,
+                candidate,
+                &rewritten,
+                Some(&sha),
+                &msg,
+                &user,
+                &author_email,
+            )
+            .await
+            .map_err(sfe)?;
+        updated_referrers.push(candidate.clone());
+    }
+
+    // Create the file at the new path, then delete the old one.
+    let create_msg = format!("Rename {old_path} → {new_path} via Brain UI");
+    storage
+        .save_file(
+            &token,
+            &new_path,
+            &old_content,
+            None,
+            &create_msg,
+            &user,
+            &author_email,
+        )
+        .await
+        .map_err(sfe)?;
+
+    let delete_msg = format!("Delete {old_path} (renamed to {new_path}) via Brain UI");
+    storage
+        .delete_file(
+            &token,
+            &old_path,
+            &old_sha,
+            &delete_msg,
+            &user,
+            &author_email,
+        )
+        .await
+        .map_err(sfe)?;
+
+    crate::server::audit::log(
+        "rename",
+        Some(&user),
+        &format!(
+            "{old_path} -> {new_path} ({} referrers)",
+            updated_referrers.len()
+        ),
+    )
+    .await;
+
+    Ok(RenameResult {
+        new_path,
+        updated_referrers,
+    })
+}
+
+#[cfg(feature = "ssr")]
+async fn collect_repo_md_paths(
+    token: &str,
+    storage: &brain_storage::GithubStorage,
+) -> Result<Vec<String>, BrainError> {
+    use brain_graph::is_included_md;
+    // Reuse graph load's internal logic by re-reading the tree directly. Keep
+    // this narrow — we only need paths, not parsed docs.
+    let client = brain_storage::http_client()?;
+    let _ = storage; // kept for future use if we swap to a storage method
+    let cfg = crate::server::session::target_cfg()?;
+    let url = cfg.tree_url();
+    #[derive(serde::Deserialize)]
+    struct Tree {
+        tree: Vec<Entry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        path: String,
+        #[serde(rename = "type")]
+        kind: String,
+    }
+    let resp: Tree = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| BrainError::github(format!("tree fetch: {e}")))?
+        .error_for_status()
+        .map_err(|e| BrainError::github(format!("tree status: {e}")))?
+        .json()
+        .await
+        .map_err(|e| BrainError::github(format!("tree parse: {e}")))?;
+    Ok(resp
+        .tree
+        .into_iter()
+        .filter(|e| e.kind == "blob" && is_included_md(&e.path))
+        .map(|e| e.path)
+        .collect())
+}
+
+/// Given the content of `file_path`, rewrite any `](X)` whose X resolves to
+/// `old_target` so X becomes the correct relative path to `new_target`.
+/// Returns `None` if nothing changed.
+#[cfg(feature = "ssr")]
+fn rewrite_links(
+    content: &str,
+    file_path: &str,
+    old_target: &str,
+    new_target: &str,
+) -> Option<String> {
+    use std::path::Path;
+
+    let from_dir = Path::new(file_path).parent().unwrap_or(Path::new(""));
+    let new_rel = relativize(from_dir, new_target);
+
+    let mut out = String::with_capacity(content.len());
+    let mut i = 0;
+    let bytes = content.as_bytes();
+    let mut changed = false;
+    while i < bytes.len() {
+        if bytes[i] == b']'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'('
+            && let Some(end) = content[i + 2..].find(')')
+        {
+            let url = &content[i + 2..i + 2 + end];
+            let (path_part, fragment) = match url.split_once('#') {
+                Some((p, f)) => (p, Some(f)),
+                None => (url, None),
+            };
+            if !path_part.starts_with("http")
+                && path_part.ends_with(".md")
+                && resolve_link_path(from_dir, path_part) == old_target
+            {
+                out.push_str("](");
+                out.push_str(&new_rel);
+                if let Some(f) = fragment {
+                    out.push('#');
+                    out.push_str(f);
+                }
+                out.push(')');
+                i = i + 2 + end + 1;
+                changed = true;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    changed.then_some(out)
+}
+
+#[cfg(feature = "ssr")]
+fn resolve_link_path(from_dir: &std::path::Path, link: &str) -> String {
+    use std::path::Path;
+    let joined = from_dir.join(link);
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in Path::new(&joined).iter() {
+        let Some(s) = comp.to_str() else {
+            return String::new();
+        };
+        if s == "." {
+            continue;
+        } else if s == ".." {
+            parts.pop();
+        } else {
+            parts.push(s);
+        }
+    }
+    parts.join("/")
+}
+
+/// Shortest relative path from `from_dir` to `target` (both repo-rooted).
+#[cfg(feature = "ssr")]
+fn relativize(from_dir: &std::path::Path, target: &str) -> String {
+    let from_parts: Vec<&str> = from_dir
+        .to_str()
+        .unwrap_or("")
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let target_parts: Vec<&str> = target.split('/').filter(|s| !s.is_empty()).collect();
+
+    let mut common = 0;
+    while common < from_parts.len()
+        && common < target_parts.len() - 1
+        && from_parts[common] == target_parts[common]
+    {
+        common += 1;
+    }
+
+    let ups = from_parts.len() - common;
+    let mut out = String::new();
+    for _ in 0..ups {
+        out.push_str("../");
+    }
+    if ups == 0 {
+        out.push_str("./");
+    }
+    out.push_str(&target_parts[common..].join("/"));
+    out
+}
+
 #[server(CreateFolder, "/api", endpoint = "create_folder")]
 pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError> {
     use crate::server::session;
@@ -332,6 +605,132 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
             Err(sfe(e))
         }
     }
+}
+
+/// Max size for a single asset upload. GitHub Contents API accepts larger, but
+/// we keep it modest to stay responsive and avoid ballooning the repo.
+#[cfg(feature = "ssr")]
+const MAX_ASSET_BYTES: usize = 2 * 1024 * 1024;
+
+#[server(
+    UploadAsset,
+    "/api",
+    input = server_fn::codec::Json,
+    endpoint = "upload_asset",
+)]
+pub async fn upload_asset(filename: String, bytes: Vec<u8>) -> Result<String, ServerFnError> {
+    use crate::server::session;
+    use brain_storage::{GithubStorage, Storage};
+
+    if bytes.is_empty() {
+        return Err(sfe(BrainError::parse("Empty upload")));
+    }
+    if bytes.len() > MAX_ASSET_BYTES {
+        return Err(sfe(BrainError::parse(format!(
+            "Upload too large ({} bytes; max {})",
+            bytes.len(),
+            MAX_ASSET_BYTES
+        ))));
+    }
+
+    let (stem, ext) = split_filename(&filename);
+    if !is_allowed_image_ext(&ext) {
+        return Err(sfe(BrainError::parse(format!(
+            "Unsupported file extension: .{ext}"
+        ))));
+    }
+
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let author_email = format!("{}@users.noreply.github.com", user);
+
+    let today = time::OffsetDateTime::now_utc();
+    let short_hash = short_content_hash(&bytes);
+    let slug = slugify(&stem);
+    let asset_path = format!(
+        "assets/{:04}/{:02}/{}-{}.{}",
+        today.year(),
+        today.month() as u8,
+        slug,
+        short_hash,
+        ext,
+    );
+
+    let commit_msg = format!("Upload {asset_path} via Brain UI");
+    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
+    match storage
+        .upload_binary(
+            &token,
+            &asset_path,
+            &bytes,
+            &commit_msg,
+            &user,
+            &author_email,
+        )
+        .await
+    {
+        Ok(path) => {
+            crate::server::audit::log("upload_asset", Some(&user), &asset_path).await;
+            Ok(path)
+        }
+        Err(e) => {
+            crate::server::audit::log(
+                "api_error",
+                Some(&user),
+                &format!("upload_asset {asset_path}: {e}"),
+            )
+            .await;
+            Err(sfe(e))
+        }
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn split_filename(filename: &str) -> (String, String) {
+    let name = filename.rsplit('/').next().unwrap_or(filename);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), ext.to_lowercase()),
+        _ => (name.to_string(), String::new()),
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn is_allowed_image_ext(ext: &str) -> bool {
+    matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg")
+}
+
+#[cfg(feature = "ssr")]
+fn slugify(stem: &str) -> String {
+    let mut out = String::with_capacity(stem.len());
+    let mut prev_dash = false;
+    for c in stem.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "asset".to_string()
+    } else if trimmed.len() > 40 {
+        trimmed.chars().take(40).collect()
+    } else {
+        trimmed
+    }
+}
+
+/// Short content-derived suffix so two uploads with the same slug don't collide.
+/// Not cryptographic — just needs to be stable and short.
+#[cfg(feature = "ssr")]
+fn short_content_hash(bytes: &[u8]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    bytes.hash(&mut h);
+    format!("{:x}", h.finish()).chars().take(8).collect()
 }
 
 #[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]

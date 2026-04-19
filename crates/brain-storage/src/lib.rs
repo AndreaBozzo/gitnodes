@@ -50,6 +50,16 @@ pub trait Storage: Send + Sync {
         author_name: &str,
         author_email: &str,
     ) -> Result<String, BrainError>;
+    #[allow(clippy::too_many_arguments)]
+    async fn upload_binary(
+        &self,
+        token: &str,
+        path: &str,
+        bytes: &[u8],
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<String, BrainError>;
     async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError>;
     fn invalidate_cache(&self);
 }
@@ -437,6 +447,47 @@ impl Storage for GithubStorage {
         .await
     }
 
+    async fn upload_binary(
+        &self,
+        token: &str,
+        path: &str,
+        bytes: &[u8],
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<String, BrainError> {
+        let client = http_client()?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let body = serde_json::json!({
+            "message": message,
+            "content": encoded,
+            "branch": self.branch(),
+            "committer": {
+                "name": author_name,
+                "email": author_email,
+            }
+        });
+        let url = self.contents_url(path);
+        let response = client
+            .put(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("PUT: {e}")))?;
+        if response.status().is_success() {
+            Ok(path.to_string())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(BrainError::github(format!(
+                "API error {} — {}",
+                status,
+                body.chars().take(200).collect::<String>()
+            )))
+        }
+    }
+
     async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError> {
         let client = http_client()?;
         let url = format!("{}?ref={}", self.contents_url(""), self.branch());
@@ -528,6 +579,18 @@ impl Storage for InMemoryStorage {
         _author_email: &str,
     ) -> Result<String, BrainError> {
         Ok(format!("{folder_path}/README.md"))
+    }
+
+    async fn upload_binary(
+        &self,
+        _token: &str,
+        path: &str,
+        _bytes: &[u8],
+        _message: &str,
+        _author_name: &str,
+        _author_email: &str,
+    ) -> Result<String, BrainError> {
+        Ok(path.to_string())
     }
 
     async fn list_folders(&self, _token: &str) -> Result<Vec<String>, BrainError> {

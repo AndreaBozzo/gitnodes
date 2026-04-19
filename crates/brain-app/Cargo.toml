@@ -36,10 +36,21 @@ brain-domain = { path = "../brain-domain" }
 brain-graph = { path = "../brain-graph" }
 brain-storage = { path = "../brain-storage", optional = true }
 brain-auth = { path = "../brain-auth", optional = true }
-web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Location",
+    "Storage",
+    "DragEvent",
+    "DataTransfer",
+    "File",
+    "FileList",
+    "HtmlTextAreaElement",
+    "Blob",
+] }
 getrandom = { version = "0.2", features = ["js"] }
 gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 js-sys = { version = "0.3", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [features]
 hydrate = [
@@ -48,6 +59,7 @@ hydrate = [
     "dep:wasm-bindgen",
     "dep:gloo-timers",
     "dep:js-sys",
+    "dep:wasm-bindgen-futures",
 ]
 ssr = [
     "dep:axum",
