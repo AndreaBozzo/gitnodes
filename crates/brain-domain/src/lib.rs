@@ -1,0 +1,14 @@
+//! Pure domain types for brain_ui.
+//!
+//! This crate intentionally has zero runtime dependencies beyond `serde`. It
+//! compiles on both `wasm32-unknown-unknown` (hydrate) and native (SSR) so the
+//! same `Node`/`Edge`/`BrainFilePayload` flow through `#[server]` fn boundaries
+//! without conditional cfg.
+
+mod error;
+mod frontmatter;
+mod types;
+
+pub use error::BrainError;
+pub use frontmatter::split_frontmatter;
+pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node, NodeType};

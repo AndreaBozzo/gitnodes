@@ -32,12 +32,12 @@ src/
     page.rs            # Main /knowledge composition
     graph_canvas.rs    # SVG graph view
     filter_panel.rs    # Tag + type filters
-    editor.rs          # New-document form with live preview
+    editor.rs          # Create/update form with live preview
     detail_bar.rs      # Bottom strip: hover/selection summary
-    detail_panel.rs    # Right-hand slide-out: full rendered markdown
+    detail_panel.rs    # Right-hand slide-out: full rendered markdown + Edit/Delete
+    runtime.rs         # Live GitHub tree walk + graph build + TTL cache
     types.rs           # Node, Edge, NodeType, BrainFilePayload
-    data.rs            # Generated at build time by build.rs
-build.rs               # Parses BRAIN_DIR at compile time into a static graph
+  admin.rs             # Audit log + active-sessions management
 style/
   tailwind.css         # Tailwind source (input)
   main.css             # Generated output (gitignored)
@@ -61,23 +61,29 @@ Optional:
 | `SESSION_DB_PATH`   | `data/sessions.db`   | SQLite file for session store       |
 | `LEPTOS_SITE_ADDR`  | `127.0.0.1:3000`     | Bind address                        |
 | `LEPTOS_SITE_ROOT`  | `target/site`        | Static asset root (prod)            |
-| `BRAIN_DIR`         | `../Brain`           | Path to the Brain repo at **build time** |
+| `SESSION_COOKIE_SECURE` | `0`              | Set to `1` in HTTPS prod so cookies require TLS |
+| `RUST_LOG`          | `brain_ui=info,warn` | tracing-subscriber env filter       |
 
 The OAuth app's callback URL must be `{host}/auth/callback`.
 
 ## Local development
 
 Prereqs: Rust toolchain from `rust-toolchain.toml`, Node 18+, `cargo-leptos`, the
-`wasm32-unknown-unknown` target.
+`wasm32-unknown-unknown` target, optionally [`just`](https://github.com/casey/just).
 
 ```bash
-npm install                     # once — installs tailwind + typography plugin
-npm run watch:css &             # rebuild style/main.css on .rs changes
-cargo leptos watch              # rebuild server + hydrate on source changes
+just setup                      # once — installs tailwind + typography plugin
+just css-watch &                # rebuild style/main.css on source changes
+just dev                        # cargo leptos watch
 ```
+
+Or without `just`: `npm install`, `npm run watch:css &`, `cargo leptos watch`.
 
 Put OAuth secrets in `.env` (gitignored). Register the callback URL as
 `http://127.0.0.1:3000/auth/callback`.
+
+CI runs `just check` equivalents: `cargo fmt --check`, `cargo clippy` for both
+`ssr` and `hydrate`/`wasm32`, `cargo test`, and `npm run build:css`.
 
 ## Production build
 
@@ -115,16 +121,14 @@ sends `BrainFilePayload` to the `save_brain_file` server function. Server-side,
 encodes it, and `PUT`s to the GitHub Contents API under the authenticated user's
 token.
 
-**Caveat**: the graph is baked at `build.rs` time from `BRAIN_DIR`. Newly created
-documents won't appear in the graph until the app is rebuilt. Runtime merging is
-tracked as a Phase-4 decision.
+The graph is loaded at runtime from the live GitHub tree (see
+[`src/knowledge/runtime.rs`](src/knowledge/runtime.rs)) with a 30-second process-wide
+TTL cache. Successful writes call `runtime::invalidate()` so edits surface on the
+next render.
 
-## Known limitations
+## Known limitations & roadmap
 
-See [`.claude/projects/.../memory/open_caveats.md`](#) or ask during an e2e session.
-Short list: graph doesn't auto-refresh after commits; WASM bundle includes
-pulldown-cmark (~100KB); `prose-sm` sizing is untuned; CSRF state depends on session
-cookie surviving the GitHub round-trip.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## License
 

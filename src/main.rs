@@ -12,7 +12,6 @@ async fn main() {
     };
     use brain_ui::app::*;
     use brain_ui::server::auth;
-    use leptos::logging::log;
     use leptos::prelude::*;
     use leptos_axum::{LeptosRoutes, generate_route_list};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -22,14 +21,24 @@ async fn main() {
 
     dotenvy::dotenv().ok();
 
+    // Structured logging. Level controlled by RUST_LOG (defaults to info for our
+    // crate, warn elsewhere). Audit log stays as the domain-event stream; this is
+    // for operational visibility.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "brain_ui=info,warn".into()),
+        )
+        .init();
+
     // Persistent session store backed by SQLite.
     // Path is configurable via SESSION_DB_PATH; defaults to ./data/sessions.db.
     let db_path =
         std::env::var("SESSION_DB_PATH").unwrap_or_else(|_| "data/sessions.db".to_string());
-    if let Some(parent) = std::path::Path::new(&db_path).parent() {
-        if !parent.as_os_str().is_empty() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+    if let Some(parent) = std::path::Path::new(&db_path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = std::fs::create_dir_all(parent);
     }
     let sqlite_opts = SqliteConnectOptions::from_str(&format!("sqlite://{db_path}"))
         .expect("valid SESSION_DB_PATH")
@@ -124,7 +133,7 @@ async fn main() {
         .layer(session_layer)
         .with_state(leptos_options);
 
-    log!("listening on http://{}", &addr);
+    tracing::info!(%addr, "brain_ui listening");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app.into_make_service())
         .await

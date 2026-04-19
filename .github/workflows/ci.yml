@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  rust:
+    name: rust ${{ matrix.job }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [fmt, clippy-ssr, clippy-hydrate, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.job }}
+
+      - name: fmt
+        if: matrix.job == 'fmt'
+        run: cargo fmt --all -- --check
+
+      - name: clippy (ssr)
+        if: matrix.job == 'clippy-ssr'
+        run: cargo clippy --no-default-features --features ssr -- -D warnings
+
+      - name: clippy (hydrate, wasm32)
+        if: matrix.job == 'clippy-hydrate'
+        run: cargo clippy --no-default-features --features hydrate --target wasm32-unknown-unknown -- -D warnings
+
+      - name: test
+        if: matrix.job == 'test'
+        run: cargo test --no-default-features --features ssr
+
+  css:
+    name: tailwind build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build:css

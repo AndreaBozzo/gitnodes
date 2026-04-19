@@ -232,25 +232,41 @@ pub async fn load_graph(token: &str) -> Result<(Vec<Node>, Vec<Edge>), String> {
         let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}?ref=main");
         let resp = match client.get(&url).bearer_auth(token).send().await {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::warn!(path, error = %e, "content fetch failed");
+                continue;
+            }
         };
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            tracing::warn!(path, %status, "content fetch non-success");
             continue;
         }
         let body: ContentResponse = match resp.json().await {
             Ok(b) => b,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::warn!(path, error = %e, "content parse failed");
+                continue;
+            }
         };
         let cleaned: String = body
             .content
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(cleaned) else {
-            continue;
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(path, error = %e, "base64 decode failed");
+                continue;
+            }
         };
-        let Ok(text) = String::from_utf8(bytes) else {
-            continue;
+        let text = match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => {
+                tracing::warn!(path, "non-utf8 content, skipping");
+                continue;
+            }
         };
         if let Some(p) = parse_file(&text, path, &body.sha) {
             parsed.push(p);
