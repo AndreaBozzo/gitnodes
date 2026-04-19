@@ -118,6 +118,17 @@ fn rewrite_link_destination(
         return url;
     }
 
+    // Images under `assets/` go through our authenticated proxy so private-repo
+    // bytes reach the browser without needing an OAuth token on `<img>`.
+    if is_image && resolved.starts_with("assets/") {
+        let mut url = format!("/{}", resolved);
+        if let Some(fragment) = fragment {
+            url.push('#');
+            url.push_str(fragment);
+        }
+        return url;
+    }
+
     // Without a config, we can't build absolute GitHub URLs — leave as-is.
     let Some(cfg) = cfg else {
         return dest.to_string();
@@ -251,5 +262,18 @@ mod tests {
             &test_cfg(),
         );
         assert!(html.contains(r#"src="https://raw.githubusercontent.com/Dritara-Digital/Brain/main/screenshots/graph.png""#));
+    }
+
+    #[test]
+    fn render_routes_assets_images_through_proxy() {
+        let html = render_for_file(
+            "![img](/assets/2026/04/foo-abc.png)",
+            "concepts/foo.md",
+            &test_cfg(),
+        );
+        assert!(
+            html.contains(r#"src="/assets/2026/04/foo-abc.png""#),
+            "got: {html}"
+        );
     }
 }

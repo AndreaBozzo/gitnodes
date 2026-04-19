@@ -108,7 +108,8 @@ async fn main() {
         let needs_auth = path == "/knowledge"
             || path.starts_with("/knowledge/")
             || path == "/admin"
-            || path.starts_with("/admin/");
+            || path.starts_with("/admin/")
+            || path.starts_with("/assets/");
         if needs_auth && !auth::is_authenticated(&session).await {
             Redirect::to("/").into_response()
         } else {
@@ -118,7 +119,20 @@ async fn main() {
 
     let options_for_ssr = leptos_options.clone();
 
+    // Private-repo asset proxy. Raw GitHub URLs would require the user's OAuth
+    // token on `<img>` requests, which the browser can't attach — so we serve
+    // bytes ourselves via the Contents API with the session's token.
+    let asset_router = Router::new()
+        .route(
+            "/{*path}",
+            axum::routing::get(brain_app::server::assets::serve_asset),
+        )
+        .with_state(brain_app::server::assets::AssetProxyState {
+            target: target_cfg.clone(),
+        });
+
     let app = Router::new()
+        .nest("/assets", asset_router)
         .route("/auth/login", axum::routing::get(auth::login))
         .route("/auth/logout", axum::routing::get(auth::logout))
         .route("/auth/callback", axum::routing::get(auth::oauth_callback))
