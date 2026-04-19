@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev curl perl make &&
 RUN rustup target add wasm32-unknown-unknown
 
 # Cache cargo-leptos install across builds
-RUN --mount=type=cache,id=s/brain-ui-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=s/brain-ui-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
+RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
     cargo install cargo-leptos --locked
 
 WORKDIR /app
@@ -35,9 +35,9 @@ RUN mkdir -p crates/brain-domain/src && echo '' > crates/brain-domain/src/lib.rs
 RUN mkdir -p crates/brain-graph/src && echo '' > crates/brain-graph/src/lib.rs
 RUN mkdir -p crates/brain-storage/src && echo '' > crates/brain-storage/src/lib.rs
 
-RUN --mount=type=cache,id=s/brain-ui-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=s/brain-ui-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=s/brain-ui-v2-/app/target,target=/app/target \
+RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/app/target,target=/app/target \
     cargo build --release -p brain-app --features ssr 2>/dev/null || true
 
 # Now copy real sources
@@ -46,9 +46,9 @@ COPY --from=css-builder /app/crates/brain-app/style/main.css ./crates/brain-app/
 
 RUN find crates -type f -name "*.rs" -exec touch {} +
 
-RUN --mount=type=cache,id=s/brain-ui-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=s/brain-ui-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=s/brain-ui-v2-/app/target,target=/app/target \
+RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/app/target,target=/app/target \
     cargo leptos build --release -p brain-app && \
     cp target/release/brain-app /app/brain_ui_bin && \
     cp -r target/site /app/site_out
