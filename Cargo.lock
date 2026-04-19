@@ -207,6 +207,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-app"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "base64",
+ "brain-auth",
+ "brain-domain",
+ "brain-graph",
+ "brain-storage",
+ "console_error_panic_hook",
+ "dotenvy",
+ "http",
+ "leptos",
+ "leptos_axum",
+ "leptos_meta",
+ "leptos_router",
+ "pulldown-cmark",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tower-sessions",
+ "tower-sessions-sqlx-store",
+ "tracing",
+ "tracing-subscriber",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "brain-auth"
 version = "0.1.0"
 dependencies = [
@@ -242,43 +277,9 @@ dependencies = [
  "brain-graph",
  "reqwest",
  "serde",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "brain_ui"
-version = "0.2.0"
-dependencies = [
- "axum",
- "base64",
- "brain-auth",
- "brain-domain",
- "brain-graph",
- "brain-storage",
- "console_error_panic_hook",
- "dotenvy",
- "http",
- "leptos",
- "leptos_axum",
- "leptos_meta",
- "leptos_router",
- "pulldown-cmark",
- "rand 0.8.6",
- "reqwest",
- "serde",
  "serde_json",
- "sqlx",
- "time",
  "tokio",
- "tower",
- "tower-http",
- "tower-sessions",
- "tower-sessions-sqlx-store",
  "tracing",
- "tracing-subscriber",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

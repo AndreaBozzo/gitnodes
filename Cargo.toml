@@ -1,76 +1,6 @@
 [workspace]
-members = [".", "crates/*"]
-
-[package]
-name = "brain_ui"
-version = "0.2.0"
-edition = "2024"
-publish = false
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-leptos = { version = "0.8" }
-leptos_meta = { version = "0.8" }
-leptos_router = { version = "0.8" }
-axum = { version = "0.8", optional = true }
-leptos_axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
-console_error_panic_hook = { version = "0.1", optional = true }
-wasm-bindgen = { version = "0.2", optional = true }
-serde = { version = "1", features = ["derive"] }
-tower = { version = "0.5", optional = true }
-tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
-http = { version = "1", optional = true }
-base64 = { version = "0.22", optional = true }
-dotenvy = { version = "0.15", optional = true }
-tower-sessions = { version = "0.14", optional = true }
-tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"], optional = true }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"], optional = true }
-time = { version = "0.3", optional = true }
-reqwest = { version = "0.12", features = ["json"], optional = true }
-serde_json = { version = "1", optional = true }
-rand = { version = "0.8", optional = true }
-tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
-brain-domain = { path = "crates/brain-domain" }
-brain-graph = { path = "crates/brain-graph" }
-brain-storage = { path = "crates/brain-storage", optional = true }
-brain-auth = { path = "crates/brain-auth", optional = true }
-web-sys = { version = "0.3", features = ["Window", "Location"] }
-
-[features]
-hydrate = [
-    "leptos/hydrate",
-    "dep:console_error_panic_hook",
-    "dep:wasm-bindgen",
-]
-ssr = [
-    "dep:axum",
-    "dep:tokio",
-    "dep:leptos_axum",
-    "dep:tower",
-    "dep:tower-http",
-    "dep:http",
-    "dep:base64",
-    "dep:dotenvy",
-    "dep:tower-sessions",
-    "dep:tower-sessions-sqlx-store",
-    "dep:sqlx",
-    "dep:time",
-    "dep:reqwest",
-    "dep:serde_json",
-    "dep:rand",
-    "dep:tracing",
-    "dep:tracing-subscriber",
-    "dep:brain-storage",
-    "dep:brain-auth",
-    "leptos/ssr",
-    "leptos_meta/ssr",
-    "leptos_router/ssr",
-]
+members = ["crates/*"]
+resolver = "2"
 
 [profile.release]
 opt-level = "z"
@@ -84,18 +14,3 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
-
-[package.metadata.leptos]
-output-name = "brain_ui"
-site-root = "target/site"
-site-pkg-dir = "pkg"
-style-file = "style/main.css"
-assets-dir = "public"
-site-addr = "127.0.0.1:3000"
-reload-port = 3001
-env = "DEV"
-bin-features = ["ssr"]
-bin-default-features = false
-lib-features = ["hydrate"]
-lib-default-features = false
-lib-profile-release = "wasm-release"

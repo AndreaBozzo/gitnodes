@@ -4,8 +4,8 @@
   "version": "0.2.0",
   "description": "Build-time Tailwind pipeline for brain_ui. Runtime is pure Rust.",
   "scripts": {
-    "build:css": "tailwindcss -i style/tailwind.css -o style/main.css --minify",
-    "watch:css": "tailwindcss -i style/tailwind.css -o style/main.css --watch"
+    "build:css": "tailwindcss -i crates/brain-app/style/tailwind.css -o crates/brain-app/style/main.css --minify",
+    "watch:css": "tailwindcss -i crates/brain-app/style/tailwind.css -o crates/brain-app/style/main.css --watch"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.15",

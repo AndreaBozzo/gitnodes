@@ -10,8 +10,8 @@ async fn main() {
         middleware::{self, Next},
         response::{IntoResponse, Redirect, Response},
     };
-    use brain_ui::app::*;
-    use brain_ui::server::auth;
+    use brain_app::app::*;
+    use brain_app::server::auth;
     use leptos::prelude::*;
     use leptos_axum::{LeptosRoutes, generate_route_list};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -27,7 +27,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "brain_ui=info,warn".into()),
+                .unwrap_or_else(|_| "brain_app=info,warn".into()),
         )
         .init();
 
@@ -53,10 +53,10 @@ async fn main() {
         .migrate()
         .await
         .expect("session store migration");
-    brain_ui::server::audit::migrate(&pool)
+    brain_app::server::audit::migrate(&pool)
         .await
         .expect("audit table migration");
-    brain_ui::server::audit::init(pool.clone());
+    brain_app::server::audit::init(pool.clone());
     // OAuth callback is a cross-site redirect back from github.com, so the session
     // cookie must be SameSite=Lax (Strict would drop it and kill CSRF state check).
     // Secure=false allows http://127.0.0.1 in dev; set SESSION_COOKIE_SECURE=1 in prod.
@@ -133,7 +133,7 @@ async fn main() {
         .layer(session_layer)
         .with_state(leptos_options);
 
-    tracing::info!(%addr, "brain_ui listening");
+    tracing::info!(%addr, "brain_app listening");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app.into_make_service())
         .await

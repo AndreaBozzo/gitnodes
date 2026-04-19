@@ -17,11 +17,11 @@ css:
 
 # Full dev loop: assumes `just css-watch` is running in another terminal.
 dev:
-    cargo leptos watch
+    cargo leptos watch -p brain-app
 
 # Release build (SSR binary + hydrate WASM).
 build:
-    cargo leptos build --release
+    cargo leptos build --release -p brain-app
 
 # Checks — same set CI runs.
 fmt:
@@ -31,11 +31,13 @@ fmt-fix:
     cargo fmt --all
 
 lint:
-    cargo clippy --no-default-features --features ssr -- -D warnings
-    cargo clippy --no-default-features --features hydrate --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy -p brain-app --no-default-features --features ssr -- -D warnings
+    cargo clippy -p brain-app --no-default-features --features hydrate --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy --workspace --exclude brain-app -- -D warnings
 
 test:
-    cargo test --no-default-features --features ssr
+    cargo test -p brain-app --no-default-features --features ssr
+    cargo test --workspace --exclude brain-app
 
 check: fmt lint test
 

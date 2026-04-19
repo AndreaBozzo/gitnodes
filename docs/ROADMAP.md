@@ -19,8 +19,8 @@ Three-phase cleanup before adding new features. See plan in repo/PR history.
   - [x] `BrainError` wired through server fns via a single `sfe()` adapter at the edge. Internal code returns typed `Result<T, BrainError>`.
   - [x] Unit tests for parsing / graph build / layout (pure crates, 22 total)
   - [x] Octocrab dep removed — all 5 server fns rewritten to bare reqwest. Build-time & binary-size win.
-  - [ ] **Deferred — no `Storage` trait yet.** `brain-storage` exposes concrete functions tied to reqwest + the Brain repo. A trait (with an in-memory impl for tests) is only worth it once we have a second backend or want to exercise `api.rs` write paths in tests. Revisit when either lands.
-  - [ ] **Deferred — `brain-app` extraction.** Moving `src/` under `crates/brain-app/` means retargeting `[package.metadata.leptos]`, the Dockerfile builder stage, and `cargo leptos watch` paths. High churn for no architectural win today since the root package is the sole top-level bin; do it only when we need a second binary (CLI, migration tool) sharing the app crate.
+  - [x] **`Storage` trait extracted.** `brain-storage` exposes a trait with `GithubStorage` and `InMemoryStorage` implementations, and `api.rs` no longer does raw reqwest calls.
+  - [x] **`brain-app` extracted.** Moved `src/` under `crates/brain-app/` and retargeted `[package.metadata.leptos]`, Dockerfile builder stage, and `justfile` paths. The workspace root is now purely virtual.
 - **Phase 3 — UI consolidation** (done)
   - [x] Shared `<TagBadge>` / `<RemovableBadge>` component in `knowledge/components.rs` — used by `detail_panel.rs`, `detail_bar.rs`, `editor.rs`
   - [x] Accent color via CSS custom properties (`--accent-concept`, etc.) + `NodeType::accent_var()` method (SVG fills still use raw hex)

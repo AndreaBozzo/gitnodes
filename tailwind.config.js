@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ["./src/**/*.rs"],
+  content: ["./crates/brain-app/src/**/*.rs"],
   theme: {
     extend: {
       typography: ({ theme }) => ({

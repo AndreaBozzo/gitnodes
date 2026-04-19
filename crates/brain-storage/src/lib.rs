@@ -1,3 +1,4 @@
+#![allow(async_fn_in_trait)]
 //! I/O layer for the Brain GitHub repo.
 //!
 //! Owns:
@@ -20,14 +21,60 @@ use serde::Deserialize;
 pub const OWNER: &str = "Dritara-Digital";
 pub const REPO: &str = "Brain";
 
-/// `https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}`
+pub trait Storage: Send + Sync {
+    async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError>;
+    async fn load_graph(&self, token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError>;
+    async fn read_file(&self, token: &str, path: &str) -> Result<(String, String), BrainError>;
+    #[allow(clippy::too_many_arguments)]
+    async fn save_file(
+        &self,
+        token: &str,
+        path: &str,
+        content: &str,
+        sha: Option<&str>,
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<String, BrainError>;
+    async fn delete_file(
+        &self,
+        token: &str,
+        path: &str,
+        sha: &str,
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<(), BrainError>;
+    async fn create_folder(
+        &self,
+        token: &str,
+        folder_path: &str,
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<String, BrainError>;
+    async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError>;
+    fn invalidate_cache(&self);
+}
+
+pub struct GithubStorage;
+
+impl GithubStorage {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for GithubStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn contents_url(path: &str) -> String {
     format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}")
 }
 
-/// In-memory TTL cache for the full graph. The repo contents are identical for
-/// every authed org member, so a process-wide cache is safe — no need to key
-/// by user. Kept short (30s) so edits made outside the UI still surface quickly.
 const CACHE_TTL: Duration = Duration::from_secs(30);
 
 struct CacheEntry {
@@ -71,8 +118,6 @@ fn template_cache_store(filename: &str, body: &str) {
     }
 }
 
-/// Drop any cached graph. Call after a successful write (save/delete) so the
-/// next `load_graph` picks up the change immediately instead of waiting for TTL.
 pub fn invalidate() {
     if let Ok(mut guard) = CACHE.lock() {
         *guard = None;
@@ -113,13 +158,18 @@ struct TreeEntry {
 }
 
 #[derive(Deserialize)]
-struct ContentResponse {
-    content: String,
-    sha: String,
+pub struct ContentResponse {
+    pub content: String,
+    pub sha: String,
 }
 
-/// Build a `reqwest::Client` with our user-agent set. Callers add
-/// `.bearer_auth(token)` per-request.
+#[derive(Deserialize)]
+pub struct GhDirEntry {
+    pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
 pub fn http_client() -> Result<reqwest::Client, BrainError> {
     reqwest::Client::builder()
         .user_agent("brain_ui")
@@ -127,126 +177,359 @@ pub fn http_client() -> Result<reqwest::Client, BrainError> {
         .map_err(|e| BrainError::Io(format!("http client: {e}")))
 }
 
-/// Fetch a template file from `templates/{filename}` in the Brain repo.
-/// Returns the raw markdown (frontmatter + body). Cached for 10 minutes.
-pub async fn load_template(token: &str, filename: &str) -> Result<String, BrainError> {
-    if let Some(hit) = template_cache_get(filename) {
-        return Ok(hit);
-    }
-    let client = http_client()?;
-    let url = format!(
-        "{}?ref=main",
-        contents_url(&format!("templates/{filename}"))
-    );
-    let body: ContentResponse = client
-        .get(&url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| BrainError::github(format!("template fetch: {e}")))?
-        .error_for_status()
-        .map_err(|e| BrainError::github(format!("template status: {e}")))?
-        .json()
-        .await
-        .map_err(|e| BrainError::github(format!("template parse: {e}")))?;
-    let cleaned: String = body
-        .content
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(cleaned)
-        .map_err(|e| BrainError::parse(format!("template b64: {e}")))?;
-    let text =
-        String::from_utf8(bytes).map_err(|e| BrainError::parse(format!("template utf8: {e}")))?;
-    template_cache_store(filename, &text);
-    Ok(text)
-}
-
-/// Load the full knowledge graph live from the Brain repo. Cached for 30s.
-pub async fn load_graph(token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
-    if let Some(hit) = cache_get() {
-        return Ok(hit);
-    }
-
-    let client = http_client()?;
-
-    // 1. One recursive tree call — all paths + blob SHAs in a single request.
-    let tree_url =
-        format!("https://api.github.com/repos/{OWNER}/{REPO}/git/trees/main?recursive=1");
-    let tree: TreeResponse = client
-        .get(&tree_url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| BrainError::github(format!("tree fetch: {e}")))?
-        .error_for_status()
-        .map_err(|e| BrainError::github(format!("tree status: {e}")))?
-        .json()
-        .await
-        .map_err(|e| BrainError::github(format!("tree parse: {e}")))?;
-
-    // 2. Filter to the set of markdown files brain-graph cares about.
-    let mut candidates: Vec<String> = tree
-        .tree
-        .into_iter()
-        .filter(|e| e.kind == "blob")
-        .filter(|e| is_included_md(&e.path))
-        .map(|e| e.path)
-        .collect();
-    candidates.sort();
-
-    // 3. Fetch each file's content. Transient failures are logged and skipped.
-    let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
-    for path in &candidates {
-        let url = format!("{}?ref=main", contents_url(path));
-        let resp = match client.get(&url).bearer_auth(token).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(path, error = %e, "content fetch failed");
-                continue;
-            }
-        };
-        let status = resp.status();
-        if !status.is_success() {
-            tracing::warn!(path, %status, "content fetch non-success");
-            continue;
+impl Storage for GithubStorage {
+    async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError> {
+        if let Some(hit) = template_cache_get(filename) {
+            return Ok(hit);
         }
-        let body: ContentResponse = match resp.json().await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(path, error = %e, "content parse failed");
-                continue;
-            }
-        };
+        let client = http_client()?;
+        let url = format!(
+            "{}?ref=main",
+            contents_url(&format!("templates/{filename}"))
+        );
+        let body: ContentResponse = client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("template fetch: {e}")))?
+            .error_for_status()
+            .map_err(|e| BrainError::github(format!("template status: {e}")))?
+            .json()
+            .await
+            .map_err(|e| BrainError::github(format!("template parse: {e}")))?;
         let cleaned: String = body
             .content
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(path, error = %e, "base64 decode failed");
-                continue;
-            }
-        };
-        let text = match String::from_utf8(bytes) {
-            Ok(t) => t,
-            Err(_) => {
-                tracing::warn!(path, "non-utf8 content, skipping");
-                continue;
-            }
-        };
-        files.push(RawFile {
-            path: path.clone(),
-            sha: body.sha,
-            content: text,
-        });
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(cleaned)
+            .map_err(|e| BrainError::parse(format!("template b64: {e}")))?;
+        let text = String::from_utf8(bytes)
+            .map_err(|e| BrainError::parse(format!("template utf8: {e}")))?;
+        template_cache_store(filename, &text);
+        Ok(text)
     }
 
-    // 4. Delegate the pure parse/build/layout to brain-graph.
-    let (nodes, edges) = build_graph(&files);
-    cache_store(&nodes, &edges);
-    Ok((nodes, edges))
+    async fn load_graph(&self, token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
+        if let Some(hit) = cache_get() {
+            return Ok(hit);
+        }
+        let client = http_client()?;
+        let tree_url =
+            format!("https://api.github.com/repos/{OWNER}/{REPO}/git/trees/main?recursive=1");
+        let tree: TreeResponse = client
+            .get(&tree_url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("tree fetch: {e}")))?
+            .error_for_status()
+            .map_err(|e| BrainError::github(format!("tree status: {e}")))?
+            .json()
+            .await
+            .map_err(|e| BrainError::github(format!("tree parse: {e}")))?;
+
+        let mut candidates: Vec<String> = tree
+            .tree
+            .into_iter()
+            .filter(|e| e.kind == "blob")
+            .filter(|e| is_included_md(&e.path))
+            .map(|e| e.path)
+            .collect();
+        candidates.sort();
+
+        let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
+        for path in &candidates {
+            let url = format!("{}?ref=main", contents_url(path));
+            let resp = match client.get(&url).bearer_auth(token).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(path, error = %e, "content fetch failed");
+                    continue;
+                }
+            };
+            let status = resp.status();
+            if !status.is_success() {
+                tracing::warn!(path, %status, "content fetch non-success");
+                continue;
+            }
+            let body: ContentResponse = match resp.json().await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(path, error = %e, "content parse failed");
+                    continue;
+                }
+            };
+            let cleaned: String = body
+                .content
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(path, error = %e, "base64 decode failed");
+                    continue;
+                }
+            };
+            let text = match String::from_utf8(bytes) {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::warn!(path, "non-utf8 content, skipping");
+                    continue;
+                }
+            };
+            files.push(RawFile {
+                path: path.clone(),
+                sha: body.sha,
+                content: text,
+            });
+        }
+        let (nodes, edges) = build_graph(&files);
+        cache_store(&nodes, &edges);
+        Ok((nodes, edges))
+    }
+
+    async fn read_file(&self, token: &str, path: &str) -> Result<(String, String), BrainError> {
+        let client = http_client()?;
+        let url = format!("{}?ref=main", contents_url(path));
+        let resp: ContentResponse = client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("get_content: {e}")))?
+            .error_for_status()
+            .map_err(|e| BrainError::github(format!("content status: {e}")))?
+            .json()
+            .await
+            .map_err(|e| BrainError::github(format!("content parse: {e}")))?;
+
+        let cleaned: String = resp
+            .content
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(cleaned)
+            .map_err(|e| BrainError::parse(format!("b64: {e}")))?;
+        let text = String::from_utf8(bytes).map_err(|e| BrainError::parse(format!("utf8: {e}")))?;
+
+        Ok((text, resp.sha))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn save_file(
+        &self,
+        token: &str,
+        path: &str,
+        content: &str,
+        sha: Option<&str>,
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<String, BrainError> {
+        let client = http_client()?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
+
+        let mut body = serde_json::json!({
+            "message": message,
+            "content": encoded,
+            "branch": "main",
+            "committer": {
+                "name": author_name,
+                "email": author_email,
+            }
+        });
+
+        if let Some(s) = sha
+            && !s.is_empty()
+        {
+            body["sha"] = serde_json::json!(s);
+        }
+
+        let url = contents_url(path);
+        let response = client
+            .put(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("PUT: {e}")))?;
+
+        if response.status().is_success() {
+            invalidate();
+            Ok(path.to_string())
+        } else {
+            Err(BrainError::github(format!(
+                "API error {}",
+                response.status()
+            )))
+        }
+    }
+
+    async fn delete_file(
+        &self,
+        token: &str,
+        path: &str,
+        sha: &str,
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<(), BrainError> {
+        let client = http_client()?;
+        let body = serde_json::json!({
+            "message": message,
+            "sha": sha,
+            "branch": "main",
+            "committer": {
+                "name": author_name,
+                "email": author_email,
+            }
+        });
+
+        let url = contents_url(path);
+        let response = client
+            .delete(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("DELETE: {e}")))?;
+
+        if response.status().is_success() {
+            invalidate();
+            Ok(())
+        } else {
+            Err(BrainError::github(format!(
+                "API error {}",
+                response.status()
+            )))
+        }
+    }
+
+    async fn create_folder(
+        &self,
+        token: &str,
+        folder_path: &str,
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> Result<String, BrainError> {
+        let folder_title = folder_path.rsplit('/').next().unwrap_or(folder_path);
+        let readme_content = format!("# {folder_title}\n\n(Section created via Brain UI)\n");
+        let file_path = format!("{folder_path}/README.md");
+
+        self.save_file(
+            token,
+            &file_path,
+            &readme_content,
+            None,
+            message,
+            author_name,
+            author_email,
+        )
+        .await
+    }
+
+    async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError> {
+        let client = http_client()?;
+        let url = format!("{}?ref=main", contents_url(""));
+        let items: Vec<GhDirEntry> = client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("get_content: {e}")))?
+            .error_for_status()
+            .map_err(|e| BrainError::github(format!("content status: {e}")))?
+            .json()
+            .await
+            .map_err(|e| BrainError::github(format!("content parse: {e}")))?;
+
+        let folders: Vec<String> = items
+            .iter()
+            .filter(|item| item.kind == "dir")
+            .map(|item| item.path.clone())
+            .collect();
+
+        Ok(folders)
+    }
+
+    fn invalidate_cache(&self) {
+        invalidate();
+    }
+}
+
+pub struct InMemoryStorage;
+
+impl InMemoryStorage {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for InMemoryStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Storage for InMemoryStorage {
+    async fn load_template(&self, _token: &str, _filename: &str) -> Result<String, BrainError> {
+        Ok("".to_string())
+    }
+
+    async fn load_graph(&self, _token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
+        Ok((Vec::new(), Vec::new()))
+    }
+
+    async fn read_file(&self, _token: &str, _path: &str) -> Result<(String, String), BrainError> {
+        Ok(("".to_string(), "".to_string()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn save_file(
+        &self,
+        _token: &str,
+        path: &str,
+        _content: &str,
+        _sha: Option<&str>,
+        _message: &str,
+        _author_name: &str,
+        _author_email: &str,
+    ) -> Result<String, BrainError> {
+        Ok(path.to_string())
+    }
+
+    async fn delete_file(
+        &self,
+        _token: &str,
+        _path: &str,
+        _sha: &str,
+        _message: &str,
+        _author_name: &str,
+        _author_email: &str,
+    ) -> Result<(), BrainError> {
+        Ok(())
+    }
+
+    async fn create_folder(
+        &self,
+        _token: &str,
+        folder_path: &str,
+        _message: &str,
+        _author_name: &str,
+        _author_email: &str,
+    ) -> Result<String, BrainError> {
+        Ok(format!("{folder_path}/README.md"))
+    }
+
+    async fn list_folders(&self, _token: &str) -> Result<Vec<String>, BrainError> {
+        Ok(Vec::new())
+    }
+
+    fn invalidate_cache(&self) {}
 }

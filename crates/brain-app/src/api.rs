@@ -8,29 +8,9 @@ use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
 
-/// Convert domain errors to the stringly `ServerFnError` that Leptos speaks on
-/// the wire. Typed matching happens inside the server fn; the client sees a
-/// `Display` representation.
 #[cfg(feature = "ssr")]
 fn sfe(e: BrainError) -> ServerFnError {
     ServerFnError::new(e.to_string())
-}
-
-/// GitHub Contents API response for a single file.
-#[cfg(feature = "ssr")]
-#[derive(Deserialize)]
-struct GhFileContent {
-    sha: String,
-    content: String,
-}
-
-/// GitHub Contents API entry when listing a directory.
-#[cfg(feature = "ssr")]
-#[derive(Deserialize)]
-struct GhDirEntry {
-    path: String,
-    #[serde(rename = "type")]
-    kind: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,18 +78,15 @@ pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
     Ok(n)
 }
 
-/// Result of reading a file from the Brain repo.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BrainFile {
     pub path: String,
     pub sha: String,
     pub content: String,
-    /// Sanitized HTML rendered from the markdown body (frontmatter stripped).
     #[serde(default)]
     pub rendered_html: String,
 }
 
-/// Get the current user's GitHub login (or None if not logged in).
 #[server(GetCurrentUser, "/api")]
 pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     use crate::server::session;
@@ -117,82 +94,51 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     Ok(crate::server::auth::get_session_user(&s).await)
 }
 
-/// Fetch the template body for a given NodeType. Returns the markdown body
-/// (frontmatter stripped) so the editor can prefill the textarea with the scaffold.
 #[server(LoadBrainTemplate, "/api")]
 pub async fn load_brain_template(
     node_type: crate::knowledge::types::NodeType,
 ) -> Result<String, ServerFnError> {
     use crate::server::session;
+    use brain_storage::{GithubStorage, Storage};
     let Some(filename) = node_type.template_filename() else {
         return Ok(String::new());
     };
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let raw = crate::knowledge::runtime::load_template(&token, filename)
-        .await
-        .map_err(sfe)?;
+    let storage = GithubStorage::new();
+    let raw = storage.load_template(&token, filename).await.map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);
     Ok(body.trim_start_matches('\n').to_string())
 }
 
-/// Load the full knowledge graph (nodes + edges) live from the Brain repo.
-/// Runs on every `/knowledge` render — replaces the compile-time bake from `build.rs`.
 #[server(LoadBrainGraph, "/api")]
 pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
     use crate::server::session;
+    use brain_storage::{GithubStorage, Storage};
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    crate::knowledge::runtime::load_graph(&token)
-        .await
-        .map_err(sfe)
+    let storage = GithubStorage::new();
+    storage.load_graph(&token).await.map_err(sfe)
 }
 
-/// Read a single file from the Brain repo.
 #[server(ReadBrainFile, "/api")]
 pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     use crate::server::session;
-    use base64::Engine;
-    use brain_storage as github;
+    use brain_storage::{GithubStorage, Storage};
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let client = github::http_client().map_err(sfe)?;
+    let storage = GithubStorage::new();
+    let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
 
-    let url = format!("{}?ref=main", github::contents_url(&path));
-    let resp: GhFileContent = client
-        .get(&url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?
-        .error_for_status()
-        .map_err(|e| sfe(BrainError::github(format!("content status: {e}"))))?
-        .json()
-        .await
-        .map_err(|e| sfe(BrainError::github(format!("content parse: {e}"))))?;
-
-    let cleaned: String = resp
-        .content
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(cleaned)
-        .map_err(|e| sfe(BrainError::parse(format!("b64: {e}"))))?;
-    let decoded =
-        String::from_utf8(bytes).map_err(|e| sfe(BrainError::parse(format!("utf8: {e}"))))?;
-
-    let sha = resp.sha;
-    let (body, _fm) = crate::markdown::split_frontmatter(&decoded);
+    let (body, _fm) = crate::markdown::split_frontmatter(&content);
     let rendered_html = crate::markdown::render(body);
 
     Ok(BrainFile {
         path,
         sha,
-        content: decoded,
+        content,
         rendered_html,
     })
 }
 
-/// Create or update a file in the Brain repo.
 #[server(
     SaveBrainFile,
     "/api",
@@ -200,11 +146,10 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
 )]
 pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, ServerFnError> {
     use crate::server::session;
-    use brain_storage as github;
+    use brain_storage::{GithubStorage, Storage};
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let client = github::http_client().map_err(sfe)?;
 
     let markdown = format!(
         "{}\n{}",
@@ -231,110 +176,69 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         format!("Create {} via Brain UI", file_path)
     };
 
-    let encoded = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        markdown.as_bytes(),
-    );
+    let storage = GithubStorage::new();
+    let author_email = format!("{}@users.noreply.github.com", user);
 
-    let mut body = serde_json::json!({
-        "message": commit_msg,
-        "content": encoded,
-        "branch": "main",
-        "committer": {
-            "name": user,
-            "email": format!("{}@users.noreply.github.com", user),
-        }
-    });
-
-    if let Some(sha) = &payload.sha
-        && !sha.is_empty()
-    {
-        body["sha"] = serde_json::json!(sha);
-    }
-
-    let url = github::contents_url(&file_path);
-
-    let response = client
-        .put(&url)
-        .bearer_auth(&token)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| sfe(BrainError::github(format!("PUT: {e}"))))?;
-
-    if response.status().is_success() {
-        crate::knowledge::runtime::invalidate();
-        let kind = if payload.sha.is_some() {
-            "update"
-        } else {
-            "create"
-        };
-        crate::server::audit::log(kind, Some(&user), &file_path).await;
-        Ok(file_path)
-    } else {
-        let status = response.status();
-        crate::server::audit::log(
-            "api_error",
-            Some(&user),
-            &format!("save {file_path}: {status}"),
+    match storage
+        .save_file(
+            &token,
+            &file_path,
+            &markdown,
+            payload.sha.as_deref(),
+            &commit_msg,
+            &user,
+            &author_email,
         )
-        .await;
-        Err(sfe(BrainError::github(format!("API error {status}"))))
+        .await
+    {
+        Ok(path) => {
+            let kind = if payload.sha.is_some() {
+                "update"
+            } else {
+                "create"
+            };
+            crate::server::audit::log(kind, Some(&user), &file_path).await;
+            Ok(path)
+        }
+        Err(e) => {
+            crate::server::audit::log("api_error", Some(&user), &format!("save {file_path}: {e}"))
+                .await;
+            Err(sfe(e))
+        }
     }
 }
 
-/// Delete a file from the Brain repo.
 #[server(DeleteBrainFile, "/api")]
 pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFnError> {
     use crate::server::session;
-    use brain_storage as github;
+    use brain_storage::{GithubStorage, Storage};
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let client = github::http_client().map_err(sfe)?;
+    let author_email = format!("{}@users.noreply.github.com", user);
+    let commit_msg = format!("Delete {} via Brain UI", path);
 
-    let body = serde_json::json!({
-        "message": format!("Delete {} via Brain UI", path),
-        "sha": sha,
-        "branch": "main",
-        "committer": {
-            "name": user,
-            "email": format!("{}@users.noreply.github.com", user),
-        }
-    });
-
-    let url = github::contents_url(&path);
-
-    let response = client
-        .delete(&url)
-        .bearer_auth(&token)
-        .json(&body)
-        .send()
+    let storage = GithubStorage::new();
+    match storage
+        .delete_file(&token, &path, &sha, &commit_msg, &user, &author_email)
         .await
-        .map_err(|e| sfe(BrainError::github(format!("DELETE: {e}"))))?;
-
-    if response.status().is_success() {
-        crate::knowledge::runtime::invalidate();
-        crate::server::audit::log("delete", Some(&user), &path).await;
-        Ok(())
-    } else {
-        let status = response.status();
-        crate::server::audit::log(
-            "api_error",
-            Some(&user),
-            &format!("delete {path}: {status}"),
-        )
-        .await;
-        Err(sfe(BrainError::github(format!("API error {status}"))))
+    {
+        Ok(_) => {
+            crate::server::audit::log("delete", Some(&user), &path).await;
+            Ok(())
+        }
+        Err(e) => {
+            crate::server::audit::log("api_error", Some(&user), &format!("delete {path}: {e}"))
+                .await;
+            Err(sfe(e))
+        }
     }
 }
 
-/// Create a folder (section) in the Brain repo.
-/// GitHub doesn't support empty directories; we create a README.md placeholder.
 #[server(CreateFolder, "/api")]
 pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError> {
     use crate::server::session;
-    use brain_storage as github;
+    use brain_storage::{GithubStorage, Storage};
 
     let sanitized = folder_path.trim().trim_matches('/');
     if sanitized.is_empty()
@@ -348,86 +252,40 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let client = github::http_client().map_err(sfe)?;
+    let commit_msg = format!("Create section {sanitized}/ via Brain UI");
+    let author_email = format!("{}@users.noreply.github.com", user);
 
-    let folder_title = sanitized.rsplit('/').next().unwrap_or(sanitized);
-
-    let readme_content = format!("# {folder_title}\n\n(Section created via Brain UI)\n");
-    let encoded = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        readme_content.as_bytes(),
-    );
-
-    let file_path = format!("{sanitized}/README.md");
-    let body = serde_json::json!({
-        "message": format!("Create section {sanitized}/ via Brain UI"),
-        "content": encoded,
-        "branch": "main",
-        "committer": {
-            "name": user,
-            "email": format!("{}@users.noreply.github.com", user),
-        }
-    });
-
-    let url = github::contents_url(&file_path);
-
-    let response = client
-        .put(&url)
-        .bearer_auth(&token)
-        .json(&body)
-        .send()
+    let storage = GithubStorage::new();
+    match storage
+        .create_folder(&token, sanitized, &commit_msg, &user, &author_email)
         .await
-        .map_err(|e| sfe(BrainError::github(format!("PUT: {e}"))))?;
-
-    if response.status().is_success() {
-        crate::knowledge::runtime::invalidate();
-        crate::server::audit::log("create_folder", Some(&user), sanitized).await;
-        Ok(file_path)
-    } else {
-        let status = response.status();
-        crate::server::audit::log(
-            "api_error",
-            Some(&user),
-            &format!("create_folder {sanitized}: {status}"),
-        )
-        .await;
-        Err(sfe(BrainError::github(format!("API error {status}"))))
+    {
+        Ok(path) => {
+            crate::server::audit::log("create_folder", Some(&user), sanitized).await;
+            Ok(path)
+        }
+        Err(e) => {
+            crate::server::audit::log(
+                "api_error",
+                Some(&user),
+                &format!("create_folder {sanitized}: {e}"),
+            )
+            .await;
+            Err(sfe(e))
+        }
     }
 }
 
-/// List top-level directories in the Brain repo (for the folder picker).
 #[server(ListBrainFolders, "/api")]
 pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     use crate::server::session;
-    use brain_storage as github;
+    use brain_storage::{GithubStorage, Storage};
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let client = github::http_client().map_err(sfe)?;
-
-    let url = format!("{}?ref=main", github::contents_url(""));
-    let items: Vec<GhDirEntry> = client
-        .get(&url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?
-        .error_for_status()
-        .map_err(|e| sfe(BrainError::github(format!("content status: {e}"))))?
-        .json()
-        .await
-        .map_err(|e| sfe(BrainError::github(format!("content parse: {e}"))))?;
-
-    let folders: Vec<String> = items
-        .iter()
-        .filter(|item| item.kind == "dir")
-        .map(|item| item.path.clone())
-        .collect();
-
-    Ok(folders)
+    let storage = GithubStorage::new();
+    storage.list_folders(&token).await.map_err(sfe)
 }
 
-/// Generate just the YAML frontmatter block (including the trailing `---\n`).
-/// Each NodeType gets the frontmatter fields its template in the Brain repo uses.
 #[cfg(feature = "ssr")]
 fn generate_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
     let today = time::OffsetDateTime::now_utc();
