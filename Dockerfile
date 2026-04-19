@@ -44,6 +44,8 @@ RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/carg
 COPY . .
 COPY --from=css-builder /app/crates/brain-app/style/main.css ./crates/brain-app/style/main.css
 
+RUN find crates -type f -name "*.rs" -exec touch {} +
+
 RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/usr/local/cargo/git,target=/usr/local/cargo/git \
     --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-/app/target,target=/app/target \
