@@ -1,8 +1,9 @@
 use leptos::prelude::*;
 
 use super::components::RemovableBadge;
+use super::draft::{self, Draft};
 use super::types::{EditMode, NodeType};
-use crate::api::{get_current_user, load_brain_template};
+use crate::api::{AppConfig, get_current_user, load_brain_template};
 
 /// Smart editor form that enforces Brain templates programmatically.
 #[component]
@@ -108,6 +109,128 @@ pub fn EditorPanel(
         }
     });
 
+    // --- Auto-save drafts to localStorage -----------------------------------
+    // Key drafts by `<org>/<repo>:<path|new>` so drafts from a different
+    // deployment target don't collide and each edited file keeps its own draft.
+    let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
+    let repo_scope = Memo::new(move |_| {
+        app_config
+            .and_then(|r| r.get())
+            .and_then(|r| r.ok())
+            .map(|c| format!("{}/{}", c.target.org, c.target.repo))
+            .unwrap_or_default()
+    });
+    let draft_key = Memo::new(move |_| {
+        let scope = repo_scope.get();
+        if scope.is_empty() {
+            return None;
+        }
+        Some(draft::storage_key(&scope, edit_path.get().as_deref()))
+    });
+
+    let restore_banner = RwSignal::new(Option::<Draft>::None);
+
+    // Offer to restore once per editor session, gated on the draft_key being
+    // ready (i.e. config has loaded). Edit-mode drafts are discarded silently
+    // if the base_sha no longer matches — we don't want to revert someone
+    // else's commit when the user clicks Restore.
+    let restore_checked = RwSignal::new(false);
+    Effect::new(move |_| {
+        if restore_checked.get() {
+            return;
+        }
+        let Some(key) = draft_key.get() else {
+            return;
+        };
+        let Some(loaded) = draft::load(&key) else {
+            restore_checked.set(true);
+            return;
+        };
+        let current_sha = edit_sha.get_untracked();
+        let stale = match (&loaded.base_sha, &current_sha) {
+            (Some(draft_sha), Some(live_sha)) => draft_sha != live_sha,
+            (Some(_), None) => true, // draft is for an edit, but we're in New mode
+            _ => false,
+        };
+        if stale {
+            draft::clear(&key);
+        } else {
+            restore_banner.set(Some(loaded));
+        }
+        restore_checked.set(true);
+    });
+
+    // Debounced write: 2s after the user stops typing, persist the form state.
+    // `Timeout` isn't Send/Sync — use the local-storage variant so dropping
+    // the previous handle cancels the pending timer.
+    #[cfg(feature = "hydrate")]
+    let debounce_handle: StoredValue<
+        Option<gloo_timers::callback::Timeout>,
+        leptos::prelude::LocalStorage,
+    > = StoredValue::new_local(None);
+    Effect::new(move |_| {
+        // Subscribe to everything the user can edit.
+        let nt = node_type.get();
+        let t = title.get();
+        let a = author.get();
+        let tg = tags.get();
+        let b = body.get();
+        let r = selected_related.get();
+        let Some(key) = draft_key.get() else {
+            return;
+        };
+        // Don't persist an empty, unmodified form — avoids writing a blank
+        // draft on every mount just from default signal reads.
+        if t.is_empty() && b.is_empty() && tg.is_empty() && r.is_empty() {
+            return;
+        }
+        let base_sha = edit_sha.get_untracked();
+
+        #[cfg(feature = "hydrate")]
+        {
+            let draft = Draft {
+                node_type: nt,
+                title: t,
+                author: a,
+                tags: tg,
+                body: b,
+                related: r,
+                saved_at: draft::now_secs(),
+                base_sha,
+            };
+            let key_for_timeout = key.clone();
+            let new_handle = gloo_timers::callback::Timeout::new(2_000, move || {
+                draft::save(&key_for_timeout, &draft);
+            });
+            debounce_handle.set_value(Some(new_handle));
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = (nt, a, base_sha, key);
+        }
+    });
+
+    let restore_draft = move || {
+        let Some(d) = restore_banner.get_untracked() else {
+            return;
+        };
+        node_type.set(d.node_type);
+        title.set(d.title);
+        if !d.author.is_empty() {
+            author.set(d.author);
+        }
+        tags.set(d.tags);
+        body.set(d.body);
+        selected_related.set(d.related);
+        restore_banner.set(None);
+    };
+    let discard_draft = move || {
+        if let Some(key) = draft_key.get_untracked() {
+            draft::clear(&key);
+        }
+        restore_banner.set(None);
+    };
+
     let node_titles_stored = StoredValue::new(node_titles);
     let all_tags_stored = StoredValue::new(all_tags);
 
@@ -134,6 +257,7 @@ pub fn EditorPanel(
         #[cfg(not(feature = "ssr"))]
         {
             use crate::api::save_brain_file;
+            let draft_key_snapshot = draft_key.get_untracked();
             leptos::task::spawn_local(async move {
                 match save_brain_file(_payload).await {
                     Ok(path) => {
@@ -143,6 +267,9 @@ pub fn EditorPanel(
                             format!("Created: {path}")
                         });
                         saving.set(false);
+                        if let Some(key) = draft_key_snapshot {
+                            draft::clear(&key);
+                        }
                         graph_version.update(|v| *v += 1);
                     }
                     Err(e) => {
@@ -175,6 +302,41 @@ pub fn EditorPanel(
                 <div class="text-[10px] text-slate-500 -mt-1 mb-1">
                     {move || edit_path.get().unwrap_or_default()}
                 </div>
+            </Show>
+
+            <Show when=move || restore_banner.with(|b| b.is_some())>
+                {
+                    let restore = restore_draft;
+                    let discard = discard_draft;
+                    view! {
+                        <div class="px-3 py-2 rounded-md bg-amber-500/10 border border-amber-400/40 text-amber-100 text-xs space-y-2">
+                            <div>
+                                {move || {
+                                    let when = restore_banner
+                                        .with(|b| b.as_ref().map(|d| d.saved_at).unwrap_or(0));
+                                    format!(
+                                        "Unsaved draft found — saved {}.",
+                                        draft::relative_time(when, draft::now_secs())
+                                    )
+                                }}
+                            </div>
+                            <div class="flex gap-2">
+                                <button
+                                    class="px-3 py-1 rounded bg-amber-400/30 border border-amber-300/50 text-amber-50 hover:bg-amber-400/50 transition-colors"
+                                    on:click=move |_| restore()
+                                >
+                                    "Restore"
+                                </button>
+                                <button
+                                    class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors"
+                                    on:click=move |_| discard()
+                                >
+                                    "Discard"
+                                </button>
+                            </div>
+                        </div>
+                    }
+                }
             </Show>
 
             <FrontmatterFields node_type=node_type title=title author=author />

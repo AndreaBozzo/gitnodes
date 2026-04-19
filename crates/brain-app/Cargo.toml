@@ -27,7 +27,7 @@ tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"], optional 
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"], optional = true }
 time = { version = "0.3", optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
-serde_json = { version = "1", optional = true }
+serde_json = { version = "1" }
 rand = { version = "0.8", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
@@ -36,14 +36,18 @@ brain-domain = { path = "../brain-domain" }
 brain-graph = { path = "../brain-graph" }
 brain-storage = { path = "../brain-storage", optional = true }
 brain-auth = { path = "../brain-auth", optional = true }
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
 getrandom = { version = "0.2", features = ["js"] }
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+js-sys = { version = "0.3", optional = true }
 
 [features]
 hydrate = [
     "leptos/hydrate",
     "dep:console_error_panic_hook",
     "dep:wasm-bindgen",
+    "dep:gloo-timers",
+    "dep:js-sys",
 ]
 ssr = [
     "dep:axum",
@@ -59,7 +63,6 @@ ssr = [
     "dep:sqlx",
     "dep:time",
     "dep:reqwest",
-    "dep:serde_json",
     "dep:rand",
     "dep:tracing",
     "dep:tracing-subscriber",

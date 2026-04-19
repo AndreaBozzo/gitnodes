@@ -1,6 +1,7 @@
 pub mod components;
 mod detail_bar;
 mod detail_panel;
+pub(crate) mod draft;
 mod editor;
 mod filter_panel;
 mod graph_canvas;
