@@ -138,7 +138,7 @@ pub fn DetailPanel(
                 };
                 view! {
                     <aside class="w-[520px] shrink-0 border-l border-slate-800 bg-slate-950 flex flex-col min-h-0">
-                        <div class="px-6 py-4 border-b border-slate-800 flex items-start gap-3">
+                        <div class="p-6 border-b border-slate-800 flex items-start gap-3">
                             <div
                                 class="w-2 h-2 rounded-full mt-2 shrink-0"
                                 style=format!("background:{}", accent)
@@ -173,7 +173,7 @@ pub fn DetailPanel(
                                     let path_for_edit = path.clone();
                                     view! {
                                         <button
-                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/40 text-teal-200 hover:bg-teal-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/40 text-teal-200 hover:bg-teal-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:opacity-40 disabled:cursor-not-allowed"
                                             aria-label="Edit"
                                             disabled=move || loaded_file().is_none()
                                             on:click=move |_| {
@@ -195,7 +195,7 @@ pub fn DetailPanel(
                                     let path_for_rename = path.clone();
                                     view! {
                                         <button
-                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-slate-600 text-slate-300 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-slate-600 text-slate-300 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 disabled:opacity-40 disabled:cursor-not-allowed"
                                             aria-label="Rename"
                                             disabled=move || renaming.get() || loaded_sha().is_none() || rename_input.with(|r| r.is_some())
                                             on:click=move |_| {
@@ -211,7 +211,7 @@ pub fn DetailPanel(
                                 {
                                     view! {
                                         <button
-                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-rose-500 disabled:opacity-40 disabled:cursor-not-allowed"
                                             aria-label="Delete"
                                             disabled=move || deleting.get() || loaded_sha().is_none() || delete_prompt.with(|p| p.is_some())
                                             on:click=move |_| request_delete()
@@ -221,7 +221,7 @@ pub fn DetailPanel(
                                     }
                                 }
                                 <button
-                                    class="text-slate-500 hover:text-slate-200 text-lg leading-none"
+                                    class="text-slate-500 hover:text-slate-200 text-lg leading-none transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 rounded px-1"
                                     aria-label="Close"
                                     on:click=move |_| selected.set(None)
                                 >
@@ -253,7 +253,7 @@ pub fn DetailPanel(
                                                 let old_for_btn = old_path.clone();
                                                 view! {
                                                     <button
-                                                        class="px-3 py-1 rounded bg-teal-500/30 border border-teal-400/50 text-teal-50 hover:bg-teal-500/50 transition-colors disabled:opacity-40"
+                                                        class="px-3 py-1 rounded bg-teal-500/30 border border-teal-400/50 text-teal-50 hover:bg-teal-500/50 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:opacity-40"
                                                         disabled=move || renaming.get() || loaded_sha().is_none()
                                                         on:click=move |_| {
                                                             let Some(target) = rename_input.get_untracked() else {
@@ -304,7 +304,7 @@ pub fn DetailPanel(
                                                 }
                                             }
                                             <button
-                                                class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors"
+                                                class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
                                                 disabled=move || renaming.get()
                                                 on:click=move |_| {
                                                     rename_input.set(None);
@@ -372,7 +372,7 @@ pub fn DetailPanel(
                                                 let path_for_btn = path_for_confirm.clone();
                                                 view! {
                                                     <button
-                                                        class="px-3 py-1 rounded bg-rose-500/30 border border-rose-400/50 text-rose-50 hover:bg-rose-500/50 transition-colors disabled:opacity-40"
+                                                        class="px-3 py-1 rounded bg-rose-500/30 border border-rose-400/50 text-rose-50 hover:bg-rose-500/50 transition-colors focus:outline-none focus:ring-1 focus:ring-rose-500 disabled:opacity-40"
                                                         disabled=move || loaded_sha().is_none()
                                                         on:click=move |_| {
                                                             if let Some(sha) = loaded_sha() {
@@ -385,7 +385,7 @@ pub fn DetailPanel(
                                                 }
                                             }
                                             <button
-                                                class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors"
+                                                class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
                                                 on:click=move |_| cancel_delete()
                                             >
                                                 "Cancel"
@@ -395,7 +395,7 @@ pub fn DetailPanel(
                                 }
                             }
                         </Show>
-                        <div class="flex-1 overflow-y-auto px-6 py-5">
+                        <div class="flex-1 overflow-y-auto p-6">
                             <Suspense fallback=move || view! {
                                 <div class="text-slate-500 text-xs">"Loading document…"</div>
                             }>
@@ -413,7 +413,7 @@ pub fn DetailPanel(
                                     }.into_any(),
                                     Some(Ok(Some(bf))) => view! {
                                         <article
-                                            class="prose prose-invert prose-sm max-w-none"
+                                            class="prose prose-invert max-w-prose"
                                             inner_html=bf.rendered_html
                                         ></article>
                                     }.into_any(),

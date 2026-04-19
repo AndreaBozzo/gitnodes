@@ -292,7 +292,7 @@ pub fn EditorPanel(
                     {move || if is_edit.get() { "Edit Document" } else { "New Document" }}
                 </h2>
                 <button
-                    class="text-slate-500 hover:text-slate-200 text-xs"
+                    class="text-slate-500 hover:text-slate-200 text-xs transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 rounded px-1"
                     on:click=move |_| edit_mode.set(EditMode::Closed)
                 >
                     "Cancel"
@@ -322,13 +322,13 @@ pub fn EditorPanel(
                             </div>
                             <div class="flex gap-2">
                                 <button
-                                    class="px-3 py-1 rounded bg-amber-400/30 border border-amber-300/50 text-amber-50 hover:bg-amber-400/50 transition-colors"
+                                    class="px-3 py-1 rounded bg-amber-400/30 border border-amber-300/50 text-amber-50 hover:bg-amber-400/50 transition-colors focus:outline-none focus:ring-1 focus:ring-amber-500"
                                     on:click=move |_| restore()
                                 >
                                     "Restore"
                                 </button>
                                 <button
-                                    class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors"
+                                    class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
                                     on:click=move |_| discard()
                                 >
                                     "Discard"
@@ -346,7 +346,7 @@ pub fn EditorPanel(
 
             <div class="pt-2 border-t border-slate-800">
                 <button
-                    class="w-full px-4 py-2 rounded-md bg-teal-500 text-slate-950 text-sm font-semibold hover:bg-teal-400 transition-colors disabled:opacity-50"
+                    class="w-full px-4 py-2 rounded-md bg-teal-500 text-slate-950 text-sm font-semibold hover:bg-teal-400 transition-colors focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50"
                     disabled=move || saving.get() || title.with(|t| t.is_empty())
                     on:click=on_submit
                 >
@@ -388,7 +388,7 @@ fn FrontmatterFields(
                     let is_active = Memo::new(move |_| node_type.get() == t);
                     view! {
                         <button
-                            class="px-3 py-1 rounded-full text-xs border transition-colors flex items-center gap-2"
+                            class="px-3 py-1 rounded-full text-xs border transition-colors flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-slate-500"
                             class=("bg-slate-100", move || is_active.get())
                             class=("text-slate-900", move || is_active.get())
                             class=("border-slate-100", move || is_active.get())
@@ -501,7 +501,7 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
                     let t_click = t.clone();
                     view! {
                         <button
-                            class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 hover:text-teal-200 hover:border-teal-400/40 transition-colors"
+                            class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 hover:text-teal-200 hover:border-teal-400/40 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
                             on:click=move |_| add_tag(t_click.clone())
                         >
                             {"+ #"}{t}
@@ -536,7 +536,7 @@ fn MarkdownPreview(node_type: Signal<NodeType>, body: RwSignal<String>) -> impl 
                     }}
                 </label>
                 <button
-                    class="text-[10px] uppercase tracking-widest text-slate-400 hover:text-teal-300 transition-colors"
+                    class="text-[10px] uppercase tracking-widest text-slate-400 hover:text-teal-300 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 rounded px-1"
                     on:click=move |_| show_preview.update(|v| *v = !*v)
                 >
                     {move || if show_preview.get() { "Edit" } else { "Preview" }}
@@ -580,7 +580,7 @@ fn MarkdownPreview(node_type: Signal<NodeType>, body: RwSignal<String>) -> impl 
                         } else {
                             view! {
                                 <article
-                                    class="prose prose-invert prose-sm max-w-none"
+                                    class="prose prose-invert max-w-prose"
                                     inner_html=preview_html.get()
                                 ></article>
                             }.into_any()
@@ -703,7 +703,7 @@ fn RelatedLinksPicker(
                         });
                         view! {
                             <button
-                                class="w-full text-left px-2 py-1 rounded text-xs hover:bg-slate-700 transition-colors"
+                                class="w-full text-left px-2 py-1 rounded text-xs hover:bg-slate-700 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
                                 class=("text-teal-300", move || already.get())
                                 class=("bg-slate-700/50", move || already.get())
                                 class=("text-slate-300", move || !already.get())

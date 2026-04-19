@@ -56,13 +56,13 @@ pub fn GraphCanvas(
                             None => false,
                         };
                         let opacity = if f.is_none() {
-                            0.28
+                            0.50
                         } else if touches {
                             0.95
                         } else {
                             0.05
                         };
-                        let stroke = if touches { "#5eead4" } else { "#94a3b8" };
+                        let stroke = if touches { "#5eead4" } else { "#334155" };
                         let width = if touches { "0.35" } else { "0.18" };
                         view! {
                             <path
@@ -110,7 +110,7 @@ pub fn GraphCanvas(
 
                     let label_size = if is_tag { 1.1 } else { 1.55 };
                     let label_offset = base_r + 2.4;
-                    let label_fill = if is_tag { "#94a3b8" } else { "#cbd5e1" };
+                    let label_fill = if is_tag { "#cbd5e1" } else { "#e2e8f0" };
 
                     view! {
                         <g

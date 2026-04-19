@@ -24,7 +24,7 @@ pub fn FilterPanel(
             };
             view! {
                 <button
-                    class="px-3 py-1 rounded-full text-xs border transition-colors flex items-center gap-2"
+                    class="px-3 py-1 rounded-full text-xs border transition-colors flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-slate-500"
                     class=("bg-slate-100", move || is_on.get())
                     class=("text-slate-900", move || is_on.get())
                     class=("border-slate-100", move || is_on.get())
@@ -56,7 +56,7 @@ pub fn FilterPanel(
             };
             view! {
                 <button
-                    class="px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors"
+                    class="px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
                     class=("bg-teal-400/20", move || is_on.get())
                     class=("text-teal-200", move || is_on.get())
                     class=("border-teal-400/60", move || is_on.get())
@@ -134,7 +134,7 @@ pub fn FilterPanel(
             // --- New Folder / Section ---
             <section class="pt-4 border-t border-slate-800">
                 <button
-                    class="w-full text-left text-[10px] font-semibold tracking-widest uppercase text-teal-400 hover:text-teal-300 transition-colors mb-2"
+                    class="w-full text-left text-[10px] font-semibold tracking-widest uppercase text-teal-400 hover:text-teal-300 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500 rounded px-1 mb-2"
                     on:click=move |_| show_folder_form.update(|v| *v = !*v)
                 >
                     {move || if show_folder_form.get() { "▾ New Section" } else { "▸ New Section" }}
@@ -156,7 +156,7 @@ pub fn FilterPanel(
                             on:input=move |ev| folder_name.set(event_target_value(&ev))
                         />
                         <button
-                            class="w-full px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors disabled:opacity-50"
+                            class="w-full px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:opacity-50"
                             disabled=move || folder_saving.get()
                             on:click=on_create_folder
                         >

@@ -7,7 +7,7 @@ module.exports = {
         invert: {
           css: {
             "--tw-prose-body": theme("colors.slate.300"),
-            "--tw-prose-headings": theme("colors.slate.100"),
+            "--tw-prose-headings": theme("colors.slate.200"),
             "--tw-prose-lead": theme("colors.slate.300"),
             "--tw-prose-links": theme("colors.teal.300"),
             "--tw-prose-bold": theme("colors.slate.100"),
