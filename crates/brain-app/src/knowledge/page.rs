@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
+use leptos_router::hooks::use_query_map;
 
 use super::detail_bar::DetailBar;
 use super::detail_panel::DetailPanel;
@@ -42,8 +43,12 @@ fn KnowledgeView(
     edges: Vec<Edge>,
     graph_version: RwSignal<u64>,
 ) -> impl IntoView {
+    let query = use_query_map();
     let nodes = StoredValue::new(nodes);
     let edges = StoredValue::new(edges);
+    let path_to_id: StoredValue<HashMap<String, u32>> = StoredValue::new(
+        nodes.with_value(|ns| ns.iter().map(|n| (n.path.clone(), n.id)).collect()),
+    );
 
     let all_tags: Vec<String> = {
         let mut set: HashSet<String> = HashSet::new();
@@ -73,6 +78,17 @@ fn KnowledgeView(
     let selected = RwSignal::new(None::<u32>);
     let edit_mode = RwSignal::new(EditMode::Closed);
     let editing = Memo::new(move |_| !matches!(edit_mode.get(), EditMode::Closed));
+
+    Effect::new(move |_| {
+        let params = query.get();
+        let Some(path) = params.get_str("path") else {
+            return;
+        };
+        let next = path_to_id.with_value(|map| map.get(path).copied());
+        if next != selected.get_untracked() {
+            selected.set(next);
+        }
+    });
 
     let visible_ids = Memo::new(move |_| {
         let tags = active_tags.get();

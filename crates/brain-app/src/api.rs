@@ -149,7 +149,7 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
 
     let (body, _fm) = crate::markdown::split_frontmatter(&content);
-    let rendered_html = crate::markdown::render(body);
+    let rendered_html = crate::markdown::render_for_file(body, &path);
 
     Ok(BrainFile {
         path,

@@ -1,6 +1,8 @@
 //! Shared markdown helpers used by both SSR (rendering persisted files) and
 //! the client-side hydrate build (live preview in the editor).
 
+use std::path::{Component, Path};
+
 /// Split a YAML frontmatter block off the top of a markdown file.
 /// Returns `(body_without_frontmatter, raw_frontmatter_text)`.
 pub fn split_frontmatter(src: &str) -> (&str, Option<&str>) {
@@ -26,15 +28,198 @@ pub fn split_frontmatter(src: &str) -> (&str, Option<&str>) {
 
 /// Render a markdown body to HTML using pulldown-cmark with CommonMark extensions.
 pub fn render(body: &str) -> String {
+    render_for_path(body, None)
+}
+
+/// Render markdown for a persisted Brain file, rewriting repo-relative links to
+/// app routes or GitHub URLs so they resolve correctly in the UI.
+pub fn render_for_file(body: &str, file_path: &str) -> String {
+    render_for_path(body, Some(file_path))
+}
+
+fn render_for_path(body: &str, file_path: Option<&str>) -> String {
     use pulldown_cmark::{Options, Parser, html};
+
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_FOOTNOTES);
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
-    let parser = Parser::new_ext(body, opts);
+    let parser = Parser::new_ext(body, opts).map(|event| rewrite_event(event, file_path));
     let mut out = String::with_capacity(body.len() + body.len() / 4);
     html::push_html(&mut out, parser);
     out
+}
+
+fn rewrite_event<'a>(
+    event: pulldown_cmark::Event<'a>,
+    file_path: Option<&str>,
+) -> pulldown_cmark::Event<'a> {
+    use pulldown_cmark::{CowStr, Event, Tag};
+
+    match event {
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: CowStr::Boxed(
+                rewrite_link_destination(dest_url.as_ref(), file_path, false).into_boxed_str(),
+            ),
+            title,
+            id,
+        }),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Image {
+            link_type,
+            dest_url: CowStr::Boxed(
+                rewrite_link_destination(dest_url.as_ref(), file_path, true).into_boxed_str(),
+            ),
+            title,
+            id,
+        }),
+        other => other,
+    }
+}
+
+fn rewrite_link_destination(dest: &str, file_path: Option<&str>, is_image: bool) -> String {
+    if dest.is_empty() || dest.starts_with('#') || has_url_scheme(dest) {
+        return dest.to_string();
+    }
+
+    if is_app_route(dest) {
+        return dest.to_string();
+    }
+
+    let (path_part, fragment) = split_fragment(dest);
+    let resolved = resolve_repo_path(file_path, path_part);
+
+    if resolved.ends_with(".md") {
+        let mut url = format!("/knowledge?path={}", encode_query_value(&resolved));
+        if let Some(fragment) = fragment {
+            url.push('#');
+            url.push_str(fragment);
+        }
+        return url;
+    }
+
+    let base = if is_image {
+        "https://raw.githubusercontent.com/Dritara-Digital/Brain/main"
+    } else {
+        "https://github.com/Dritara-Digital/Brain/blob/main"
+    };
+    let mut url = format!("{}/{}", base, resolved);
+    if let Some(fragment) = fragment {
+        url.push('#');
+        url.push_str(fragment);
+    }
+    url
+}
+
+fn has_url_scheme(dest: &str) -> bool {
+    dest.starts_with("http://")
+        || dest.starts_with("https://")
+        || dest.starts_with("mailto:")
+        || dest.starts_with("tel:")
+}
+
+fn is_app_route(dest: &str) -> bool {
+    dest == "/"
+        || dest.starts_with("/knowledge")
+        || dest.starts_with("/admin")
+        || dest.starts_with("/auth/")
+        || dest.starts_with("/api/")
+        || dest.starts_with("/pkg/")
+}
+
+fn split_fragment(dest: &str) -> (&str, Option<&str>) {
+    match dest.split_once('#') {
+        Some((path, fragment)) => (path, Some(fragment)),
+        None => (dest, None),
+    }
+}
+
+fn resolve_repo_path(file_path: Option<&str>, dest: &str) -> String {
+    let joined = if let Some(stripped) = dest.strip_prefix('/') {
+        stripped.to_string()
+    } else if let Some(base) = file_path {
+        let parent = Path::new(base).parent().unwrap_or_else(|| Path::new(""));
+        let joined = parent.join(dest);
+        joined.to_string_lossy().into_owned()
+    } else {
+        dest.to_string()
+    };
+
+    normalize_repo_path(&joined)
+}
+
+fn normalize_repo_path(path: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::CurDir | Component::RootDir => {}
+            Component::ParentDir => {
+                let _ = parts.pop();
+            }
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::Prefix(_) => {}
+        }
+    }
+    parts.join("/")
+}
+
+fn encode_query_value(value: &str) -> String {
+    use std::fmt::Write;
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => {
+                let _ = write!(&mut encoded, "%{byte:02X}");
+            }
+        }
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render, render_for_file};
+
+    #[test]
+    fn render_keeps_external_links() {
+        let html = render("[site](https://example.com)");
+        assert!(html.contains(r#"href="https://example.com""#));
+    }
+
+    #[test]
+    fn render_rewrites_relative_markdown_links_to_knowledge_route() {
+        let html = render_for_file(
+            "[ADR](../adrs/001-git-centric-automation.md)",
+            "concepts/foo.md",
+        );
+        assert!(html.contains(r#"href="/knowledge?path=adrs%2F001-git-centric-automation.md""#));
+    }
+
+    #[test]
+    fn render_rewrites_other_markdown_files_to_knowledge_route() {
+        let html = render_for_file("[Runbook](../templates/Runbook.md)", "concepts/foo.md");
+        assert!(html.contains(r#"href="/knowledge?path=templates%2FRunbook.md""#));
+    }
+
+    #[test]
+    fn render_rewrites_images_to_github_raw() {
+        let html = render_for_file("![img](../screenshots/graph.png)", "concepts/foo.md");
+        assert!(html.contains(r#"src="https://raw.githubusercontent.com/Dritara-Digital/Brain/main/screenshots/graph.png""#));
+    }
 }
