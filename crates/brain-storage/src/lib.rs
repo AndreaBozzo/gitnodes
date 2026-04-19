@@ -14,12 +14,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use brain_domain::{BrainError, Edge, Node};
+use brain_domain::{BrainError, Edge, Node, TargetConfig};
 use brain_graph::{RawFile, build_graph, is_included_md};
 use serde::Deserialize;
-
-pub const OWNER: &str = "Dritara-Digital";
-pub const REPO: &str = "Brain";
 
 pub trait Storage: Send + Sync {
     async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError>;
@@ -57,22 +54,22 @@ pub trait Storage: Send + Sync {
     fn invalidate_cache(&self);
 }
 
-pub struct GithubStorage;
+pub struct GithubStorage {
+    cfg: TargetConfig,
+}
 
 impl GithubStorage {
-    pub fn new() -> Self {
-        Self
+    pub fn new(cfg: TargetConfig) -> Self {
+        Self { cfg }
     }
-}
 
-impl Default for GithubStorage {
-    fn default() -> Self {
-        Self::new()
+    fn contents_url(&self, path: &str) -> String {
+        self.cfg.contents_url(path)
     }
-}
 
-pub fn contents_url(path: &str) -> String {
-    format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}")
+    fn branch(&self) -> &str {
+        &self.cfg.branch
+    }
 }
 
 const CACHE_TTL: Duration = Duration::from_secs(30);
@@ -184,8 +181,9 @@ impl Storage for GithubStorage {
         }
         let client = http_client()?;
         let url = format!(
-            "{}?ref=main",
-            contents_url(&format!("templates/{filename}"))
+            "{}?ref={}",
+            self.contents_url(&format!("templates/{filename}")),
+            self.branch()
         );
         let body: ContentResponse = client
             .get(&url)
@@ -217,8 +215,7 @@ impl Storage for GithubStorage {
             return Ok(hit);
         }
         let client = http_client()?;
-        let tree_url =
-            format!("https://api.github.com/repos/{OWNER}/{REPO}/git/trees/main?recursive=1");
+        let tree_url = self.cfg.tree_url();
         let tree: TreeResponse = client
             .get(&tree_url)
             .bearer_auth(token)
@@ -242,7 +239,7 @@ impl Storage for GithubStorage {
 
         let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
         for path in &candidates {
-            let url = format!("{}?ref=main", contents_url(path));
+            let url = format!("{}?ref={}", self.contents_url(path), self.branch());
             let resp = match client.get(&url).bearer_auth(token).send().await {
                 Ok(r) => r,
                 Err(e) => {
@@ -294,7 +291,7 @@ impl Storage for GithubStorage {
 
     async fn read_file(&self, token: &str, path: &str) -> Result<(String, String), BrainError> {
         let client = http_client()?;
-        let url = format!("{}?ref=main", contents_url(path));
+        let url = format!("{}?ref={}", self.contents_url(path), self.branch());
         let resp: ContentResponse = client
             .get(&url)
             .bearer_auth(token)
@@ -337,7 +334,7 @@ impl Storage for GithubStorage {
         let mut body = serde_json::json!({
             "message": message,
             "content": encoded,
-            "branch": "main",
+            "branch": self.branch(),
             "committer": {
                 "name": author_name,
                 "email": author_email,
@@ -350,7 +347,7 @@ impl Storage for GithubStorage {
             body["sha"] = serde_json::json!(s);
         }
 
-        let url = contents_url(path);
+        let url = self.contents_url(path);
         let response = client
             .put(&url)
             .bearer_auth(token)
@@ -386,14 +383,14 @@ impl Storage for GithubStorage {
         let body = serde_json::json!({
             "message": message,
             "sha": sha,
-            "branch": "main",
+            "branch": self.branch(),
             "committer": {
                 "name": author_name,
                 "email": author_email,
             }
         });
 
-        let url = contents_url(path);
+        let url = self.contents_url(path);
         let response = client
             .delete(&url)
             .bearer_auth(token)
@@ -442,7 +439,7 @@ impl Storage for GithubStorage {
 
     async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError> {
         let client = http_client()?;
-        let url = format!("{}?ref=main", contents_url(""));
+        let url = format!("{}?ref={}", self.contents_url(""), self.branch());
         let items: Vec<GhDirEntry> = client
             .get(&url)
             .bearer_auth(token)

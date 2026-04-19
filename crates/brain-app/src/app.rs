@@ -6,6 +6,7 @@ use leptos_router::{
 };
 
 use crate::admin::AdminPage;
+use crate::api::get_app_config;
 use crate::knowledge::KnowledgePage;
 use crate::landing::Landing;
 
@@ -33,9 +34,15 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
 
+    // App config is loaded once and shared via context so any component
+    // (landing, detail panel, etc.) can read `brand.name`, `target.blob_base()`
+    // etc. without its own server-fn round-trip.
+    let app_config = Resource::new(|| (), |_| async move { get_app_config().await });
+    provide_context(app_config);
+
     view! {
         <Stylesheet id="leptos" href="/pkg/brain_ui.css"/>
-        <Title text="Dritara Brain"/>
+        <Title text="Brain"/>
 
         <Router>
             <Routes fallback=|| "Page not found.".into_view()>

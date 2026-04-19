@@ -1,6 +1,7 @@
 //! Shared markdown helpers used by both SSR (rendering persisted files) and
 //! the client-side hydrate build (live preview in the editor).
 
+use brain_domain::TargetConfig;
 use std::path::{Component, Path};
 
 /// Split a YAML frontmatter block off the top of a markdown file.
@@ -27,17 +28,18 @@ pub fn split_frontmatter(src: &str) -> (&str, Option<&str>) {
 }
 
 /// Render a markdown body to HTML using pulldown-cmark with CommonMark extensions.
+/// No link rewriting — use for previews where the body isn't tied to a repo file.
 pub fn render(body: &str) -> String {
-    render_for_path(body, None)
+    render_for_path(body, None, None)
 }
 
 /// Render markdown for a persisted Brain file, rewriting repo-relative links to
-/// app routes or GitHub URLs so they resolve correctly in the UI.
-pub fn render_for_file(body: &str, file_path: &str) -> String {
-    render_for_path(body, Some(file_path))
+/// app routes or GitHub URLs (scoped to `cfg`) so they resolve correctly in the UI.
+pub fn render_for_file(body: &str, file_path: &str, cfg: &TargetConfig) -> String {
+    render_for_path(body, Some(file_path), Some(cfg))
 }
 
-fn render_for_path(body: &str, file_path: Option<&str>) -> String {
+fn render_for_path(body: &str, file_path: Option<&str>, cfg: Option<&TargetConfig>) -> String {
     use pulldown_cmark::{Options, Parser, html};
 
     let mut opts = Options::empty();
@@ -46,7 +48,7 @@ fn render_for_path(body: &str, file_path: Option<&str>) -> String {
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_FOOTNOTES);
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
-    let parser = Parser::new_ext(body, opts).map(|event| rewrite_event(event, file_path));
+    let parser = Parser::new_ext(body, opts).map(|event| rewrite_event(event, file_path, cfg));
     let mut out = String::with_capacity(body.len() + body.len() / 4);
     html::push_html(&mut out, parser);
     out
@@ -55,6 +57,7 @@ fn render_for_path(body: &str, file_path: Option<&str>) -> String {
 fn rewrite_event<'a>(
     event: pulldown_cmark::Event<'a>,
     file_path: Option<&str>,
+    cfg: Option<&TargetConfig>,
 ) -> pulldown_cmark::Event<'a> {
     use pulldown_cmark::{CowStr, Event, Tag};
 
@@ -67,7 +70,7 @@ fn rewrite_event<'a>(
         }) => Event::Start(Tag::Link {
             link_type,
             dest_url: CowStr::Boxed(
-                rewrite_link_destination(dest_url.as_ref(), file_path, false).into_boxed_str(),
+                rewrite_link_destination(dest_url.as_ref(), file_path, cfg, false).into_boxed_str(),
             ),
             title,
             id,
@@ -80,7 +83,7 @@ fn rewrite_event<'a>(
         }) => Event::Start(Tag::Image {
             link_type,
             dest_url: CowStr::Boxed(
-                rewrite_link_destination(dest_url.as_ref(), file_path, true).into_boxed_str(),
+                rewrite_link_destination(dest_url.as_ref(), file_path, cfg, true).into_boxed_str(),
             ),
             title,
             id,
@@ -89,7 +92,12 @@ fn rewrite_event<'a>(
     }
 }
 
-fn rewrite_link_destination(dest: &str, file_path: Option<&str>, is_image: bool) -> String {
+fn rewrite_link_destination(
+    dest: &str,
+    file_path: Option<&str>,
+    cfg: Option<&TargetConfig>,
+    is_image: bool,
+) -> String {
     if dest.is_empty() || dest.starts_with('#') || has_url_scheme(dest) {
         return dest.to_string();
     }
@@ -110,10 +118,14 @@ fn rewrite_link_destination(dest: &str, file_path: Option<&str>, is_image: bool)
         return url;
     }
 
+    // Without a config, we can't build absolute GitHub URLs — leave as-is.
+    let Some(cfg) = cfg else {
+        return dest.to_string();
+    };
     let base = if is_image {
-        "https://raw.githubusercontent.com/Dritara-Digital/Brain/main"
+        cfg.raw_base()
     } else {
-        "https://github.com/Dritara-Digital/Brain/blob/main"
+        cfg.blob_base()
     };
     let mut url = format!("{}/{}", base, resolved);
     if let Some(fragment) = fragment {
@@ -195,6 +207,15 @@ fn encode_query_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{render, render_for_file};
+    use brain_domain::TargetConfig;
+
+    fn test_cfg() -> TargetConfig {
+        TargetConfig {
+            org: "Dritara-Digital".into(),
+            repo: "Brain".into(),
+            branch: "main".into(),
+        }
+    }
 
     #[test]
     fn render_keeps_external_links() {
@@ -207,19 +228,28 @@ mod tests {
         let html = render_for_file(
             "[ADR](../adrs/001-git-centric-automation.md)",
             "concepts/foo.md",
+            &test_cfg(),
         );
         assert!(html.contains(r#"href="/knowledge?path=adrs%2F001-git-centric-automation.md""#));
     }
 
     #[test]
     fn render_rewrites_other_markdown_files_to_knowledge_route() {
-        let html = render_for_file("[Runbook](../templates/Runbook.md)", "concepts/foo.md");
+        let html = render_for_file(
+            "[Runbook](../templates/Runbook.md)",
+            "concepts/foo.md",
+            &test_cfg(),
+        );
         assert!(html.contains(r#"href="/knowledge?path=templates%2FRunbook.md""#));
     }
 
     #[test]
     fn render_rewrites_images_to_github_raw() {
-        let html = render_for_file("![img](../screenshots/graph.png)", "concepts/foo.md");
+        let html = render_for_file(
+            "![img](../screenshots/graph.png)",
+            "concepts/foo.md",
+            &test_cfg(),
+        );
         assert!(html.contains(r#"src="https://raw.githubusercontent.com/Dritara-Digital/Brain/main/screenshots/graph.png""#));
     }
 }

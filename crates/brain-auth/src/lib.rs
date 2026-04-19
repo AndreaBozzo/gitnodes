@@ -12,9 +12,6 @@ pub const SESSION_TOKEN_KEY: &str = "github_token";
 pub const SESSION_USER_KEY: &str = "github_user";
 pub const SESSION_STATE_KEY: &str = "oauth_state";
 
-/// The GitHub org that owns the Brain repo.
-pub const REQUIRED_ORG: &str = "Dritara-Digital";
-
 /// Generate a random, URL-safe CSRF state string.
 pub fn generate_state() -> String {
     use rand::RngCore;

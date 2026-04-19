@@ -12,6 +12,7 @@ async fn main() {
     };
     use brain_app::app::*;
     use brain_app::server::auth;
+    use brain_domain::{BrandConfig, TargetConfig};
     use leptos::prelude::*;
     use leptos_axum::{LeptosRoutes, generate_route_list};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -25,6 +26,18 @@ async fn main() {
     api::register_server_functions();
 
     dotenvy::dotenv().ok();
+
+    // Runtime config from env — fail fast if any are missing so a misconfigured
+    // deploy can't silently write to the wrong repo.
+    let target_cfg = TargetConfig {
+        org: std::env::var("TARGET_GITHUB_ORG").expect("TARGET_GITHUB_ORG must be set"),
+        repo: std::env::var("TARGET_GITHUB_REPO").expect("TARGET_GITHUB_REPO must be set"),
+        branch: std::env::var("TARGET_GITHUB_BRANCH").expect("TARGET_GITHUB_BRANCH must be set"),
+    };
+    let brand_cfg = BrandConfig {
+        name: std::env::var("BRAND_NAME").expect("BRAND_NAME must be set"),
+        org_label: std::env::var("BRAND_ORG_LABEL").expect("BRAND_ORG_LABEL must be set"),
+    };
 
     // Structured logging. Level controlled by RUST_LOG (defaults to info for our
     // crate, warn elsewhere). Audit log stays as the domain-event stream; this is
@@ -109,28 +122,50 @@ async fn main() {
         .route("/auth/login", axum::routing::get(auth::login))
         .route("/auth/logout", axum::routing::get(auth::logout))
         .route("/auth/callback", axum::routing::get(auth::oauth_callback))
-        // Server functions: extract Session and inject it into Leptos context
-        // so use_context::<Session>() works inside #[server] fns.
+        // Server functions: extract Session and inject Session + runtime config
+        // into Leptos context so use_context::<...>() works inside #[server] fns.
         .route(
             "/api/{*fn_name}",
-            axum::routing::post(|session: Session, request: Request<Body>| async move {
-                leptos_axum::handle_server_fns_with_context(
-                    move || provide_context(session.clone()),
-                    request,
-                )
-                .await
+            axum::routing::post({
+                let target_for_api = target_cfg.clone();
+                let brand_for_api = brand_cfg.clone();
+                move |session: Session, request: Request<Body>| {
+                    let target = target_for_api.clone();
+                    let brand = brand_for_api.clone();
+                    async move {
+                        leptos_axum::handle_server_fns_with_context(
+                            move || {
+                                provide_context(session.clone());
+                                provide_context(target.clone());
+                                provide_context(brand.clone());
+                            },
+                            request,
+                        )
+                        .await
+                    }
+                }
             }),
         )
-        // SSR page routes: custom handler that also injects Session so
-        // server functions called during SSR can access the session.
-        .leptos_routes_with_handler(routes, move |session: Session, request: Request<Body>| {
-            let options = options_for_ssr.clone();
-            async move {
-                let handler = leptos_axum::render_app_to_stream_with_context(
-                    move || provide_context(session.clone()),
-                    move || shell(options.clone()),
-                );
-                handler(request).await
+        // SSR page routes: inject Session + configs for any server fns called
+        // during SSR.
+        .leptos_routes_with_handler(routes, {
+            let target_for_ssr = target_cfg.clone();
+            let brand_for_ssr = brand_cfg.clone();
+            move |session: Session, request: Request<Body>| {
+                let options = options_for_ssr.clone();
+                let target = target_for_ssr.clone();
+                let brand = brand_for_ssr.clone();
+                async move {
+                    let handler = leptos_axum::render_app_to_stream_with_context(
+                        move || {
+                            provide_context(session.clone());
+                            provide_context(target.clone());
+                            provide_context(brand.clone());
+                        },
+                        move || shell(options.clone()),
+                    );
+                    handler(request).await
+                }
             }
         })
         .fallback(leptos_axum::file_and_error_handler(shell))

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ssr")]
 use crate::knowledge::types::NodeType;
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
+use brain_domain::{BrandConfig, TargetConfig};
 
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
@@ -31,6 +32,22 @@ pub fn register_server_functions() {
     register_explicit::<DeleteBrainFile>();
     register_explicit::<CreateFolder>();
     register_explicit::<ListBrainFolders>();
+    register_explicit::<GetAppConfig>();
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub target: TargetConfig,
+    pub brand: BrandConfig,
+}
+
+#[server(GetAppConfig, "/api", endpoint = "get_app_config")]
+pub async fn get_app_config() -> Result<AppConfig, ServerFnError> {
+    use crate::server::session;
+    let target = session::target_cfg().map_err(sfe)?;
+    let brand = use_context::<BrandConfig>()
+        .ok_or_else(|| sfe(BrainError::other("No brand config available")))?;
+    Ok(AppConfig { target, brand })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -124,7 +141,7 @@ pub async fn load_brain_template(
         return Ok(String::new());
     };
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = GithubStorage::new();
+    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     let raw = storage.load_template(&token, filename).await.map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);
     Ok(body.trim_start_matches('\n').to_string())
@@ -135,7 +152,7 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError>
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = GithubStorage::new();
+    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     storage.load_graph(&token).await.map_err(sfe)
 }
 
@@ -145,11 +162,12 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     use brain_storage::{GithubStorage, Storage};
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = GithubStorage::new();
+    let cfg = session::target_cfg().map_err(sfe)?;
+    let storage = GithubStorage::new(cfg.clone());
     let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
 
     let (body, _fm) = crate::markdown::split_frontmatter(&content);
-    let rendered_html = crate::markdown::render_for_file(body, &path);
+    let rendered_html = crate::markdown::render_for_file(body, &path, &cfg);
 
     Ok(BrainFile {
         path,
@@ -216,7 +234,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         format!("Create {} via Brain UI", file_path)
     };
 
-    let storage = GithubStorage::new();
+    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     let author_email = format!("{}@users.noreply.github.com", user);
 
     match storage
@@ -258,7 +276,7 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = format!("Delete {} via Brain UI", path);
 
-    let storage = GithubStorage::new();
+    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     match storage
         .delete_file(&token, &path, &sha, &commit_msg, &user, &author_email)
         .await
@@ -295,7 +313,7 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
     let commit_msg = format!("Create section {sanitized}/ via Brain UI");
     let author_email = format!("{}@users.noreply.github.com", user);
 
-    let storage = GithubStorage::new();
+    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     match storage
         .create_folder(&token, sanitized, &commit_msg, &user, &author_email)
         .await
@@ -322,7 +340,7 @@ pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     use brain_storage::{GithubStorage, Storage};
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = GithubStorage::new();
+    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     storage.list_folders(&token).await.map_err(sfe)
 }
 

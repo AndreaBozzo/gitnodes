@@ -4,7 +4,7 @@ use super::components::TagBadge;
 use super::types::{EditMode, EditPrefill, Node};
 #[cfg(not(feature = "ssr"))]
 use crate::api::delete_brain_file;
-use crate::api::{BrainFile, read_brain_file};
+use crate::api::{AppConfig, BrainFile, read_brain_file};
 
 #[component]
 pub fn DetailPanel(
@@ -18,6 +18,15 @@ pub fn DetailPanel(
             .get()
             .and_then(|id| nodes.with_value(|ns| ns.iter().find(|n| n.id == id).cloned()))
     };
+
+    let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
+    let blob_base = Memo::new(move |_| {
+        app_config
+            .and_then(|r| r.get())
+            .and_then(|r| r.ok())
+            .map(|c| c.target.blob_base())
+            .unwrap_or_default()
+    });
 
     let current_path = Memo::new(move |_| current().map(|n| n.path).unwrap_or_default());
 
@@ -84,10 +93,14 @@ pub fn DetailPanel(
                 let title = node.title.clone();
                 let tags = node.tags.clone();
                 let path = node.path.clone();
-                let github_url = format!(
-                    "https://github.com/Dritara-Digital/Brain/blob/main/{}",
-                    path
-                );
+                let github_url = {
+                    let base = blob_base.get();
+                    if base.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{}/{}", base, path)
+                    }
+                };
                 view! {
                     <aside class="w-[520px] shrink-0 border-l border-slate-800 bg-slate-950 flex flex-col min-h-0">
                         <div class="px-6 py-4 border-b border-slate-800 flex items-start gap-3">

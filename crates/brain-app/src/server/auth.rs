@@ -15,14 +15,16 @@ use tower_sessions::Session;
 // Re-exported session helpers so existing callers keep working.
 pub use brain_auth::{get_session_token, get_session_user, is_authenticated};
 
-const REQUIRED_ORG: &str = brain_auth::REQUIRED_ORG;
-
 fn client_id() -> String {
     std::env::var("GITHUB_CLIENT_ID").expect("GITHUB_CLIENT_ID must be set")
 }
 
 fn client_secret() -> String {
     std::env::var("GITHUB_CLIENT_SECRET").expect("GITHUB_CLIENT_SECRET must be set")
+}
+
+fn required_org() -> String {
+    std::env::var("TARGET_GITHUB_ORG").expect("TARGET_GITHUB_ORG must be set")
 }
 
 /// Handler for `GET /auth/login`.
@@ -88,7 +90,7 @@ pub async fn oauth_callback(
         }
     };
 
-    if !is_org_member(&client, &token, REQUIRED_ORG, &login).await {
+    if !is_org_member(&client, &token, &required_org(), &login).await {
         crate::server::audit::log("login_fail", Some(&login), "not_org_member").await;
         return Redirect::to("/?error=not_org_member").into_response();
     }

@@ -5,10 +5,12 @@
 //! same `Node`/`Edge`/`BrainFilePayload` flow through `#[server]` fn boundaries
 //! without conditional cfg.
 
+mod config;
 mod error;
 mod frontmatter;
 mod types;
 
+pub use config::{BrandConfig, TargetConfig};
 pub use error::BrainError;
 pub use frontmatter::split_frontmatter;
 pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node, NodeType};

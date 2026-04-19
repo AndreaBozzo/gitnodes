@@ -3,7 +3,7 @@
 //! Collapses the `use_context::<Session>()?` + `get_session_token(..)?` dance
 //! that every authed `#[server]` fn was repeating.
 
-use brain_domain::BrainError;
+use brain_domain::{BrainError, TargetConfig};
 use leptos::prelude::use_context;
 use tower_sessions::Session;
 
@@ -12,6 +12,11 @@ use super::auth;
 /// Pull the Session out of the Leptos server context.
 pub fn session() -> Result<Session, BrainError> {
     use_context::<Session>().ok_or_else(|| BrainError::other("No session available"))
+}
+
+/// Pull the `TargetConfig` out of the Leptos server context.
+pub fn target_cfg() -> Result<TargetConfig, BrainError> {
+    use_context::<TargetConfig>().ok_or_else(|| BrainError::other("No target config available"))
 }
 
 /// Pull Session + GitHub token (fails with `Unauthenticated` if missing).

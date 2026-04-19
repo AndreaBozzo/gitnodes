@@ -1,17 +1,36 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 
+use crate::api::AppConfig;
+
 #[component]
 pub fn Landing() -> impl IntoView {
     let query = use_query_map();
 
+    let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
+
+    let brand_name = Memo::new(move |_| {
+        app_config
+            .and_then(|r| r.get())
+            .and_then(|r| r.ok())
+            .map(|c| c.brand.name)
+            .unwrap_or_else(|| "Brain".to_string())
+    });
+    let brand_org = Memo::new(move |_| {
+        app_config
+            .and_then(|r| r.get())
+            .and_then(|r| r.ok())
+            .map(|c| c.brand.org_label)
+            .unwrap_or_default()
+    });
+
     let error_msg = Memo::new(move |_| {
         let params = query.get();
         match params.get_str("error") {
-            Some("not_org_member") => Some(
-                "Access denied — you must be a member of the Dritara-Digital GitHub organisation."
-                    .to_string(),
-            ),
+            Some("not_org_member") => Some(format!(
+                "Access denied — you must be a member of the {} GitHub organisation.",
+                brand_org.get()
+            )),
             Some("state_mismatch") => {
                 Some("Login failed (state mismatch). Please try again.".to_string())
             }
@@ -25,7 +44,7 @@ pub fn Landing() -> impl IntoView {
             <header class="px-6 py-4 border-b border-slate-800 flex items-center gap-3">
                 <div class="w-2 h-2 rounded-full bg-teal-400"></div>
                 <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300">
-                    "Dritara Brain"
+                    {move || brand_name.get()}
                 </h1>
             </header>
             <main class="flex-1 flex items-center justify-center px-6">
@@ -35,7 +54,7 @@ pub fn Landing() -> impl IntoView {
                             "Internal Knowledge & Edge-Administration"
                         </h2>
                         <p class="text-slate-400 text-base leading-relaxed">
-                            "A wiki, graph, and CMS for the Dritara Brain repository. "
+                            {move || format!("A wiki, graph, and CMS for the {} repository. ", brand_name.get())}
                             "Read concepts, decisions, and meeting notes — and write them back to GitHub."
                         </p>
                     </div>
@@ -57,7 +76,7 @@ pub fn Landing() -> impl IntoView {
                         </a>
                     </div>
                     <p class="text-xs text-slate-600">
-                        "Access restricted to Dritara-Digital organisation members."
+                        {move || format!("Access restricted to {} organisation members.", brand_org.get())}
                     </p>
                 </div>
             </main>
