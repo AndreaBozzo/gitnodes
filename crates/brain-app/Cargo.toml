@@ -70,7 +70,7 @@ ssr = [
 ]
 
 [package.metadata.leptos]
-output-name = "brain-app"
+output-name = "brain_ui"
 site-root = "../../target/site"
 site-pkg-dir = "pkg"
 style-file = "style/main.css"
