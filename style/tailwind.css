@@ -3,6 +3,15 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --accent-concept: #2dd4bf;
+    --accent-decision: #f59e0b;
+    --accent-meeting: #a78bfa;
+    --accent-postmortem: #f87171;
+    --accent-preventivo: #38bdf8;
+    --accent-runbook: #4ade80;
+    --accent-tag: #64748b;
+  }
   html,
   body {
     height: 100%;

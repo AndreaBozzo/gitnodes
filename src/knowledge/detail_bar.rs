@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 
+use super::components::TagBadge;
 use super::types::{Edge, Node};
 
 #[component]
@@ -47,7 +48,7 @@ pub fn DetailBar(
                     links.join(" · ")
                 )
             };
-            let accent = n.node_type.accent().to_string();
+            let accent = n.node_type.accent_var().to_string();
             let label = n.node_type.label();
             let title = n.title.clone();
             let summary = n.summary.clone();
@@ -61,12 +62,7 @@ pub fn DetailBar(
                             <h3 class="text-sm font-semibold text-slate-100 truncate">{title}</h3>
                             <div class="flex gap-1">
                                 {tags.iter().map(|t| {
-                                    let t = t.clone();
-                                    view! {
-                                        <span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
-                                            {"#"}{t}
-                                        </span>
-                                    }
+                                    view! { <TagBadge tag=t.clone() /> }
                                 }).collect_view()}
                             </div>
                         </div>

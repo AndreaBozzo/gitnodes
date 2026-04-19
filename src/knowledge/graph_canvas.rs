@@ -186,7 +186,7 @@ pub fn GraphCanvas(
                     let t = *t;
                     view! {
                         <span class="flex items-center gap-1.5">
-                            <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", t.accent())></span>
+                            <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", t.accent_var())></span>
                             <span>{t.label()}</span>
                         </span>
                     }

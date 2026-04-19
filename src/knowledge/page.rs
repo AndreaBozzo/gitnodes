@@ -12,7 +12,11 @@ use crate::api::load_brain_graph;
 
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
-    let graph = Resource::new_blocking(|| (), |_| async { load_brain_graph().await });
+    let graph_version = RwSignal::new(0u64);
+    let graph = Resource::new_blocking(
+        move || graph_version.get(),
+        |_| async { load_brain_graph().await },
+    );
 
     view! {
         <Suspense fallback=|| view! {
@@ -21,7 +25,7 @@ pub fn KnowledgePage() -> impl IntoView {
             </div>
         }>
             {move || graph.get().map(|res| match res {
-                Ok((nodes, edges)) => KnowledgeView(KnowledgeViewProps { nodes, edges }).into_any(),
+                Ok((nodes, edges)) => KnowledgeView(KnowledgeViewProps { nodes, edges, graph_version }).into_any(),
                 Err(e) => view! {
                     <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
                         {format!("Failed to load graph: {e}")}
@@ -33,7 +37,11 @@ pub fn KnowledgePage() -> impl IntoView {
 }
 
 #[component]
-fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
+fn KnowledgeView(
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    graph_version: RwSignal<u64>,
+) -> impl IntoView {
     let nodes = StoredValue::new(nodes);
     let edges = StoredValue::new(edges);
 
@@ -95,7 +103,6 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                 <span class="text-xs text-slate-500 ml-2">"admin · /knowledge"</span>
                 <a
                     href="/admin"
-                    rel="external"
                     class="text-xs text-slate-500 hover:text-slate-300 ml-2"
                 >
                     "· /admin"
@@ -103,7 +110,7 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                 <div class="ml-auto flex items-center gap-2">
                     {stats.into_iter().map(|(t, count)| view! {
                         <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400">
-                            <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", t.accent())></span>
+                            <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", t.accent_var())></span>
                             <span class="text-slate-200 font-semibold">{count}</span>
                             <span>{t.label()}</span>
                         </span>
@@ -135,6 +142,7 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                         node_titles=node_titles.clone()
                         all_tags=all_tags.clone()
                         edit_mode=edit_mode
+                        graph_version=graph_version
                     />
                 </Show>
                 <GraphCanvas
@@ -148,6 +156,7 @@ fn KnowledgeView(nodes: Vec<Node>, edges: Vec<Edge>) -> impl IntoView {
                     nodes=nodes
                     selected=selected
                     edit_mode=edit_mode
+                    graph_version=graph_version
                 />
             </div>
             <DetailBar

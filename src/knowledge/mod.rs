@@ -1,3 +1,4 @@
+pub mod components;
 mod detail_bar;
 mod detail_panel;
 mod editor;

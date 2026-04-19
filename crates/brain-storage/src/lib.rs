@@ -1,7 +1,7 @@
 //! I/O layer for the Brain GitHub repo.
 //!
 //! Owns:
-//! - Octocrab client construction (was repeated 5× in `api.rs`).
+//! - Shared `reqwest::Client` builder (user-agent + TLS).
 //! - The `contents/{path}` URL builder.
 //! - The live graph loader (tree walk + base64 decode + `brain-graph` delegation).
 //! - The template loader.
@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use brain_domain::{BrainError, Edge, Node};
 use brain_graph::{RawFile, build_graph, is_included_md};
-use octocrab::Octocrab;
 use serde::Deserialize;
 
 pub const OWNER: &str = "Dritara-Digital";
@@ -24,14 +23,6 @@ pub const REPO: &str = "Brain";
 /// `https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}`
 pub fn contents_url(path: &str) -> String {
     format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}")
-}
-
-/// Build an Octocrab client using the caller's GitHub session token.
-pub fn client(token: impl Into<String>) -> Result<Octocrab, BrainError> {
-    Octocrab::builder()
-        .personal_token(token.into())
-        .build()
-        .map_err(|e| BrainError::github(format!("client init: {e}")))
 }
 
 /// In-memory TTL cache for the full graph. The repo contents are identical for
@@ -127,7 +118,9 @@ struct ContentResponse {
     sha: String,
 }
 
-fn http_client() -> Result<reqwest::Client, BrainError> {
+/// Build a `reqwest::Client` with our user-agent set. Callers add
+/// `.bearer_auth(token)` per-request.
+pub fn http_client() -> Result<reqwest::Client, BrainError> {
     reqwest::Client::builder()
         .user_agent("brain_ui")
         .build()

@@ -11,22 +11,22 @@ Three-phase cleanup before adding new features. See plan in repo/PR history.
   - [x] `justfile` for dev/lint/test/build/docker
   - [x] Structured logging via `tracing` (SSR)
   - [x] This roadmap
-- **Phase 2 — Workspace & module boundaries** (mostly done)
+- **Phase 2 — Workspace & module boundaries** (done)
   - [x] `brain-domain` — pure types, `BrainError`, frontmatter split (9 tests)
   - [x] `brain-graph` — parsing, graph build, force-directed layout (13 tests)
-  - [x] `brain-storage` — Octocrab client, `contents_url`, TTL-cached `load_graph` / `load_template`, `invalidate`. Collapses the 5× Octocrab boilerplate previously in `api.rs`.
+  - [x] `brain-storage` — reqwest client, `contents_url`, TTL-cached `load_graph` / `load_template`, `invalidate`. All 5 GitHub API calls in `api.rs` use bare reqwest (Octocrab fully removed).
   - [x] `brain-auth` — OAuth primitives (state gen, authorize URL, token exchange, user fetch, org check) + session key constants + session getters. Axum handlers stay in `brain_ui/server/auth.rs` as thin glue that emits audit events.
   - [x] `BrainError` wired through server fns via a single `sfe()` adapter at the edge. Internal code returns typed `Result<T, BrainError>`.
   - [x] Unit tests for parsing / graph build / layout (pure crates, 22 total)
-  - [ ] **Deferred — no `Storage` trait yet.** `brain-storage` exposes concrete functions tied to Octocrab + the Brain repo. A trait (with an in-memory impl for tests) is only worth it once we have a second backend or want to exercise `api.rs` write paths in tests. Revisit when either lands.
+  - [x] Octocrab dep removed — all 5 server fns rewritten to bare reqwest. Build-time & binary-size win.
+  - [ ] **Deferred — no `Storage` trait yet.** `brain-storage` exposes concrete functions tied to reqwest + the Brain repo. A trait (with an in-memory impl for tests) is only worth it once we have a second backend or want to exercise `api.rs` write paths in tests. Revisit when either lands.
   - [ ] **Deferred — `brain-app` extraction.** Moving `src/` under `crates/brain-app/` means retargeting `[package.metadata.leptos]`, the Dockerfile builder stage, and `cargo leptos watch` paths. High churn for no architectural win today since the root package is the sole top-level bin; do it only when we need a second binary (CLI, migration tool) sharing the app crate.
-  - [ ] Octocrab dep is used in only 2 of 5 call sites (read_brain_file, list_brain_folders); the other 3 use crab._put/_delete which are raw reqwest wrappers anyway. Swapping those two to bare reqwest drops the entire octocrab dep — meaningful build-time & binary-size win, ~neutral LOC.
-- **Phase 3 — UI consolidation** (not started)
-  - [ ] Shared `<Badge>` / `<Tag>` component (tag markup duplicated across `editor.rs`, `detail_panel.rs`, `detail_bar.rs`, `filter_panel.rs`)
-  - [ ] Accent color via CSS var instead of inline `style=format!("background:{}", t.accent())` (8 sites)
-  - [ ] Remove `rel="external"` on internal `/admin` link (`page.rs:98`)
-  - [ ] `graph_version: RwSignal<u64>` to replace `window.location.reload()` in `editor.rs:209` and `detail_panel.rs:62`
-  - [ ] Decompose `editor.rs` (469 LOC) into `<FrontmatterFields>`, `<TagInput>`, `<RelatedLinksPicker>`, `<MarkdownPreview>`
+- **Phase 3 — UI consolidation** (done)
+  - [x] Shared `<TagBadge>` / `<RemovableBadge>` component in `knowledge/components.rs` — used by `detail_panel.rs`, `detail_bar.rs`, `editor.rs`
+  - [x] Accent color via CSS custom properties (`--accent-concept`, etc.) + `NodeType::accent_var()` method (SVG fills still use raw hex)
+  - [x] Removed `rel="external"` on internal `/admin` link
+  - [x] `graph_version: RwSignal<u64>` replaces `window.location.reload()` — threaded from `KnowledgePage` through `EditorPanel` and `DetailPanel`
+  - [x] Decomposed `editor.rs` into `<FrontmatterFields>`, `<TagInput>`, `<RelatedLinksPicker>`, `<MarkdownPreview>` sub-components
 
 ## Known caveats
 
@@ -38,7 +38,7 @@ Three-phase cleanup before adding new features. See plan in repo/PR history.
 
 4. **`prose-sm` typography sizing is a guess** — tune `tailwind.config.js` `typography.invert` palette and/or swap `prose-sm` → `prose-base` after seeing real content.
 
-5. **Editor → reload-on-save is the update UX** — both Create and Update call `window.location.reload()` instead of invalidating the `graph` Resource. Simple, consistent, but costs a full SSR round-trip. Deferred 2026-04-18; fix scheduled in Phase 3.
+5. **~~Editor → reload-on-save~~** — Fixed: `graph_version: RwSignal<u64>` now invalidates the `graph` Resource reactively instead of `window.location.reload()`. No full SSR round-trip on save/delete.
 
 6. **Update path regenerates frontmatter from templates** — if a doc has custom fields (e.g., `status: accepted` on an ADR past-draft), they are wiped on save. Body is preserved verbatim. Fix by round-tripping the parsed frontmatter dict instead of re-emitting from a template during updates.
 

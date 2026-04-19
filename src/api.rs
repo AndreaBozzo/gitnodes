@@ -16,6 +16,23 @@ fn sfe(e: BrainError) -> ServerFnError {
     ServerFnError::new(e.to_string())
 }
 
+/// GitHub Contents API response for a single file.
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct GhFileContent {
+    sha: String,
+    content: String,
+}
+
+/// GitHub Contents API entry when listing a directory.
+#[cfg(feature = "ssr")]
+#[derive(Deserialize)]
+struct GhDirEntry {
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: i64,
@@ -133,31 +150,37 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError>
 #[server(ReadBrainFile, "/api")]
 pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     use crate::server::session;
+    use base64::Engine;
     use brain_storage as github;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let crab = github::client(token).map_err(sfe)?;
+    let client = github::http_client().map_err(sfe)?;
 
-    let content = crab
-        .repos(github::OWNER, github::REPO)
-        .get_content()
-        .path(&path)
-        .r#ref("main")
+    let url = format!("{}?ref=main", github::contents_url(&path));
+    let resp: GhFileContent = client
+        .get(&url)
+        .bearer_auth(&token)
         .send()
         .await
-        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?;
+        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?
+        .error_for_status()
+        .map_err(|e| sfe(BrainError::github(format!("content status: {e}"))))?
+        .json()
+        .await
+        .map_err(|e| sfe(BrainError::github(format!("content parse: {e}"))))?;
 
-    let item = content
-        .items
-        .into_iter()
-        .next()
-        .ok_or_else(|| sfe(BrainError::NotFound(path.clone())))?;
+    let cleaned: String = resp
+        .content
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(cleaned)
+        .map_err(|e| sfe(BrainError::parse(format!("b64: {e}"))))?;
+    let decoded =
+        String::from_utf8(bytes).map_err(|e| sfe(BrainError::parse(format!("utf8: {e}"))))?;
 
-    let sha = item.sha.clone();
-    let decoded = item
-        .decoded_content()
-        .ok_or_else(|| sfe(BrainError::parse("cannot decode file content")))?;
-
+    let sha = resp.sha;
     let (body, _fm) = crate::markdown::split_frontmatter(&decoded);
     let rendered_html = crate::markdown::render(body);
 
@@ -181,7 +204,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let crab = github::client(token).map_err(sfe)?;
+    let client = github::http_client().map_err(sfe)?;
 
     let markdown = format!(
         "{}\n{}",
@@ -231,8 +254,11 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
 
     let url = github::contents_url(&file_path);
 
-    let response = crab
-        ._put(url, Some(&body))
+    let response = client
+        .put(&url)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
         .await
         .map_err(|e| sfe(BrainError::github(format!("PUT: {e}"))))?;
 
@@ -265,7 +291,7 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let crab = github::client(token).map_err(sfe)?;
+    let client = github::http_client().map_err(sfe)?;
 
     let body = serde_json::json!({
         "message": format!("Delete {} via Brain UI", path),
@@ -279,8 +305,11 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
 
     let url = github::contents_url(&path);
 
-    let response = crab
-        ._delete(url, Some(&body))
+    let response = client
+        .delete(&url)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
         .await
         .map_err(|e| sfe(BrainError::github(format!("DELETE: {e}"))))?;
 
@@ -319,7 +348,7 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let crab = github::client(token).map_err(sfe)?;
+    let client = github::http_client().map_err(sfe)?;
 
     let folder_title = sanitized.rsplit('/').next().unwrap_or(sanitized);
 
@@ -342,8 +371,11 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
 
     let url = github::contents_url(&file_path);
 
-    let response = crab
-        ._put(url, Some(&body))
+    let response = client
+        .put(&url)
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
         .await
         .map_err(|e| sfe(BrainError::github(format!("PUT: {e}"))))?;
 
@@ -370,21 +402,24 @@ pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     use brain_storage as github;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let crab = github::client(token).map_err(sfe)?;
+    let client = github::http_client().map_err(sfe)?;
 
-    let content = crab
-        .repos(github::OWNER, github::REPO)
-        .get_content()
-        .path("")
-        .r#ref("main")
+    let url = format!("{}?ref=main", github::contents_url(""));
+    let items: Vec<GhDirEntry> = client
+        .get(&url)
+        .bearer_auth(&token)
         .send()
         .await
-        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?;
+        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?
+        .error_for_status()
+        .map_err(|e| sfe(BrainError::github(format!("content status: {e}"))))?
+        .json()
+        .await
+        .map_err(|e| sfe(BrainError::github(format!("content parse: {e}"))))?;
 
-    let folders: Vec<String> = content
-        .items
+    let folders: Vec<String> = items
         .iter()
-        .filter(|item| item.r#type == "dir")
+        .filter(|item| item.kind == "dir")
         .map(|item| item.path.clone())
         .collect();
 

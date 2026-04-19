@@ -58,6 +58,20 @@ impl NodeType {
         }
     }
 
+    /// CSS custom-property reference for the accent colour.
+    /// Use in HTML `style` attributes; for SVG fills prefer `accent()`.
+    pub fn accent_var(self) -> &'static str {
+        match self {
+            NodeType::Concept => "var(--accent-concept)",
+            NodeType::Decision => "var(--accent-decision)",
+            NodeType::Meeting => "var(--accent-meeting)",
+            NodeType::PostMortem => "var(--accent-postmortem)",
+            NodeType::Preventivo => "var(--accent-preventivo)",
+            NodeType::Runbook => "var(--accent-runbook)",
+            NodeType::Tag => "var(--accent-tag)",
+        }
+    }
+
     /// Returns the Brain repo directory for this type.
     pub fn directory(self) -> &'static str {
         match self {

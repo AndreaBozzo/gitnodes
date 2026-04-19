@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 
+use super::components::TagBadge;
 use super::types::{EditMode, EditPrefill, Node};
 #[cfg(not(feature = "ssr"))]
 use crate::api::delete_brain_file;
@@ -10,6 +11,7 @@ pub fn DetailPanel(
     nodes: StoredValue<Vec<Node>>,
     selected: RwSignal<Option<u32>>,
     edit_mode: RwSignal<EditMode>,
+    graph_version: RwSignal<u64>,
 ) -> impl IntoView {
     let current = move || {
         selected
@@ -58,9 +60,7 @@ pub fn DetailPanel(
             leptos::task::spawn_local(async move {
                 match delete_brain_file(path_for_task, sha).await {
                     Ok(()) => {
-                        if let Some(w) = web_sys::window() {
-                            let _ = w.location().reload();
-                        }
+                        graph_version.update(|v| *v += 1);
                     }
                     Err(e) => {
                         delete_error.set(format!("Delete failed: {e}"));
@@ -71,7 +71,7 @@ pub fn DetailPanel(
         }
         #[cfg(feature = "ssr")]
         {
-            let _ = (path, sha);
+            let _ = (path, sha, &graph_version);
         }
     };
 
@@ -79,7 +79,7 @@ pub fn DetailPanel(
         <Show when=move || current().map(|n| !n.path.is_empty()).unwrap_or(false)>
             {move || {
                 let node = current().expect("guarded by Show");
-                let accent = node.node_type.accent().to_string();
+                let accent = node.node_type.accent_var().to_string();
                 let label = node.node_type.label();
                 let title = node.title.clone();
                 let tags = node.tags.clone();
@@ -104,12 +104,7 @@ pub fn DetailPanel(
                                 </h2>
                                 <div class="flex flex-wrap gap-1 mt-2">
                                     {tags.iter().map(|t| {
-                                        let t = t.clone();
-                                        view! {
-                                            <span class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
-                                                {"#"}{t}
-                                            </span>
-                                        }
+                                        view! { <TagBadge tag=t.clone() /> }
                                     }).collect_view()}
                                 </div>
                                 <div class="flex items-center gap-3 mt-3 text-[11px]">

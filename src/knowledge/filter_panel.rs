@@ -33,7 +33,7 @@ pub fn FilterPanel(
                     class=("hover:border-slate-500", move || !is_on.get())
                     on:click=toggle
                 >
-                    <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", t.accent())></span>
+                    <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", t.accent_var())></span>
                     {t.label()}
                 </button>
             }
