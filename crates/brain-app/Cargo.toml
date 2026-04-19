@@ -37,6 +37,7 @@ brain-graph = { path = "../brain-graph" }
 brain-storage = { path = "../brain-storage", optional = true }
 brain-auth = { path = "../brain-auth", optional = true }
 web-sys = { version = "0.3", features = ["Window", "Location"] }
+getrandom = { version = "0.2", features = ["js"] }
 
 [features]
 hydrate = [
