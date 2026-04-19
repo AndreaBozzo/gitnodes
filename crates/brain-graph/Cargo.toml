@@ -1,0 +1,9 @@
+[package]
+name = "brain-graph"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Pure graph building + force-directed layout for brain_ui. No I/O."
+
+[dependencies]
+brain-domain = { path = "../brain-domain" }

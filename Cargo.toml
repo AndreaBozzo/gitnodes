@@ -37,6 +37,7 @@ tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 brain-domain = { path = "crates/brain-domain" }
+brain-graph = { path = "crates/brain-graph" }
 web-sys = { version = "0.3", features = ["Window", "Location"] }
 
 [features]

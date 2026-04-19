@@ -239,12 +239,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-graph"
+version = "0.1.0"
+dependencies = [
+ "brain-domain",
+]
+
+[[package]]
 name = "brain_ui"
 version = "0.2.0"
 dependencies = [
  "axum",
  "base64",
  "brain-domain",
+ "brain-graph",
  "console_error_panic_hook",
  "dotenvy",
  "http",
