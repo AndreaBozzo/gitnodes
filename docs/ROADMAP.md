@@ -11,16 +11,21 @@ Three-phase cleanup before adding new features. See plan in repo/PR history.
   - [x] `justfile` for dev/lint/test/build/docker
   - [x] Structured logging via `tracing` (SSR)
   - [x] This roadmap
-- **Phase 2 — Workspace & module boundaries**
-  - [ ] Split into `brain-domain`, `brain-storage`, `brain-graph`, `brain-auth`, `brain-app`
-  - [ ] `Storage` trait collapsing the 5× Octocrab boilerplate in `api.rs`
-  - [ ] Domain `BrainError` enum replacing stringly `ServerFnError`
-  - [ ] Unit tests for parsing / graph build / layout (pure crates)
-- **Phase 3 — UI consolidation**
-  - [ ] Shared `<Badge>` / `<Tag>` component
-  - [ ] Accent color via CSS var instead of inline `style`
+- **Phase 2 — Workspace & module boundaries** (mostly done)
+  - [x] `brain-domain` — pure types, `BrainError`, frontmatter split (9 tests)
+  - [x] `brain-graph` — parsing, graph build, force-directed layout (13 tests)
+  - [x] `brain-storage` — Octocrab client, `contents_url`, TTL-cached `load_graph` / `load_template`, `invalidate`. Collapses the 5× Octocrab boilerplate previously in `api.rs`.
+  - [x] `brain-auth` — OAuth primitives (state gen, authorize URL, token exchange, user fetch, org check) + session key constants + session getters. Axum handlers stay in `brain_ui/server/auth.rs` as thin glue that emits audit events.
+  - [x] `BrainError` wired through server fns via a single `sfe()` adapter at the edge. Internal code returns typed `Result<T, BrainError>`.
+  - [x] Unit tests for parsing / graph build / layout (pure crates, 22 total)
+  - [ ] **Deferred — no `Storage` trait yet.** `brain-storage` exposes concrete functions tied to Octocrab + the Brain repo. A trait (with an in-memory impl for tests) is only worth it once we have a second backend or want to exercise `api.rs` write paths in tests. Revisit when either lands.
+  - [ ] **Deferred — `brain-app` extraction.** Moving `src/` under `crates/brain-app/` means retargeting `[package.metadata.leptos]`, the Dockerfile builder stage, and `cargo leptos watch` paths. High churn for no architectural win today since the root package is the sole top-level bin; do it only when we need a second binary (CLI, migration tool) sharing the app crate.
+  - [ ] Octocrab dep is used in only 2 of 5 call sites (read_brain_file, list_brain_folders); the other 3 use crab._put/_delete which are raw reqwest wrappers anyway. Swapping those two to bare reqwest drops the entire octocrab dep — meaningful build-time & binary-size win, ~neutral LOC.
+- **Phase 3 — UI consolidation** (not started)
+  - [ ] Shared `<Badge>` / `<Tag>` component (tag markup duplicated across `editor.rs`, `detail_panel.rs`, `detail_bar.rs`, `filter_panel.rs`)
+  - [ ] Accent color via CSS var instead of inline `style=format!("background:{}", t.accent())` (8 sites)
   - [ ] Remove `rel="external"` on internal `/admin` link (`page.rs:98`)
-  - [ ] `graph_version: RwSignal<u64>` to replace `window.location.reload()`
+  - [ ] `graph_version: RwSignal<u64>` to replace `window.location.reload()` in `editor.rs:209` and `detail_panel.rs:62`
   - [ ] Decompose `editor.rs` (469 LOC) into `<FrontmatterFields>`, `<TagInput>`, `<RelatedLinksPicker>`, `<MarkdownPreview>`
 
 ## Known caveats

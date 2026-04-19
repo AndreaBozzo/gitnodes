@@ -9,9 +9,6 @@ pub enum BrainError {
     #[error("not authenticated")]
     Unauthenticated,
 
-    #[error("forbidden: {0}")]
-    Forbidden(String),
-
     #[error("not found: {0}")]
     NotFound(String),
 

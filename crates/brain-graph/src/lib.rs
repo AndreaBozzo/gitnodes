@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use brain_domain::{Edge, Node, NodeType, split_frontmatter};
+use brain_domain::{Edge, Node, NodeType};
 
 mod layout;
 mod parse;
@@ -152,12 +152,6 @@ fn resolve_link(from_dir: &std::path::Path, link: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-// Re-export for tests and the storage layer's template cache key.
-#[doc(hidden)]
-pub fn _split_frontmatter_for_tests(raw: &str) -> (&str, &str) {
-    split_frontmatter(raw)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,10 +185,7 @@ mod tests {
     fn two_docs_linked_produces_edge() {
         let a = "---\ntype: concept\ntopic: A\n---\nsee [B](../concepts/B.md)\n";
         let b = "---\ntype: concept\ntopic: B\n---\nhi\n";
-        let (nodes, edges) = build_graph(&[
-            f("concepts/A.md", a),
-            f("concepts/B.md", b),
-        ]);
+        let (nodes, edges) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)]);
         assert_eq!(nodes.len(), 2);
         assert_eq!(edges.len(), 1);
     }
@@ -203,10 +194,7 @@ mod tests {
     fn shared_tag_creates_virtual_tag_node() {
         let a = "---\ntype: concept\ntopic: A\ntags: [shared]\n---\n";
         let b = "---\ntype: concept\ntopic: B\ntags: [shared]\n---\n";
-        let (nodes, edges) = build_graph(&[
-            f("concepts/A.md", a),
-            f("concepts/B.md", b),
-        ]);
+        let (nodes, edges) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)]);
         // 2 docs + 1 tag node
         assert_eq!(nodes.len(), 3);
         assert!(nodes.iter().any(|n| n.node_type == NodeType::Tag));

@@ -231,6 +231,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-auth"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "brain-domain",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "tower-sessions",
+]
+
+[[package]]
 name = "brain-domain"
 version = "0.1.0"
 dependencies = [
@@ -246,13 +258,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-storage"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "brain-domain",
+ "brain-graph",
+ "octocrab",
+ "reqwest",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "brain_ui"
 version = "0.2.0"
 dependencies = [
  "axum",
  "base64",
+ "brain-auth",
  "brain-domain",
  "brain-graph",
+ "brain-storage",
  "console_error_panic_hook",
  "dotenvy",
  "http",

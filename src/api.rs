@@ -5,6 +5,17 @@ use serde::{Deserialize, Serialize};
 use crate::knowledge::types::NodeType;
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 
+#[cfg(feature = "ssr")]
+use brain_domain::BrainError;
+
+/// Convert domain errors to the stringly `ServerFnError` that Leptos speaks on
+/// the wire. Typed matching happens inside the server fn; the client sees a
+/// `Display` representation.
+#[cfg(feature = "ssr")]
+fn sfe(e: BrainError) -> ServerFnError {
+    ServerFnError::new(e.to_string())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: i64,
@@ -25,15 +36,11 @@ pub async fn load_audit_log(
     kind: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<AuditEntry>, ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    if !crate::server::auth::is_authenticated(&session).await {
-        return Err(ServerFnError::new("Not authenticated"));
-    }
+    use crate::server::session;
+    let _ = session::require_authenticated().await.map_err(sfe)?;
     let rows = crate::server::audit::recent(limit.unwrap_or(200), kind.as_deref())
         .await
-        .map_err(|e| ServerFnError::new(format!("DB: {e}")))?;
+        .map_err(|e| sfe(BrainError::other(format!("DB: {e}"))))?;
     Ok(rows
         .into_iter()
         .map(|r| AuditEntry {
@@ -48,15 +55,11 @@ pub async fn load_audit_log(
 
 #[server(ListSessions, "/api")]
 pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    if !crate::server::auth::is_authenticated(&session).await {
-        return Err(ServerFnError::new("Not authenticated"));
-    }
+    use crate::server::session;
+    let _ = session::require_authenticated().await.map_err(sfe)?;
     let rows = crate::server::audit::list_sessions(100)
         .await
-        .map_err(|e| ServerFnError::new(format!("DB: {e}")))?;
+        .map_err(|e| sfe(BrainError::other(format!("DB: {e}"))))?;
     Ok(rows
         .into_iter()
         .map(|r| SessionEntry {
@@ -68,24 +71,15 @@ pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
 
 #[server(RevokeSession, "/api")]
 pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    if !crate::server::auth::is_authenticated(&session).await {
-        return Err(ServerFnError::new("Not authenticated"));
-    }
-    let actor = crate::server::auth::get_session_user(&session).await;
+    use crate::server::session;
+    let s = session::require_authenticated().await.map_err(sfe)?;
+    let actor = crate::server::auth::get_session_user(&s).await;
     let n = crate::server::audit::revoke_session(&id)
         .await
-        .map_err(|e| ServerFnError::new(format!("DB: {e}")))?;
+        .map_err(|e| sfe(BrainError::other(format!("DB: {e}"))))?;
     crate::server::audit::log("revoke_session", actor.as_deref(), &id).await;
     Ok(n)
 }
-
-#[cfg(feature = "ssr")]
-const OWNER: &str = "Dritara-Digital";
-#[cfg(feature = "ssr")]
-const REPO: &str = "Brain";
 
 /// Result of reading a file from the Brain repo.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,10 +95,9 @@ pub struct BrainFile {
 /// Get the current user's GitHub login (or None if not logged in).
 #[server(GetCurrentUser, "/api")]
 pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    Ok(crate::server::auth::get_session_user(&session).await)
+    use crate::server::session;
+    let s = session::session().map_err(sfe)?;
+    Ok(crate::server::auth::get_session_user(&s).await)
 }
 
 /// Fetch the template body for a given NodeType. Returns the markdown body
@@ -113,18 +106,14 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
 pub async fn load_brain_template(
     node_type: crate::knowledge::types::NodeType,
 ) -> Result<String, ServerFnError> {
-    use tower_sessions::Session;
+    use crate::server::session;
     let Some(filename) = node_type.template_filename() else {
         return Ok(String::new());
     };
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    let token = crate::server::auth::get_session_token(&session)
-        .await
-        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let raw = crate::knowledge::runtime::load_template(&token, filename)
         .await
-        .map_err(ServerFnError::new)?;
+        .map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);
     Ok(body.trim_start_matches('\n').to_string())
 }
@@ -133,52 +122,41 @@ pub async fn load_brain_template(
 /// Runs on every `/knowledge` render — replaces the compile-time bake from `build.rs`.
 #[server(LoadBrainGraph, "/api")]
 pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    let token = crate::server::auth::get_session_token(&session)
-        .await
-        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
-
+    use crate::server::session;
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     crate::knowledge::runtime::load_graph(&token)
         .await
-        .map_err(ServerFnError::new)
+        .map_err(sfe)
 }
 
 /// Read a single file from the Brain repo.
 #[server(ReadBrainFile, "/api")]
 pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    let token = crate::server::auth::get_session_token(&session)
-        .await
-        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
+    use crate::server::session;
+    use brain_storage as github;
 
-    let crab = octocrab::Octocrab::builder()
-        .personal_token(token)
-        .build()
-        .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let crab = github::client(token).map_err(sfe)?;
 
     let content = crab
-        .repos(OWNER, REPO)
+        .repos(github::OWNER, github::REPO)
         .get_content()
         .path(&path)
         .r#ref("main")
         .send()
         .await
-        .map_err(|e| ServerFnError::new(format!("GitHub API: {e}")))?;
+        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?;
 
     let item = content
         .items
         .into_iter()
         .next()
-        .ok_or_else(|| ServerFnError::new("File not found"))?;
+        .ok_or_else(|| sfe(BrainError::NotFound(path.clone())))?;
 
     let sha = item.sha.clone();
     let decoded = item
         .decoded_content()
-        .ok_or_else(|| ServerFnError::new("Cannot decode file content"))?;
+        .ok_or_else(|| sfe(BrainError::parse("cannot decode file content")))?;
 
     let (body, _fm) = crate::markdown::split_frontmatter(&decoded);
     let rendered_html = crate::markdown::render(body);
@@ -198,31 +176,19 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     input = server_fn::codec::Json,
 )]
 pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    let token = crate::server::auth::get_session_token(&session)
-        .await
-        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
-    let user = crate::server::auth::get_session_user(&session)
-        .await
-        .unwrap_or_else(|| "brain_ui".to_string());
+    use crate::server::session;
+    use brain_storage as github;
 
-    let crab = octocrab::Octocrab::builder()
-        .personal_token(token)
-        .build()
-        .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let crab = github::client(token).map_err(sfe)?;
 
-    // Both create and update: frontmatter from template + body verbatim.
-    // On create the editor prefills body with the fetched template body, so the
-    // resulting file matches the Brain template structure.
     let markdown = format!(
         "{}\n{}",
         generate_frontmatter(&payload, &user),
         payload.body
     );
 
-    // Determine the file path
     let file_path = match &payload.path {
         Some(p) if !p.is_empty() => p.clone(),
         _ => {
@@ -247,7 +213,6 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         markdown.as_bytes(),
     );
 
-    // Build the PUT request body
     let mut body = serde_json::json!({
         "message": commit_msg,
         "content": encoded,
@@ -264,12 +229,12 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         body["sha"] = serde_json::json!(sha);
     }
 
-    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{file_path}");
+    let url = github::contents_url(&file_path);
 
     let response = crab
         ._put(url, Some(&body))
         .await
-        .map_err(|e| ServerFnError::new(format!("GitHub PUT: {e}")))?;
+        .map_err(|e| sfe(BrainError::github(format!("PUT: {e}"))))?;
 
     if response.status().is_success() {
         crate::knowledge::runtime::invalidate();
@@ -288,27 +253,19 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
             &format!("save {file_path}: {status}"),
         )
         .await;
-        Err(ServerFnError::new(format!("GitHub API error {status}")))
+        Err(sfe(BrainError::github(format!("API error {status}"))))
     }
 }
 
 /// Delete a file from the Brain repo.
 #[server(DeleteBrainFile, "/api")]
 pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    let token = crate::server::auth::get_session_token(&session)
-        .await
-        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
-    let user = crate::server::auth::get_session_user(&session)
-        .await
-        .unwrap_or_else(|| "brain_ui".to_string());
+    use crate::server::session;
+    use brain_storage as github;
 
-    let crab = octocrab::Octocrab::builder()
-        .personal_token(token)
-        .build()
-        .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let crab = github::client(token).map_err(sfe)?;
 
     let body = serde_json::json!({
         "message": format!("Delete {} via Brain UI", path),
@@ -320,12 +277,12 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
         }
     });
 
-    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}");
+    let url = github::contents_url(&path);
 
     let response = crab
         ._delete(url, Some(&body))
         .await
-        .map_err(|e| ServerFnError::new(format!("GitHub DELETE: {e}")))?;
+        .map_err(|e| sfe(BrainError::github(format!("DELETE: {e}"))))?;
 
     if response.status().is_success() {
         crate::knowledge::runtime::invalidate();
@@ -339,7 +296,7 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
             &format!("delete {path}: {status}"),
         )
         .await;
-        Err(ServerFnError::new(format!("GitHub API error {status}")))
+        Err(sfe(BrainError::github(format!("API error {status}"))))
     }
 }
 
@@ -347,9 +304,9 @@ pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFn
 /// GitHub doesn't support empty directories; we create a README.md placeholder.
 #[server(CreateFolder, "/api")]
 pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError> {
-    use tower_sessions::Session;
+    use crate::server::session;
+    use brain_storage as github;
 
-    // Validate: no path traversal, only alphanumeric / hyphens / underscores / slashes
     let sanitized = folder_path.trim().trim_matches('/');
     if sanitized.is_empty()
         || sanitized.contains("..")
@@ -357,22 +314,12 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/')
     {
-        return Err(ServerFnError::new("Invalid folder name"));
+        return Err(sfe(BrainError::parse("Invalid folder name")));
     }
 
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    let token = crate::server::auth::get_session_token(&session)
-        .await
-        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
-    let user = crate::server::auth::get_session_user(&session)
-        .await
-        .unwrap_or_else(|| "brain_ui".to_string());
-
-    let crab = octocrab::Octocrab::builder()
-        .personal_token(token)
-        .build()
-        .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let crab = github::client(token).map_err(sfe)?;
 
     let folder_title = sanitized.rsplit('/').next().unwrap_or(sanitized);
 
@@ -393,12 +340,12 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
         }
     });
 
-    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/contents/{file_path}");
+    let url = github::contents_url(&file_path);
 
     let response = crab
         ._put(url, Some(&body))
         .await
-        .map_err(|e| ServerFnError::new(format!("GitHub PUT: {e}")))?;
+        .map_err(|e| sfe(BrainError::github(format!("PUT: {e}"))))?;
 
     if response.status().is_success() {
         crate::knowledge::runtime::invalidate();
@@ -412,33 +359,27 @@ pub async fn create_folder(folder_path: String) -> Result<String, ServerFnError>
             &format!("create_folder {sanitized}: {status}"),
         )
         .await;
-        Err(ServerFnError::new(format!("GitHub API error {status}")))
+        Err(sfe(BrainError::github(format!("API error {status}"))))
     }
 }
 
 /// List top-level directories in the Brain repo (for the folder picker).
 #[server(ListBrainFolders, "/api")]
 pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
-    use tower_sessions::Session;
-    let session =
-        use_context::<Session>().ok_or_else(|| ServerFnError::new("No session available"))?;
-    let token = crate::server::auth::get_session_token(&session)
-        .await
-        .ok_or_else(|| ServerFnError::new("Not authenticated"))?;
+    use crate::server::session;
+    use brain_storage as github;
 
-    let crab = octocrab::Octocrab::builder()
-        .personal_token(token)
-        .build()
-        .map_err(|e| ServerFnError::new(format!("Octocrab init: {e}")))?;
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let crab = github::client(token).map_err(sfe)?;
 
     let content = crab
-        .repos(OWNER, REPO)
+        .repos(github::OWNER, github::REPO)
         .get_content()
         .path("")
         .r#ref("main")
         .send()
         .await
-        .map_err(|e| ServerFnError::new(format!("GitHub API: {e}")))?;
+        .map_err(|e| sfe(BrainError::github(format!("get_content: {e}"))))?;
 
     let folders: Vec<String> = content
         .items

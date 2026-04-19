@@ -1,0 +1,13 @@
+[package]
+name = "brain-auth"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+brain-domain = { path = "../brain-domain" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+rand = "0.8"
+tower-sessions = "0.14"
