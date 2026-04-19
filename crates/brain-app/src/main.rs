@@ -19,6 +19,11 @@ async fn main() {
     use tower_sessions::{Session, SessionManagerLayer, cookie::SameSite};
     use tower_sessions_sqlx_store::SqliteStore;
 
+    // Explicitly register server functions to ensure the linker doesn't strip them
+    // and they are available at runtime.
+    use brain_app::api;
+    api::register_server_functions();
+
     dotenvy::dotenv().ok();
 
     // Structured logging. Level controlled by RUST_LOG (defaults to info for our
