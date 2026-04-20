@@ -50,12 +50,15 @@ fn KnowledgeView(
         nodes.with_value(|ns| ns.iter().map(|n| (n.path.clone(), n.id)).collect()),
     );
 
+    // Tag filtering is case-insensitive: collapse case variants into one
+    // lowercase canonical form both in the filter vocabulary and when
+    // matching against a node's tags.
     let all_tags: Vec<String> = {
         let mut set: HashSet<String> = HashSet::new();
         nodes.with_value(|ns| {
             for n in ns {
                 for t in &n.tags {
-                    set.insert(t.clone());
+                    set.insert(t.to_lowercase());
                 }
             }
         });
@@ -96,7 +99,9 @@ fn KnowledgeView(
         nodes.with_value(|ns| {
             ns.iter()
                 .filter(|n| types.is_empty() || types.contains(&n.node_type))
-                .filter(|n| tags.is_empty() || n.tags.iter().any(|t| tags.contains(t)))
+                .filter(|n| {
+                    tags.is_empty() || n.tags.iter().any(|t| tags.contains(&t.to_lowercase()))
+                })
                 .map(|n| n.id)
                 .collect::<HashSet<u32>>()
         })
