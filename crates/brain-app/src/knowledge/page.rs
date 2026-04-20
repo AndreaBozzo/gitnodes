@@ -115,7 +115,7 @@ fn KnowledgeView(
     });
 
     view! {
-        <div class="min-h-screen flex flex-col bg-slate-950 text-slate-100">
+        <div class="h-screen flex flex-col bg-slate-950 text-slate-100">
             <header class="px-6 py-4 border-b border-slate-800 flex items-center gap-3">
                 <div class="w-2 h-2 rounded-full bg-teal-400"></div>
                 <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300">
