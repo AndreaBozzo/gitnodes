@@ -44,9 +44,11 @@ pub fn DetailPanel(
     let deleting = RwSignal::new(false);
     let delete_error = RwSignal::new(String::new());
     let rename_input = RwSignal::new(Option::<String>::None);
+    let rename_msg = RwSignal::new(String::new());
     let renaming = RwSignal::new(false);
     let rename_error = RwSignal::new(String::new());
     let rename_status = RwSignal::new(String::new());
+    let delete_msg = RwSignal::new(String::new());
     // `Some(_)` while the delete-confirm banner is open; carries the list of
     // `(title, path)` pairs of docs that link TO the current node. Empty vec
     // means "no backlinks, but still confirm before committing a delete".
@@ -100,8 +102,18 @@ pub fn DetailPanel(
             deleting.set(true);
             delete_error.set(String::new());
             let path_for_task = path.clone();
+            let msg = {
+                let m = delete_msg.get_untracked();
+                let t = m.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            };
+            delete_msg.set(String::new());
             leptos::task::spawn_local(async move {
-                match delete_brain_file(path_for_task, sha).await {
+                match delete_brain_file(path_for_task, sha, msg).await {
                     Ok(()) => {
                         graph_version.update(|v| *v += 1);
                     }
@@ -245,6 +257,17 @@ pub fn DetailPanel(
                                                 rename_input.set(Some(event_target_value(&ev)));
                                             }
                                         />
+                                        <label class="text-[10px] uppercase tracking-widest text-slate-500 block pt-1">
+                                            "Commit message (optional)"
+                                        </label>
+                                        <input
+                                            type="text"
+                                            maxlength="200"
+                                            class="w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-sm focus:border-teal-400 focus:outline-none"
+                                            placeholder="Leave blank for auto-generated message"
+                                            prop:value=move || rename_msg.get()
+                                            on:input=move |ev| rename_msg.set(event_target_value(&ev))
+                                        />
                                         <Show when=move || !rename_error.get().is_empty()>
                                             <div class="text-rose-300">{move || rename_error.get()}</div>
                                         </Show>
@@ -273,8 +296,13 @@ pub fn DetailPanel(
                                                                 renaming.set(true);
                                                                 rename_error.set(String::new());
                                                                 let old_p = old_for_btn.clone();
+                                                                let msg = {
+                                                                    let m = rename_msg.get_untracked();
+                                                                    let t = m.trim();
+                                                                    if t.is_empty() { None } else { Some(t.to_string()) }
+                                                                };
                                                                 leptos::task::spawn_local(async move {
-                                                                    match rename_brain_file(old_p, target.clone(), sha).await {
+                                                                    match rename_brain_file(old_p, target.clone(), sha, msg).await {
                                                                         Ok(r) => {
                                                                             rename_status.set(format!(
                                                                                 "Renamed to {} · rewrote {} referrer{}.",
@@ -283,6 +311,7 @@ pub fn DetailPanel(
                                                                                 if r.updated_referrers.len() == 1 { "" } else { "s" },
                                                                             ));
                                                                             rename_input.set(None);
+                                                                            rename_msg.set(String::new());
                                                                             renaming.set(false);
                                                                             graph_version.update(|v| *v += 1);
                                                                         }
@@ -367,6 +396,14 @@ pub fn DetailPanel(
                                                     .collect_view()}
                                             </ul>
                                         </Show>
+                                        <input
+                                            type="text"
+                                            maxlength="200"
+                                            class="w-full px-3 py-2 rounded-md bg-slate-900 border border-rose-500/30 text-slate-100 text-sm focus:border-rose-400 focus:outline-none"
+                                            placeholder="Commit message (optional) — leave blank for auto"
+                                            prop:value=move || delete_msg.get()
+                                            on:input=move |ev| delete_msg.set(event_target_value(&ev))
+                                        />
                                         <div class="flex gap-2 pt-1">
                                             {
                                                 let path_for_btn = path_for_confirm.clone();
@@ -386,7 +423,7 @@ pub fn DetailPanel(
                                             }
                                             <button
                                                 class="px-3 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-slate-100 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
-                                                on:click=move |_| cancel_delete()
+                                                on:click=move |_| { delete_msg.set(String::new()); cancel_delete(); }
                                             >
                                                 "Cancel"
                                             </button>

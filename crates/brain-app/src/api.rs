@@ -14,6 +14,25 @@ fn sfe(e: BrainError) -> ServerFnError {
     ServerFnError::new(e.to_string())
 }
 
+/// Accept a user-supplied commit message only if it's non-empty after trim and
+/// free of control characters (tabs, CR, LF, etc.). Cap at 200 chars to keep
+/// subject lines sane. Returns `None` to signal "fall back to auto-message".
+#[cfg(feature = "ssr")]
+fn sanitize_commit_message(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().any(|c| c.is_control() && c != ' ') {
+        return None;
+    }
+    let mut out = trimmed.to_string();
+    if out.chars().count() > 200 {
+        out = out.chars().take(200).collect();
+    }
+    Some(out)
+}
+
 #[cfg(feature = "ssr")]
 pub fn register_server_functions() {
     // LTO (`lto = true` in [profile.release]) strips the `inventory::submit!`
@@ -239,11 +258,12 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
         }
     };
 
-    let commit_msg = if payload.sha.is_some() {
+    let auto_msg = if payload.sha.is_some() {
         format!("Update {} via Brain UI", file_path)
     } else {
         format!("Create {} via Brain UI", file_path)
     };
+    let commit_msg = sanitize_commit_message(payload.commit_message.as_deref()).unwrap_or(auto_msg);
 
     let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     let author_email = format!("{}@users.noreply.github.com", user);
@@ -278,14 +298,19 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
 }
 
 #[server(DeleteBrainFile, "/api", endpoint = "delete_brain_file")]
-pub async fn delete_brain_file(path: String, sha: String) -> Result<(), ServerFnError> {
+pub async fn delete_brain_file(
+    path: String,
+    sha: String,
+    commit_message: Option<String>,
+) -> Result<(), ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let author_email = format!("{}@users.noreply.github.com", user);
-    let commit_msg = format!("Delete {} via Brain UI", path);
+    let commit_msg = sanitize_commit_message(commit_message.as_deref())
+        .unwrap_or_else(|| format!("Delete {} via Brain UI", path));
 
     let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
     match storage
@@ -320,6 +345,7 @@ pub async fn rename_brain_file(
     old_path: String,
     new_path: String,
     old_sha: String,
+    commit_message: Option<String>,
 ) -> Result<RenameResult, ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
@@ -387,8 +413,14 @@ pub async fn rename_brain_file(
         updated_referrers.push(candidate.clone());
     }
 
-    // Create the file at the new path, then delete the old one.
-    let create_msg = format!("Rename {old_path} → {new_path} via Brain UI");
+    // Create the file at the new path, then delete the old one. A user-
+    // supplied message only applies to these two "main" commits — the
+    // "Update links in X" referrer commits keep their auto-generated msg
+    // since they're side-effects of the move, not the user's stated intent.
+    let user_msg = sanitize_commit_message(commit_message.as_deref());
+    let create_msg = user_msg
+        .clone()
+        .unwrap_or_else(|| format!("Rename {old_path} → {new_path} via Brain UI"));
     storage
         .save_file(
             &token,
@@ -402,7 +434,8 @@ pub async fn rename_brain_file(
         .await
         .map_err(sfe)?;
 
-    let delete_msg = format!("Delete {old_path} (renamed to {new_path}) via Brain UI");
+    let delete_msg = user_msg
+        .unwrap_or_else(|| format!("Delete {old_path} (renamed to {new_path}) via Brain UI"));
     storage
         .delete_file(
             &token,

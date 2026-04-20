@@ -32,6 +32,11 @@ pub fn EditorPanel(
     let saving = RwSignal::new(false);
     let edit_path = RwSignal::new(Option::<String>::None);
     let edit_sha = RwSignal::new(Option::<String>::None);
+    let custom_msg_open = RwSignal::new(read_custom_msg_pref());
+    let custom_msg = RwSignal::new(String::new());
+    Effect::new(move |_| {
+        write_custom_msg_pref(custom_msg_open.get());
+    });
 
     // Prefill from EditMode::Edit(prefill). Runs once per transition into Edit mode.
     let prefilled_for = RwSignal::new(Option::<String>::None);
@@ -258,6 +263,17 @@ pub fn EditorPanel(
             folder: Some(folder.get_untracked()),
             path: edit_path.get_untracked(),
             sha: edit_sha.get_untracked(),
+            commit_message: if custom_msg_open.get_untracked() {
+                let m = custom_msg.get_untracked();
+                let t = m.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            } else {
+                None
+            },
         };
 
         saving.set(true);
@@ -336,7 +352,7 @@ pub fn EditorPanel(
         {
             use crate::api::rename_brain_file;
             leptos::task::spawn_local(async move {
-                match rename_brain_file(old_path, new_path.clone(), sha).await {
+                match rename_brain_file(old_path, new_path.clone(), sha, None).await {
                     Ok(res) => {
                         edit_path.set(Some(res.new_path.clone()));
                         // sha is stale after the move (create + delete commits);
@@ -450,7 +466,36 @@ pub fn EditorPanel(
             <MarkdownPreview node_type=node_type.into() body=body />
             <RelatedLinksPicker selected_related=selected_related node_titles=node_titles_stored />
 
-            <div class="pt-2 border-t border-slate-800">
+            <div class="pt-2 border-t border-slate-800 space-y-2">
+                <div>
+                    <button
+                        class="text-[10px] uppercase tracking-widest text-slate-400 hover:text-teal-300 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 rounded px-1"
+                        on:click=move |_| custom_msg_open.update(|v| *v = !*v)
+                    >
+                        {move || if custom_msg_open.get() { "▾ Custom commit message" } else { "▸ Custom commit message" }}
+                    </button>
+                    <Show when=move || custom_msg_open.get()>
+                        <input
+                            type="text"
+                            maxlength="200"
+                            class="mt-1 w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-xs focus:border-teal-400 focus:outline-none font-mono"
+                            placeholder=move || {
+                                let updating = is_edit.get();
+                                let path = edit_path.get().unwrap_or_else(|| "…".to_string());
+                                if updating {
+                                    format!("Update {path} via Brain UI")
+                                } else {
+                                    format!("Create {path} via Brain UI")
+                                }
+                            }
+                            prop:value=move || custom_msg.get()
+                            on:input=move |ev| custom_msg.set(event_target_value(&ev))
+                        />
+                        <p class="text-[10px] text-slate-600 mt-1">
+                            "Leave blank to use the auto-generated message."
+                        </p>
+                    </Show>
+                </div>
                 <button
                     class="w-full px-4 py-2 rounded-md bg-teal-500 text-slate-950 text-sm font-semibold hover:bg-teal-400 transition-colors focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50"
                     disabled=move || saving.get() || title.with(|t| t.is_empty())
@@ -765,6 +810,32 @@ fn strip_ext(filename: &str) -> String {
         _ => filename.to_string(),
     }
 }
+
+#[cfg(not(feature = "ssr"))]
+const CUSTOM_MSG_PREF_KEY: &str = "brain-ui:commit-msg-open";
+
+#[cfg(not(feature = "ssr"))]
+fn read_custom_msg_pref() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(CUSTOM_MSG_PREF_KEY).ok().flatten())
+        .is_some_and(|v| v == "1")
+}
+
+#[cfg(feature = "ssr")]
+fn read_custom_msg_pref() -> bool {
+    false
+}
+
+#[cfg(not(feature = "ssr"))]
+fn write_custom_msg_pref(open: bool) {
+    if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = s.set_item(CUSTOM_MSG_PREF_KEY, if open { "1" } else { "0" });
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn write_custom_msg_pref(_open: bool) {}
 
 /// Searchable node picker for forced "Related / See also" linking.
 #[component]

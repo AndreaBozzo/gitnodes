@@ -278,6 +278,10 @@ pub struct BrainFilePayload {
     /// For updates: the file path and sha.
     pub path: Option<String>,
     pub sha: Option<String>,
+    /// Optional user-supplied commit message. Empty/None falls back to the
+    /// auto-generated "Update/Create X via Brain UI" message.
+    #[serde(default)]
+    pub commit_message: Option<String>,
 }
 
 #[cfg(test)]
