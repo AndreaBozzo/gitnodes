@@ -85,6 +85,20 @@ impl NodeType {
         }
     }
 
+    /// Reverse of `directory()`: maps a canonical folder name back to the
+    /// type that owns it. Returns `None` for unknown folders (custom paths).
+    pub fn from_directory(dir: &str) -> Option<Self> {
+        match dir.trim_matches('/') {
+            "concepts" => Some(NodeType::Concept),
+            "adrs" => Some(NodeType::Decision),
+            "meetings" => Some(NodeType::Meeting),
+            "post-mortems" => Some(NodeType::PostMortem),
+            "preventivi" => Some(NodeType::Preventivo),
+            "runbooks" => Some(NodeType::Runbook),
+            _ => None,
+        }
+    }
+
     /// Returns the Brain template frontmatter type value.
     pub fn frontmatter_type(self) -> &'static str {
         match self {

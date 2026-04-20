@@ -298,6 +298,66 @@ pub fn EditorPanel(
         }
     };
 
+    // --- Type/folder mismatch banner ---------------------------------------
+    // When editing, if the file lives in the canonical directory of a *different*
+    // type than the one currently selected, offer to move it. We only trigger
+    // when the current dir maps cleanly to a known type — custom paths (e.g.
+    // `drafts/q3/foo.md`) are treated as intentional and left alone.
+    let mismatch = Memo::new(move |_| {
+        if !is_edit.get() {
+            return None;
+        }
+        let path = edit_path.get()?;
+        let (dir, _file) = path.rsplit_once('/')?;
+        let current_type = NodeType::from_directory(dir)?;
+        let target = node_type.get();
+        if current_type == target || target.directory().is_empty() {
+            return None;
+        }
+        Some((path, current_type, target))
+    });
+
+    let moving = RwSignal::new(false);
+    let move_error = RwSignal::new(String::new());
+
+    let do_move = move || {
+        let Some((old_path, _from, to)) = mismatch.get_untracked() else {
+            return;
+        };
+        let Some(sha) = edit_sha.get_untracked() else {
+            return;
+        };
+        let filename = old_path.rsplit('/').next().unwrap_or(&old_path).to_string();
+        let new_path = format!("{}/{}", to.directory(), filename);
+
+        moving.set(true);
+        move_error.set(String::new());
+        #[cfg(not(feature = "ssr"))]
+        {
+            use crate::api::rename_brain_file;
+            leptos::task::spawn_local(async move {
+                match rename_brain_file(old_path, new_path.clone(), sha).await {
+                    Ok(res) => {
+                        edit_path.set(Some(res.new_path.clone()));
+                        // sha is stale after the move (create + delete commits);
+                        // exit edit mode so the user reopens with a fresh sha.
+                        edit_mode.set(EditMode::Closed);
+                        moving.set(false);
+                        graph_version.update(|v| *v += 1);
+                    }
+                    Err(e) => {
+                        move_error.set(format!("Move failed: {e}"));
+                        moving.set(false);
+                    }
+                }
+            });
+        }
+        #[cfg(feature = "ssr")]
+        {
+            let _ = (new_path, sha);
+        }
+    };
+
     view! {
         <aside class="w-[420px] shrink-0 border-r border-slate-800 bg-slate-900/60 p-5 space-y-4 overflow-y-auto">
             <div class="flex items-center justify-between mb-2">
@@ -353,6 +413,38 @@ pub fn EditorPanel(
             </Show>
 
             <FrontmatterFields node_type=node_type title=title author=author />
+
+            <Show when=move || mismatch.with(|m| m.is_some())>
+                {
+                    let do_move = do_move;
+                    view! {
+                        <div class="px-3 py-2 rounded-md bg-amber-500/10 border border-amber-400/40 text-amber-100 text-xs space-y-2">
+                            <div>
+                                {move || mismatch.with(|m| m.as_ref().map(|(path, from, to)| {
+                                    let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                                    format!(
+                                        "This {} lives in `{}/` (the {} folder). Move to `{}/`?",
+                                        to.label(), dir, from.label(), to.directory(),
+                                    )
+                                }).unwrap_or_default())}
+                            </div>
+                            <div class="flex gap-2 items-center">
+                                <button
+                                    class="px-3 py-1 rounded bg-amber-400/30 border border-amber-300/50 text-amber-50 hover:bg-amber-400/50 transition-colors focus:outline-none focus:ring-1 focus:ring-amber-500 disabled:opacity-50"
+                                    disabled=move || moving.get()
+                                    on:click=move |_| do_move()
+                                >
+                                    {move || if moving.get() { "Moving…" } else { "Move file" }}
+                                </button>
+                                <Show when=move || !move_error.with(String::is_empty)>
+                                    <span class="text-rose-300">{move || move_error.get()}</span>
+                                </Show>
+                            </div>
+                        </div>
+                    }
+                }
+            </Show>
+
             <LocationPicker folder=folder node_type=node_type all_folders=all_folders is_edit=is_edit />
             <TagInput tags=tags all_tags=all_tags_stored />
             <MarkdownPreview node_type=node_type.into() body=body />

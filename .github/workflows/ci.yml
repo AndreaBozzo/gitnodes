@@ -18,7 +18,7 @@ jobs:
       matrix:
         job: [fmt, clippy-ssr, clippy-hydrate, test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -50,8 +50,8 @@ jobs:
     name: tailwind build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
