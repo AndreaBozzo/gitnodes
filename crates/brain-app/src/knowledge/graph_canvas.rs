@@ -28,6 +28,14 @@ pub fn GraphCanvas(
     let positions: StoredValue<HashMap<u32, (f32, f32)>> =
         StoredValue::new(nodes.with_value(|ns| ns.iter().map(|n| (n.id, (n.x, n.y))).collect()));
 
+    let view_box = Memo::new(move |_| match selected.get() {
+        Some(id) => positions
+            .with_value(|p| p.get(&id).copied())
+            .map(|(x, y)| format!("{:.3} {:.3} 100 100", x - 50.0, y - 50.0))
+            .unwrap_or_else(|| "0 0 100 100".to_string()),
+        None => "0 0 100 100".to_string(),
+    });
+
     let degrees: StoredValue<HashMap<u32, usize>> =
         StoredValue::new(adjacency.with_value(|a| a.iter().map(|(k, v)| (*k, v.len())).collect()));
 
@@ -163,7 +171,7 @@ pub fn GraphCanvas(
     view! {
         <div class="flex-1 relative bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 overflow-hidden">
             <svg
-                viewBox="0 0 100 100"
+                viewBox=move || view_box.get()
                 preserveAspectRatio="xMidYMid meet"
                 class="absolute inset-0 w-full h-full"
             >
