@@ -1,32 +1,101 @@
-# Brain_UI — Roadmap & Known Caveats
+# Brain UI Roadmap
 
-Tracking consolidation work and deferred items. Living document.
+Questo documento delinea l'evoluzione di **Brain UI** da un visualizzatore di grafi Markdown a un CMS distribuito, collaborativo, platform-agnostic e potenziato dall'Intelligenza Artificiale.
 
-## In flight — Consolidation (2026-04)
+L'architettura si basa su Git come *Single Source of Truth* e su un database SQLite locale come *Materialized View* per garantire performance e aggirare i limiti delle API dei provider.
 
-Three-phase cleanup before adding new features. See plan in repo/PR history.
+---
 
-- **Phase 1 — Scaffolding & safety net** (current)
-  - [x] CI workflow (`fmt`, `clippy` ssr+hydrate, `test`, Tailwind build)
-  - [x] `justfile` for dev/lint/test/build/docker
-  - [x] Structured logging via `tracing` (SSR)
-  - [x] This roadmap
-- **Phase 2 — Workspace & module boundaries** (done)
-  - [x] `brain-domain` — pure types, `BrainError`, frontmatter split (9 tests)
-  - [x] `brain-graph` — parsing, graph build, force-directed layout (13 tests)
-  - [x] `brain-storage` — reqwest client, `contents_url`, TTL-cached `load_graph` / `load_template`, `invalidate`. All 5 GitHub API calls in `api.rs` use bare reqwest (Octocrab fully removed).
-  - [x] `brain-auth` — OAuth primitives (state gen, authorize URL, token exchange, user fetch, org check) + session key constants + session getters. Axum handlers stay in `brain_ui/server/auth.rs` as thin glue that emits audit events.
-  - [x] `BrainError` wired through server fns via a single `sfe()` adapter at the edge. Internal code returns typed `Result<T, BrainError>`.
-  - [x] Unit tests for parsing / graph build / layout (pure crates, 22 total)
-  - [x] Octocrab dep removed — all 5 server fns rewritten to bare reqwest. Build-time & binary-size win.
-  - [x] **`Storage` trait extracted.** `brain-storage` exposes a trait with `GithubStorage` and `InMemoryStorage` implementations, and `api.rs` no longer does raw reqwest calls.
-  - [x] **`brain-app` extracted.** Moved `src/` under `crates/brain-app/` and retargeted `[package.metadata.leptos]`, Dockerfile builder stage, and `justfile` paths. The workspace root is now purely virtual.
-- **Phase 3 — UI consolidation** (done)
-  - [x] Shared `<TagBadge>` / `<RemovableBadge>` component in `knowledge/components.rs` — used by `detail_panel.rs`, `detail_bar.rs`, `editor.rs`
-  - [x] Accent color via CSS custom properties (`--accent-concept`, etc.) + `NodeType::accent_var()` method (SVG fills still use raw hex)
-  - [x] Removed `rel="external"` on internal `/admin` link
-  - [x] `graph_version: RwSignal<u64>` replaces `window.location.reload()` — threaded from `KnowledgePage` through `EditorPanel` and `DetailPanel`
-  - [x] Decomposed `editor.rs` into `<FrontmatterFields>`, `<TagInput>`, `<RelatedLinksPicker>`, `<MarkdownPreview>` sub-components
+## 🟢 Fase 1: Astrazione e Configurabilità
+Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-agnostic, basato interamente su API REST.
+
+**Principio guida:** Fase 1 deve essere non-breaking per installazioni esistenti e libera da speculazione architetturale. Abstraction layers (trait) e admin UI vengono rimandati alle fasi dove esiste un secondo consumer/use-case che ne valida la forma.
+
+- [ ] **Config Loader + Schema + Default Migration**:
+    - Parser YAML per `.brain-config.yml` con validazione al load (no duplicate directory, colori validi, nomi non riservati).
+    - Default config incluso nel binario, equivalente all'attuale `NodeType` hardcodato (concept/adr/meeting/post-mortem/preventivo/runbook). Repo senza config file funzionano identici a oggi: zero migrazione richiesta.
+    - Fail-fast all'avvio se il config è malformato, non al primo uso.
+    - Decisione esplicita sul reload: TTL-cached in memoria (allinearsi al pattern di `runtime.rs`, 30s) + invalidazione su webhook push di Fase 2.
+- [ ] **NodeType → Config Lookup**:
+    - Sostituzione dell'enum `NodeType` in `brain-domain/src/types.rs` con `String` + lookup `Arc<BrainConfig>`.
+    - Migrazione di `EditPrefill::from_raw`, `draft.rs` (localStorage schema-version bump per invalidare draft vecchi post-deploy), generazione template, ricavo directory/label/accent.
+    - **Prerequisito bloccante:** round-trip del frontmatter parsato invece di rigenerarlo da template sull'update (vedi caveat #5). Senza questo fix, una config NodeType data-driven con campi custom definiti dall'utente cancella ogni campo custom al salvataggio — regressione certa, non caveat.
+- [ ] **Graceful Fallback per Tipi Sconosciuti**:
+    - `config.lookup(type_str).unwrap_or(&config.default_type)` — niente `ParseError`, niente crash WASM su draft vecchi o nodi con `type:` non più censito.
+    - Banner UI sui nodi orfani con CTA "aggiungi questo tipo a `.brain-config.yml`".
+    - Nota: `#[serde(other)]` NON si applica qui perché `NodeType` non è più un enum; il fallback è sul lookup, non sulla deserializzazione.
+- [ ] **Creazione Guidata (Zero Typo)**:
+    - Menu "Nuovo Nodo" generato dinamicamente dalla config attiva.
+    - Autocompilazione del frontmatter YAML e del path di salvataggio.
+- [ ] **`GithubClient` Centralizzato (no trait yet)**:
+    - Tutte le costruzioni di URL verso `api.github.com` centralizzate in una singola struct `GithubClient` in `brain-domain/src/config.rs` o crate dedicato.
+    - **NO `ForgeAdapter` trait in questa fase**: il design dell'abstraction viene fatto in Fase 4 contro un secondo adapter reale (GitLab/Gitea), non in astratto contro uno solo.
+- [ ] **Unified Issue System ("Tutto è un'Issue")**:
+    - Abbandono delle dipendenze da feature proprietarie (es. GitHub Discussions).
+    - Mapping di ogni entità comunicativa sulle **Issues**, usando **Labels** (es. `brain:discussion`, `brain:task`) per differenziare il comportamento UI.
+
+### Spostati fuori da Fase 1
+
+- **Pannello Impostazioni (Visual YAML Editor)** → **Fase 3**. È effettivamente un sotto-flusso admin-only e dipende da RBAC; fino ad allora gli admin editano YAML via commit come il resto del contenuto git-nativo.
+- **`ForgeAdapter` trait** → **Fase 4**. Progettare un trait attorno a una singola implementazione produce quasi sempre la forma sbagliata; la riusiamo solo quando esiste un secondo adapter che la valida.
+
+
+## 🟡 Fase 2: Operatività, Sync e Dati
+Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia dell'integrità dei dati.
+
+- [ ] **Type: Task**:
+    - Introduzione del nodo di tipo operativo per il tracciamento di attività, linkato 1:1 a un'Issue (Stato Open/Closed, Assignees).
+- [ ] **Sincronizzazione Esterna (Inbound Webhooks & SSE)**:
+    - Endpoint in Axum dedicato alla ricezione di Webhooks (`push`, `issues`) dal Forge.
+    - Invalidazione della cache SQLite e invio di eventi **SSE (Server-Sent Events)** al frontend Leptos per l'Hot Reload del grafo.
+- [ ] **Gestione "Link Rot" (Rename Transazionali)**:
+    - Implementazione sicura del cambio nome file/cartella tramite transazioni `git mv`.
+    - Aggiornamento contestuale del campo `path` in SQLite per mantenere intatto il legame storico.
+
+---
+
+## 🟠 Fase 3: Collaborazione e Sicurezza (RBAC)
+Abilitare l'uso della piattaforma a team estesi, sfruttando l'App OAuth esistente.
+
+- [ ] **Impersonation tramite OAuth**:
+    - Utilizzo dell'access token univoco dell'utente loggato per eseguire azioni sul Forge a suo nome (es. commenti o apertura PR).
+- [ ] **Workflow di Review (Branching & PR)**:
+    - Flusso "Proponi Modifica" per utenti non-admin.
+    - Creazione automatica di branch temporanei e apertura di Pull Request (tramite REST) direttamente dalla UI.
+- [ ] **Rate-Limit Shielding**:
+    - Centralizzazione delle chiamate al Forge tramite job in background di Axum. Il frontend interroga esclusivamente la cache SQLite.
+- [ ] **Pannello Impostazioni (Visual YAML Editor)** _(spostato da Fase 1)_:
+    - Interfaccia UI dedicata (solo `Admin`, dipende dall'RBAC di questa fase) per creare e modificare i "Tipi di Nodo" tramite form visuali (Color Picker, gestione cartelle, mapping Issue/Task).
+    - Il backend Axum serializza (`serde_yaml`) e pusha le modifiche a `.brain-config.yml` sul branch principale.
+
+---
+
+## 🔴 Fase 4: History & Multi-Forge
+Esplorazione del passato e indipendenza totale dal provider.
+
+- [ ] **Git Time Jump**:
+    - Navigazione della history dalla UI (visualizzazione di un nodo a uno specifico SHA), mantenendo a schermo i commenti attuali dell'Issue collegata.
+- [ ] **`ForgeAdapter` Trait + Multi-Forge Support** _(trait spostato da Fase 1)_:
+    - Estrazione del `trait ForgeAdapter` da `GithubClient` (Fase 1), progettato contro i requisiti reali dei nuovi adapter — non in astratto.
+    - Sviluppo degli adapter ufficiali per **GitLab** e **Gitea/Codeberg**.
+- [ ] **Offline Mode / Local Git**:
+    - Supporto per repository locali senza un forge remoto.
+
+---
+
+## 🟣 Fase 5: AI & Automations Ecosystem
+Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazione esterni.
+
+- [ ] **AI Assistant Proxy (Copilot Integration)**:
+    - Integrazione nell'editor UI (Leptos) di un assistente AI per generazione markdown, autocompletamento, summarization automatica e tagging.
+    - Creazione di un proxy sicuro in Axum che sfrutti l'OAuth token dell'utente per interrogare le API AI di GitHub/Copilot (garantendo RBAC e accounting corretto).
+- [ ] **Outbound Webhooks Engine**:
+    - Motore di eventi in background (Axum) per inviare webhook a sistemi esterni (GitHub Actions, Zapier, CI/CD).
+    - Configurazione dei trigger tramite il file `.brain-config.yml` (es. `on_task_close: https://...`).
+
+### ROADMAP IS ALWAYS SUBJECT TO CHANGES AND REALIGNMENTS, this sketch is meant to be indicative of the direction.
+
+---
 
 ## Known caveats
 
@@ -38,8 +107,17 @@ Three-phase cleanup before adding new features. See plan in repo/PR history.
 
 4. **`prose-sm` typography sizing is a guess** — tune `tailwind.config.js` `typography.invert` palette and/or swap `prose-sm` → `prose-base` after seeing real content.
 
-5. **~~Editor → reload-on-save~~** — Fixed: `graph_version: RwSignal<u64>` now invalidates the `graph` Resource reactively instead of `window.location.reload()`. No full SSR round-trip on save/delete.
+5. **Update path regenerates frontmatter from templates** — if a doc has custom fields (e.g., `status: accepted` on an ADR past-draft), they are wiped on save. Body is preserved verbatim. Fix by round-tripping the parsed frontmatter dict instead of re-emitting from a template during updates. **Blocks Phase 1** (see "NodeType → Config Lookup"): user-defined custom fields under a data-driven NodeType config would be silently wiped on every save.
 
-6. **Update path regenerates frontmatter from templates** — if a doc has custom fields (e.g., `status: accepted` on an ADR past-draft), they are wiped on save. Body is preserved verbatim. Fix by round-tripping the parsed frontmatter dict instead of re-emitting from a template during updates.
+6. **No auto-refresh after out-of-band commits** — the 30s TTL cache in `brain-storage/src/lib.rs` bounds staleness for edits made via `git push` directly. Acceptable; documented here so symptom isn't mistaken for a bug.
 
-7. **No auto-refresh after out-of-band commits** — the 30s TTL cache in `runtime.rs` bounds staleness for edits made via `git push` directly. Acceptable; documented here so symptom isn't mistaken for a bug.
+7. **Rename issues N+2 Contents API commits** — `rename_brain_file` in `crates/brain-app/src/api.rs` commits once per backlinked file plus a create and a delete, instead of one batched commit. Chosen for simplicity; repo is small and rename is rare. If commit churn becomes a complaint, migrate to the Git Data API (`POST /git/blobs` → `/git/trees` → `/git/commits` → `PATCH /git/refs/heads/{branch}`). The existing `rewrite_links` + backlink discovery are reusable.
+
+8. **Graph cache is process-global, not user- or target-scoped** — `static Mutex<Option<CacheEntry>>` in `brain-storage/src/lib.rs:87-93`. Safe today (all authed org members see the same repo). **Becomes a bug in Phase 3** (RBAC: permission-differentiated views would leak across users) and **Phase 4** (multi-forge/multi-target: one process serving multiple repos). Key the cache by `(user_id_or_role, target)` before either phase lands.
+
+9. **`register_explicit` boilerplate is LTO-coupled** — `api.rs::register_server_functions` manually lists every `#[server]` fn because `lto = true` in `[profile.release]` strips the `inventory::submit!` entries that `#[server]` relies on for auto-registration. Every new server fn must be added here or it silently 404s in release builds (dev builds still work, which makes the failure mode worse). Don't forget the line when adding a handler.
+
+10. **UI limitations** — Nessuna transizione animata tra i due viewBox: lo snap è istantaneo.
+Se il nodo è vicino ai bordi del grafo (x o y vicini a 0 o 100), il viewBox mostra area "vuota" fuori dallo spazio dei dati — il nodo resta centrato ma c'è bordo nero attorno.
+Hover non ricentra, solo selected — coerente col fatto che hover è transitorio.
+Non c'è zoom: la scala resta 100×100. Se i nodi sono molto vicini, selezionarne uno non "zooma dentro".
