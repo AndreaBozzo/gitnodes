@@ -10,6 +10,7 @@
 
 use super::types::NodeType;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Draft {
@@ -26,6 +27,11 @@ pub struct Draft {
     /// detect a stale draft: if the live file sha doesn't match, upstream
     /// moved on and restoring would silently revert their changes.
     pub base_sha: Option<String>,
+    /// Frontmatter from the original file on edit drafts, preserved so save
+    /// can merge it with form fields instead of regenerating from template.
+    /// `serde(default)` keeps pre-existing drafts deserializable with `None`.
+    #[serde(default)]
+    pub preserved_frontmatter: Option<BTreeMap<String, serde_yaml::Value>>,
 }
 
 /// Build the localStorage key for a given repo scope and file path.

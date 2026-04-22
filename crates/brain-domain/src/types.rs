@@ -1,5 +1,6 @@
 use crate::frontmatter::split_frontmatter;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -166,6 +167,11 @@ pub struct EditPrefill {
     /// Full body (everything after the frontmatter), preserved verbatim.
     pub body: String,
     pub related: Vec<String>,
+    /// Full parsed frontmatter, preserved so `save_brain_file` can merge
+    /// form-controlled fields without wiping custom keys (status, severity,
+    /// cliente, etc.). Empty map if the file has no frontmatter or it fails
+    /// to parse as YAML.
+    pub frontmatter: BTreeMap<String, serde_yaml::Value>,
 }
 
 /// What the editor panel should do when open.
@@ -189,32 +195,38 @@ impl EditPrefill {
             ..Default::default()
         };
 
-        for line in front.lines() {
-            let line = line.trim_end();
-            if let Some(rest) = line.strip_prefix("type:") {
-                out.node_type = match rest.trim().trim_matches('"') {
-                    "concept" => Some(NodeType::Concept),
-                    "adr" => Some(NodeType::Decision),
-                    "meeting" => Some(NodeType::Meeting),
-                    "post-mortem" => Some(NodeType::PostMortem),
-                    "preventivo" => Some(NodeType::Preventivo),
-                    "runbook" => Some(NodeType::Runbook),
-                    _ => None,
-                };
-            } else if let Some(rest) = line.strip_prefix("topic:") {
-                out.title = rest.trim().trim_matches('"').to_string();
-            } else if let Some(rest) = line.strip_prefix("author:") {
-                out.author = rest.trim().trim_matches('"').to_string();
-            } else if let Some(rest) = line.strip_prefix("tags:") {
-                let v = rest.trim();
-                if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-                    out.tags = inner
-                        .split(',')
-                        .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
-                        .filter(|t| !t.is_empty())
-                        .collect();
+        if !front.trim().is_empty() {
+            match serde_yaml::from_str::<BTreeMap<String, serde_yaml::Value>>(front) {
+                Ok(map) => out.frontmatter = map,
+                Err(_) => {
+                    out.frontmatter = BTreeMap::new();
                 }
             }
+        }
+
+        if let Some(v) = out.frontmatter.get("type").and_then(|v| v.as_str()) {
+            out.node_type = match v {
+                "concept" => Some(NodeType::Concept),
+                "adr" => Some(NodeType::Decision),
+                "meeting" => Some(NodeType::Meeting),
+                "post-mortem" => Some(NodeType::PostMortem),
+                "preventivo" => Some(NodeType::Preventivo),
+                "runbook" => Some(NodeType::Runbook),
+                _ => None,
+            };
+        }
+        if let Some(v) = out.frontmatter.get("topic").and_then(|v| v.as_str()) {
+            out.title = v.to_string();
+        }
+        if let Some(v) = out.frontmatter.get("author").and_then(|v| v.as_str()) {
+            out.author = v.to_string();
+        }
+        if let Some(seq) = out.frontmatter.get("tags").and_then(|v| v.as_sequence()) {
+            out.tags = seq
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter(|s| !s.is_empty())
+                .collect();
         }
 
         // If no `topic:` field, derive title from the first heading.
@@ -282,6 +294,13 @@ pub struct BrainFilePayload {
     /// auto-generated "Update/Create X via Brain UI" message.
     #[serde(default)]
     pub commit_message: Option<String>,
+    /// Frontmatter parsed from the original file on update. `save_brain_file`
+    /// merges form-controlled fields on top of this map so custom keys
+    /// (status, severity, cliente, etc.) survive the round-trip. `None` on
+    /// create; old clients without the field still deserialize via serde
+    /// default.
+    #[serde(default)]
+    pub preserved_frontmatter: Option<BTreeMap<String, serde_yaml::Value>>,
 }
 
 #[cfg(test)]
@@ -325,5 +344,32 @@ mod tests {
         let raw = "---\ntype: concept\n---\n# X\n\n## Related\n- [Foo](../concepts/Foo.md)\n- [ext](https://example.com)\n";
         let p = EditPrefill::from_raw("concepts/X.md", "s", raw);
         assert_eq!(p.related, vec!["concepts/Foo.md"]);
+    }
+
+    #[test]
+    fn prefill_preserves_custom_frontmatter_fields() {
+        // Caveat #5: a doc with custom fields (status: accepted on a non-draft
+        // ADR, severity on a post-mortem) must round-trip the full map so
+        // save_brain_file can merge instead of regenerating.
+        let raw = "---\ntype: adr\nstatus: accepted\ndate: 2026-03-01\nauthor: alice\ntags: [\"x\"]\n---\nbody\n";
+        let p = EditPrefill::from_raw("adrs/F.md", "sha", raw);
+        assert_eq!(p.node_type, Some(NodeType::Decision));
+        assert_eq!(
+            p.frontmatter.get("status").and_then(|v| v.as_str()),
+            Some("accepted")
+        );
+        assert_eq!(
+            p.frontmatter.get("date").and_then(|v| v.as_str()),
+            Some("2026-03-01")
+        );
+    }
+
+    #[test]
+    fn prefill_malformed_yaml_falls_back_to_empty_map() {
+        // Malformed YAML frontmatter must not panic or make the file uneditable.
+        let raw = "---\ntype: concept\n: not valid :\n---\nbody";
+        let p = EditPrefill::from_raw("concepts/X.md", "s", raw);
+        assert!(p.frontmatter.is_empty());
+        assert_eq!(p.body, "body");
     }
 }

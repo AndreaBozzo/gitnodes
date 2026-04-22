@@ -1,4 +1,6 @@
 pub mod components;
+#[cfg(feature = "ssr")]
+pub mod config_loader;
 mod detail_bar;
 mod detail_panel;
 pub(crate) mod draft;

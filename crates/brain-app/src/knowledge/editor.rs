@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use std::collections::BTreeMap;
 
 use super::components::RemovableBadge;
 use super::draft::{self, Draft};
@@ -32,6 +33,7 @@ pub fn EditorPanel(
     let saving = RwSignal::new(false);
     let edit_path = RwSignal::new(Option::<String>::None);
     let edit_sha = RwSignal::new(Option::<String>::None);
+    let preserved_frontmatter = RwSignal::new(Option::<BTreeMap<String, serde_yaml::Value>>::None);
     let custom_msg_open = RwSignal::new(read_custom_msg_pref());
     let custom_msg = RwSignal::new(String::new());
     Effect::new(move |_| {
@@ -58,12 +60,18 @@ pub fn EditorPanel(
             selected_related.set(p.related);
             edit_path.set(Some(p.path));
             edit_sha.set(Some(p.sha));
+            preserved_frontmatter.set(if p.frontmatter.is_empty() {
+                None
+            } else {
+                Some(p.frontmatter)
+            });
             folder.set(String::new());
         } else {
             prefilled_for.set(None);
             if matches!(edit_mode.get(), EditMode::New) {
                 edit_path.set(None);
                 edit_sha.set(None);
+                preserved_frontmatter.set(None);
                 folder.set(String::new());
             }
         }
@@ -198,6 +206,7 @@ pub fn EditorPanel(
             return;
         }
         let base_sha = edit_sha.get_untracked();
+        let preserved = preserved_frontmatter.get_untracked();
 
         #[cfg(feature = "hydrate")]
         {
@@ -211,6 +220,7 @@ pub fn EditorPanel(
                 folder: Some(f),
                 saved_at: draft::now_secs(),
                 base_sha,
+                preserved_frontmatter: preserved,
             };
             let key_for_timeout = key.clone();
             let new_handle = gloo_timers::callback::Timeout::new(2_000, move || {
@@ -220,7 +230,7 @@ pub fn EditorPanel(
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (nt, a, base_sha, key);
+            let _ = (nt, a, base_sha, key, preserved);
         }
     });
 
@@ -239,6 +249,7 @@ pub fn EditorPanel(
         if let Some(f) = d.folder {
             folder.set(f);
         }
+        preserved_frontmatter.set(d.preserved_frontmatter);
         restore_banner.set(None);
     };
     let discard_draft = move || {
@@ -274,6 +285,7 @@ pub fn EditorPanel(
             } else {
                 None
             },
+            preserved_frontmatter: preserved_frontmatter.get_untracked(),
         };
 
         saving.set(true);

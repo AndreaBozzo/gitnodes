@@ -11,15 +11,20 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
 
 **Principio guida:** Fase 1 deve essere non-breaking per installazioni esistenti e libera da speculazione architetturale. Abstraction layers (trait) e admin UI vengono rimandati alle fasi dove esiste un secondo consumer/use-case che ne valida la forma.
 
-- [ ] **Config Loader + Schema + Default Migration**:
-    - Parser YAML per `.brain-config.yml` con validazione al load (no duplicate directory, colori validi, nomi non riservati).
-    - Default config incluso nel binario, equivalente all'attuale `NodeType` hardcodato (concept/adr/meeting/post-mortem/preventivo/runbook). Repo senza config file funzionano identici a oggi: zero migrazione richiesta.
-    - Fail-fast all'avvio se il config è malformato, non al primo uso.
-    - Decisione esplicita sul reload: TTL-cached in memoria (allinearsi al pattern di `runtime.rs`, 30s) + invalidazione su webhook push di Fase 2.
+- [x] **Frontmatter round-trip (prerequisito bloccante, ex-caveat #5)** — _2026-04-22_
+    - `EditPrefill::from_raw` parsa l'intero frontmatter YAML in `BTreeMap<String, serde_yaml::Value>`.
+    - `BrainFilePayload.preserved_frontmatter` propaga il dict all'update; `merge_frontmatter` fa overlay dei campi del form invece di rigenerare da template.
+    - Campi custom (status, severity, cliente, ecc.) sopravvivono ai save.
+- [x] **Config Loader + Schema + Default Migration** — _2026-04-22_
+    - Parser YAML per `.brain-config.yml` con validazione al load (no duplicate directory, colori validi, nomi non riservati `tags`/`templates`).
+    - Default config incluso nel binario (`BrainConfig::default()`), equivalente esatto all'attuale `NodeType` hardcodato (concept/adr/meeting/post-mortem/preventivo/runbook/tag). Repo senza config file funzionano identici a oggi: zero migrazione richiesta.
+    - **Deviazione deliberata dalla prescrizione originale:** validazione fail-soft, non fail-fast all'avvio. Il server parte prima che esista un token autenticato per leggere il repo; parsing/validation failure ora loggano warning e cadono sul default. La fail-fast originale sposterà al banner UI del prossimo step (admin vede l'errore invece che a runtime crash).
+    - TTL-cache in memoria 30s (allineata al pattern di `brain-storage`) + `invalidate()` pronto per i webhook push di Fase 2.
+    - Server fn `load_brain_config` esposta, registrata in `register_explicit`.
 - [ ] **NodeType → Config Lookup**:
     - Sostituzione dell'enum `NodeType` in `brain-domain/src/types.rs` con `String` + lookup `Arc<BrainConfig>`.
-    - Migrazione di `EditPrefill::from_raw`, `draft.rs` (localStorage schema-version bump per invalidare draft vecchi post-deploy), generazione template, ricavo directory/label/accent.
-    - **Prerequisito bloccante:** round-trip del frontmatter parsato invece di rigenerarlo da template sull'update (vedi caveat #5). Senza questo fix, una config NodeType data-driven con campi custom definiti dall'utente cancella ogni campo custom al salvataggio — regressione certa, non caveat.
+    - Migrazione di `EditPrefill::from_raw`, `draft.rs` (localStorage schema-version bump per invalidare draft vecchi post-deploy), generazione template (consumare `NodeTypeSpec.frontmatter_seed`), ricavo directory/label/accent.
+    - Prerequisito bloccante (frontmatter round-trip): ✅ risolto sopra.
 - [ ] **Graceful Fallback per Tipi Sconosciuti**:
     - `config.lookup(type_str).unwrap_or(&config.default_type)` — niente `ParseError`, niente crash WASM su draft vecchi o nodi con `type:` non più censito.
     - Banner UI sui nodi orfani con CTA "aggiungi questo tipo a `.brain-config.yml`".
@@ -107,7 +112,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 4. **`prose-sm` typography sizing is a guess** — tune `tailwind.config.js` `typography.invert` palette and/or swap `prose-sm` → `prose-base` after seeing real content.
 
-5. **Update path regenerates frontmatter from templates** — if a doc has custom fields (e.g., `status: accepted` on an ADR past-draft), they are wiped on save. Body is preserved verbatim. Fix by round-tripping the parsed frontmatter dict instead of re-emitting from a template during updates. **Blocks Phase 1** (see "NodeType → Config Lookup"): user-defined custom fields under a data-driven NodeType config would be silently wiped on every save.
+5. ~~Update path regenerates frontmatter from templates~~ — **DONE 2026-04-22**. `EditPrefill::from_raw` ora parsa l'intero frontmatter in un `BTreeMap` YAML; `merge_frontmatter` (ex `generate_frontmatter`) fa overlay dei campi del form sulla mappa preservata invece di rigenerare da template. Campi custom (status, severity, cliente, ecc.) sopravvivono. Tests in `brain-app::api::merge_frontmatter_tests`.
 
 6. **No auto-refresh after out-of-band commits** — the 30s TTL cache in `brain-storage/src/lib.rs` bounds staleness for edits made via `git push` directly. Acceptable; documented here so symptom isn't mistaken for a bug.
 

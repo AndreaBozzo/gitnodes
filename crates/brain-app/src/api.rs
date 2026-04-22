@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ssr")]
 use crate::knowledge::types::NodeType;
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
-use brain_domain::{BrandConfig, TargetConfig};
+use brain_domain::{BrainConfig, BrandConfig, TargetConfig};
 
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
@@ -53,6 +53,7 @@ pub fn register_server_functions() {
     register_explicit::<GetAppConfig>();
     register_explicit::<UploadAsset>();
     register_explicit::<RenameBrainFile>();
+    register_explicit::<LoadBrainConfig>();
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +69,16 @@ pub async fn get_app_config() -> Result<AppConfig, ServerFnError> {
     let brand = use_context::<BrandConfig>()
         .ok_or_else(|| sfe(BrainError::other("No brand config available")))?;
     Ok(AppConfig { target, brand })
+}
+
+#[server(LoadBrainConfig, "/api", endpoint = "load_brain_config")]
+pub async fn load_brain_config() -> Result<BrainConfig, ServerFnError> {
+    use crate::knowledge::config_loader;
+    use crate::server::session;
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    let cfg = config_loader::load(&target, &token).await;
+    Ok((*cfg).clone())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -230,7 +241,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
 
     let markdown = format!(
         "{}\n{}{}",
-        generate_frontmatter(&payload, &user),
+        merge_frontmatter(&payload, &user),
         payload.body,
         related_section,
     );
@@ -745,51 +756,197 @@ pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
 }
 
 #[cfg(feature = "ssr")]
-fn generate_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
+fn today_iso() -> String {
     let today = time::OffsetDateTime::now_utc();
-    let date = format!(
+    format!(
         "{:04}-{:02}-{:02}",
         today.year(),
         today.month() as u8,
         today.day()
-    );
-    let tags_str = format!(
-        "[{}]",
-        payload
-            .tags
-            .iter()
-            .map(|t| format!("\"{}\"", t))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    )
+}
 
-    match payload.node_type {
-        NodeType::Concept => format!(
-            "---\ntype: concept\ntopic: \"{title}\"\ndate_created: {date}\nauthor: {author}\ntags: {tags}\n---\n",
-            title = payload.title,
-            tags = tags_str,
+/// Seed a fresh frontmatter map from the template for this node type. Used
+/// only on create; updates start from the preserved map and overlay form
+/// fields.
+#[cfg(feature = "ssr")]
+fn seed_frontmatter(
+    node_type: NodeType,
+    title: &str,
+    date: &str,
+) -> std::collections::BTreeMap<String, serde_yaml::Value> {
+    use serde_yaml::Value;
+    let mut m = std::collections::BTreeMap::new();
+    let s = |v: &str| Value::String(v.to_string());
+    match node_type {
+        NodeType::Concept => {
+            m.insert("type".into(), s("concept"));
+            m.insert("topic".into(), s(title));
+            m.insert("date_created".into(), s(date));
+        }
+        NodeType::Decision => {
+            m.insert("type".into(), s("adr"));
+            m.insert("status".into(), s("draft"));
+            m.insert("date".into(), s(date));
+        }
+        NodeType::Meeting => {
+            m.insert("type".into(), s("meeting"));
+            m.insert("date".into(), s(date));
+        }
+        NodeType::PostMortem => {
+            m.insert("type".into(), s("post-mortem"));
+            m.insert("incident_date".into(), s(date));
+            m.insert("severity".into(), s(""));
+        }
+        NodeType::Preventivo => {
+            m.insert("type".into(), s("preventivo"));
+            m.insert("status".into(), s("draft"));
+            m.insert("date".into(), s(date));
+            m.insert("cliente".into(), s(""));
+            m.insert("progetto".into(), s(title));
+            m.insert("modello".into(), s("T&M"));
+        }
+        NodeType::Runbook => {
+            m.insert("type".into(), s("runbook"));
+            m.insert("service".into(), s(""));
+            m.insert("last_updated".into(), s(date));
+        }
+        NodeType::Tag => {}
+    }
+    m
+}
+
+/// Build the final frontmatter block by merging the form's authoritative
+/// fields onto the document's preserved map (update) or onto a seeded
+/// template (create). Preserves custom keys (status, severity, cliente,
+/// etc.) that the form doesn't manage, per the fix for caveat #5.
+#[cfg(feature = "ssr")]
+fn merge_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
+    use serde_yaml::Value;
+
+    if matches!(payload.node_type, NodeType::Tag) {
+        return String::new();
+    }
+
+    let date = today_iso();
+    let is_update = payload.preserved_frontmatter.is_some();
+    let mut map = payload
+        .preserved_frontmatter
+        .clone()
+        .unwrap_or_else(|| seed_frontmatter(payload.node_type, &payload.title, &date));
+
+    // Form-authoritative fields: always overwrite.
+    map.insert(
+        "type".into(),
+        Value::String(payload.node_type.frontmatter_type().to_string()),
+    );
+    map.insert("author".into(), Value::String(author.to_string()));
+    map.insert(
+        "tags".into(),
+        Value::Sequence(
+            payload
+                .tags
+                .iter()
+                .map(|t| Value::String(t.clone()))
+                .collect(),
         ),
-        NodeType::Decision => format!(
-            "---\ntype: adr\nstatus: draft\ndate: {date}\nauthor: {author}\ntags: {tags}\n---\n",
-            tags = tags_str,
-        ),
-        NodeType::Meeting => format!(
-            "---\ntype: meeting\ndate: {date}\nauthor: {author}\ntags: {tags}\n---\n",
-            tags = tags_str,
-        ),
-        NodeType::PostMortem => format!(
-            "---\ntype: post-mortem\nincident_date: {date}\nseverity: \nauthor: {author}\ntags: {tags}\n---\n",
-            tags = tags_str,
-        ),
-        NodeType::Preventivo => format!(
-            "---\ntype: preventivo\nstatus: draft\ndate: {date}\nauthor: {author}\ncliente: \nprogetto: \"{title}\"\nmodello: T&M\ntags: {tags}\n---\n",
-            title = payload.title,
-            tags = tags_str,
-        ),
-        NodeType::Runbook => format!(
-            "---\ntype: runbook\nservice: \nlast_updated: {date}\nauthor: {author}\ntags: {tags}\n---\n",
-            tags = tags_str,
-        ),
-        NodeType::Tag => String::new(),
+    );
+    // `topic` is controlled by the `title` form field for the types that use it.
+    if matches!(payload.node_type, NodeType::Concept | NodeType::Preventivo) {
+        let key = if matches!(payload.node_type, NodeType::Preventivo) {
+            "progetto"
+        } else {
+            "topic"
+        };
+        map.insert(key.into(), Value::String(payload.title.clone()));
+    }
+
+    // On update: refresh `last_updated` for runbooks; leave other dates alone.
+    // On create: the seed already placed the correct date fields.
+    if is_update && matches!(payload.node_type, NodeType::Runbook) {
+        map.insert("last_updated".into(), Value::String(date));
+    }
+
+    match serde_yaml::to_string(&map) {
+        Ok(yaml) => format!("---\n{}---\n", yaml),
+        Err(_) => String::new(),
+    }
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod merge_frontmatter_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn base_payload(node_type: NodeType) -> BrainFilePayload {
+        BrainFilePayload {
+            node_type,
+            title: "T".into(),
+            author: "alice".into(),
+            tags: vec!["x".into()],
+            body: String::new(),
+            related: vec![],
+            folder: None,
+            path: Some("adrs/F.md".into()),
+            sha: Some("sha".into()),
+            commit_message: None,
+            preserved_frontmatter: None,
+        }
+    }
+
+    #[test]
+    fn update_preserves_custom_fields() {
+        let mut preserved = BTreeMap::new();
+        preserved.insert(
+            "status".into(),
+            serde_yaml::Value::String("accepted".into()),
+        );
+        preserved.insert(
+            "date".into(),
+            serde_yaml::Value::String("2026-03-01".into()),
+        );
+        let mut payload = base_payload(NodeType::Decision);
+        payload.preserved_frontmatter = Some(preserved);
+
+        let out = merge_frontmatter(&payload, "bob");
+        assert!(out.contains("status: accepted"), "out was: {out}");
+        assert!(out.contains("date: 2026-03-01"), "out was: {out}");
+        assert!(out.contains("author: bob"), "out was: {out}");
+        assert!(out.contains("type: adr"), "out was: {out}");
+    }
+
+    #[test]
+    fn create_seeds_defaults() {
+        let payload = base_payload(NodeType::Decision);
+        let out = merge_frontmatter(&payload, "alice");
+        assert!(out.contains("type: adr"));
+        assert!(out.contains("status: draft"));
+        assert!(out.starts_with("---\n"));
+        assert!(out.ends_with("---\n"));
+    }
+
+    #[test]
+    fn tag_type_emits_empty() {
+        let payload = base_payload(NodeType::Tag);
+        assert_eq!(merge_frontmatter(&payload, "x"), "");
+    }
+
+    #[test]
+    fn form_fields_win_over_preserved() {
+        let mut preserved = BTreeMap::new();
+        preserved.insert("author".into(), serde_yaml::Value::String("old".into()));
+        preserved.insert(
+            "tags".into(),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("stale".into())]),
+        );
+        let mut payload = base_payload(NodeType::Decision);
+        payload.preserved_frontmatter = Some(preserved);
+        payload.tags = vec!["new".into()];
+
+        let out = merge_frontmatter(&payload, "bob");
+        assert!(out.contains("author: bob"));
+        assert!(out.contains("- new"));
+        assert!(!out.contains("old"));
+        assert!(!out.contains("stale"));
     }
 }
