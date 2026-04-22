@@ -608,7 +608,7 @@ fn FrontmatterFields(
                                 move |_| node_type.set(t.clone())
                             }
                         >
-                            <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", spec.accent_var)></span>
+                            <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", spec.accent_var())></span>
                             {spec.label.clone()}
                         </button>
                     }

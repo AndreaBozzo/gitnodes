@@ -81,7 +81,6 @@ pub fn DetailPanel(
                         let is_tag = config.with_value(|c| {
                             c.synthetic_tag_spec().map(|s| s.name.as_str())
                                 == Some(n.node_type.as_str())
-                                || n.node_type == "tag"
                         });
                         !is_tag && !n.path.is_empty()
                     })
@@ -144,7 +143,7 @@ pub fn DetailPanel(
             {move || {
                 let node = current().expect("guarded by Show");
                 let spec = config.with_value(|c| c.lookup(&node.node_type).unwrap_or_else(|| c.default_spec()).clone());
-                let accent = spec.accent_var.clone();
+                let accent = spec.accent_var();
                 let label = spec.label.clone();
                 let title = node.title.clone();
                 let tags = node.tags.clone();

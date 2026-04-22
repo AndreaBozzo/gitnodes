@@ -50,7 +50,7 @@ pub fn DetailBar(
                 )
             };
             let spec = config.lookup(&n.node_type).unwrap_or_else(|| config.default_spec());
-            let accent = spec.accent_var.clone();
+            let accent = spec.accent_var();
             let label = spec.label.clone();
             let title = n.title.clone();
             let summary = n.summary.clone();

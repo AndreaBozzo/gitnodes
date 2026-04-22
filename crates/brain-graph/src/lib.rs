@@ -122,22 +122,21 @@ pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<E
             sha: p.sha.clone(),
         });
     }
-    for (tag, id, docs) in &tag_nodes {
-        let (x, y) = positions[id];
-        nodes.push(Node {
-            id: *id,
-            title: format!("#{tag}"),
-            summary: format!("Tag connecting {} docs.", docs.len()),
-            node_type: config
-                .synthetic_tag_spec()
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| "tag".to_string()),
-            tags: vec![tag.clone()],
-            x,
-            y,
-            path: String::new(),
-            sha: String::new(),
-        });
+    if let Some(tag_spec) = config.synthetic_tag_spec() {
+        for (tag, id, docs) in &tag_nodes {
+            let (x, y) = positions[id];
+            nodes.push(Node {
+                id: *id,
+                title: format!("#{tag}"),
+                summary: format!("Tag connecting {} docs.", docs.len()),
+                node_type: tag_spec.name.clone(),
+                tags: vec![tag.clone()],
+                x,
+                y,
+                path: String::new(),
+                sha: String::new(),
+            });
+        }
     }
 
     let edges: Vec<Edge> = edge_pairs

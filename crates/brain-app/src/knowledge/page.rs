@@ -149,7 +149,7 @@ fn KnowledgeView(
                             let spec = config.lookup(&t_name).unwrap_or(config.default_spec());
                             view! {
                             <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400">
-                                <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", spec.accent_var)></span>
+                                <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", spec.accent_var())></span>
                                 <span class="text-slate-200 font-semibold">{count}</span>
                                 <span>{spec.label.clone()}</span>
                             </span>

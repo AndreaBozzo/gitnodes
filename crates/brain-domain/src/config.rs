@@ -100,10 +100,6 @@ pub struct NodeTypeSpec {
     pub directory: String,
     /// Accent color as `#RRGGBB` hex. Used for SVG fills and CSS variables.
     pub accent: String,
-    /// CSS custom-property reference string (e.g. `"var(--accent-concept)"`).
-    /// Derivable from `name` but kept explicit so the `:root` palette and the
-    /// config stay decoupled.
-    pub accent_var: String,
     /// Optional template filename under `templates/` (e.g. `"ConceptNote.md"`).
     #[serde(default)]
     pub template_filename: Option<String>,
@@ -119,6 +115,16 @@ pub struct NodeTypeSpec {
 
 fn default_true() -> bool {
     true
+}
+
+impl NodeTypeSpec {
+    /// CSS color reference. Emits `var(--accent-{name}, {hex})` so a type
+    /// defined in `.brain-config.yml` renders its configured hex even when
+    /// no matching `:root` custom property exists. Declared `:root` vars
+    /// still win because CSS only uses the fallback when the var is unset.
+    pub fn accent_var(&self) -> String {
+        format!("var(--accent-{}, {})", self.name, self.accent)
+    }
 }
 
 /// Top-level config parsed from `.brain-config.yml` at the repo root, or the
@@ -254,7 +260,6 @@ impl Default for BrainConfig {
                     label: "Concept".into(),
                     directory: "concepts".into(),
                     accent: "#2dd4bf".into(),
-                    accent_var: "var(--accent-concept)".into(),
                     template_filename: Some("ConceptNote.md".into()),
                     creatable: true,
                     frontmatter_seed: BTreeMap::new(),
@@ -264,7 +269,6 @@ impl Default for BrainConfig {
                     label: "ADR".into(),
                     directory: "adrs".into(),
                     accent: "#f59e0b".into(),
-                    accent_var: "var(--accent-decision)".into(),
                     template_filename: Some("ADR.md".into()),
                     creatable: true,
                     frontmatter_seed: seed(&[("status", s("draft"))]),
@@ -274,7 +278,6 @@ impl Default for BrainConfig {
                     label: "Meeting".into(),
                     directory: "meetings".into(),
                     accent: "#a78bfa".into(),
-                    accent_var: "var(--accent-meeting)".into(),
                     template_filename: None,
                     creatable: true,
                     frontmatter_seed: BTreeMap::new(),
@@ -284,7 +287,6 @@ impl Default for BrainConfig {
                     label: "Post-mortem".into(),
                     directory: "post-mortems".into(),
                     accent: "#f87171".into(),
-                    accent_var: "var(--accent-postmortem)".into(),
                     template_filename: Some("PostMortem.md".into()),
                     creatable: true,
                     frontmatter_seed: seed(&[("severity", s(""))]),
@@ -294,7 +296,6 @@ impl Default for BrainConfig {
                     label: "Preventivo".into(),
                     directory: "preventivi".into(),
                     accent: "#38bdf8".into(),
-                    accent_var: "var(--accent-preventivo)".into(),
                     template_filename: Some("Preventivo.md".into()),
                     creatable: true,
                     frontmatter_seed: seed(&[
@@ -308,7 +309,6 @@ impl Default for BrainConfig {
                     label: "Runbook".into(),
                     directory: "runbooks".into(),
                     accent: "#4ade80".into(),
-                    accent_var: "var(--accent-runbook)".into(),
                     template_filename: Some("Runbook.md".into()),
                     creatable: true,
                     frontmatter_seed: seed(&[("service", s(""))]),
@@ -318,7 +318,6 @@ impl Default for BrainConfig {
                     label: "Tag".into(),
                     directory: String::new(),
                     accent: "#64748b".into(),
-                    accent_var: "var(--accent-tag)".into(),
                     template_filename: None,
                     creatable: false,
                     frontmatter_seed: BTreeMap::new(),
@@ -369,8 +368,8 @@ mod config_tests {
         let yaml = r##"
 default_type: a
 node_types:
-  - { name: a, label: A, directory: x, accent: "#112233", accent_var: "v" }
-  - { name: b, label: B, directory: x, accent: "#445566", accent_var: "v" }
+  - { name: a, label: A, directory: x, accent: "#112233" }
+  - { name: b, label: B, directory: x, accent: "#445566" }
 "##;
         assert!(matches!(
             BrainConfig::parse(yaml),
@@ -383,7 +382,7 @@ node_types:
         let yaml = r##"
 default_type: a
 node_types:
-  - { name: a, label: A, directory: x, accent: "nope", accent_var: "v" }
+  - { name: a, label: A, directory: x, accent: "nope" }
 "##;
         assert!(matches!(
             BrainConfig::parse(yaml),
@@ -396,7 +395,7 @@ node_types:
         let yaml = r##"
 default_type: ghost
 node_types:
-  - { name: a, label: A, directory: x, accent: "#112233", accent_var: "v" }
+  - { name: a, label: A, directory: x, accent: "#112233" }
 "##;
         assert!(matches!(
             BrainConfig::parse(yaml),
@@ -409,7 +408,7 @@ node_types:
         let yaml = r##"
 default_type: tags
 node_types:
-  - { name: tags, label: X, directory: x, accent: "#112233", accent_var: "v" }
+  - { name: tags, label: X, directory: x, accent: "#112233" }
 "##;
         assert!(matches!(
             BrainConfig::parse(yaml),

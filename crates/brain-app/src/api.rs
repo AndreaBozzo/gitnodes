@@ -787,9 +787,7 @@ fn today_iso() -> String {
 fn merge_frontmatter(payload: &BrainFilePayload, author: &str, config: &BrainConfig) -> String {
     use serde_yaml::Value;
 
-    if payload.node_type == "tag"
-        || config.synthetic_tag_spec().map(|s| s.name.as_str()) == Some(payload.node_type.as_str())
-    {
+    if config.synthetic_tag_spec().map(|s| s.name.as_str()) == Some(payload.node_type.as_str()) {
         return String::new();
     }
 

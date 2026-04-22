@@ -41,6 +41,15 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
         - `reqwest::Client` ricostruito ad ogni request; dovrebbe essere pooled dentro `GithubClient`.
         - `Authorization: Bearer {token}` + `User-Agent` settati a mano ad ogni chiamata; centralizzare in helper `GithubClient::get/put/delete`.
         - URL diretti in `brain-auth` (`/user`, `/orgs/.../members/...`, OAuth token endpoint) NON migrati — sono auth-domain, non repo-domain, e Fase 4 non li toccherà.
+- [ ] **`NodeTypeSpec`: campi per-tipo per eliminare hardcoded switches** _(ship-blocker Fase 1, next session)_:
+    - Code review 2026-04-22 ha trovato quattro branch ancora hardcoded sui nomi dei default type: `api.rs::merge_frontmatter` (title-key `topic`/`progetto` e date-field `date_created`/`date`/`incident_date`/`last_updated`), `EditPrefill::from_raw` (title-key `preventivo → progetto`), `editor.rs::markdown_body_label`. Per tipi custom il titolo non atterra in frontmatter e non vengono iniettate date → **save silenziosamente incompleto**.
+    - Promuovere in `NodeTypeSpec`:
+        - `title_key: Option<String>` (default `"topic"`; `"progetto"` per preventivo, ecc.) — consumato sia da `from_raw` sia da `merge_frontmatter`.
+        - `date_create_field: Option<String>`, `date_update_field: Option<String>` — sostituiscono lo `match payload.node_type.as_str()` in `merge_frontmatter`.
+        - `body_label: Option<String>` (UI-only, default `"Description"`) — alimenta `markdown_body_label`.
+    - Aggiornare `BrainConfig::default()` per riprodurre il comportamento attuale (concept/preventivo keys, date fields per type).
+    - Aggiungere tests: un tipo custom con `title_key: titolo` + `date_create_field: creato_il` round-trip su save senza perdere campi.
+    - Solo dopo questo Fase 1 è genuinamente config-driven; senza, "aggiungi un tipo in `.brain-config.yml`" è una feature a metà.
 - [ ] **Unified Issue System ("Tutto è un'Issue")**:
     - Abbandono delle dipendenze da feature proprietarie (es. GitHub Discussions).
     - Mapping di ogni entità comunicativa sulle **Issues**, usando **Labels** (es. `brain:discussion`, `brain:task`) per differenziare il comportamento UI.
