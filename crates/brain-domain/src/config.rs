@@ -16,33 +16,61 @@ pub struct TargetConfig {
     pub branch: String,
 }
 
-impl TargetConfig {
+/// Builds GitHub REST + raw + blob URLs for a target repository. This is the
+/// single seam Phase 4's forge abstraction will retarget — keep direct
+/// `https://api.github.com/...` format strings out of the rest of the codebase.
+#[derive(Clone, Debug)]
+pub struct GithubClient {
+    target: TargetConfig,
+}
+
+impl GithubClient {
+    pub fn new(target: TargetConfig) -> Self {
+        Self { target }
+    }
+
+    pub fn target(&self) -> &TargetConfig {
+        &self.target
+    }
+
     pub fn contents_url(&self, path: &str) -> String {
         format!(
             "https://api.github.com/repos/{}/{}/contents/{}",
-            self.org, self.repo, path
+            self.target.org, self.target.repo, path
         )
     }
 
     pub fn tree_url(&self) -> String {
         format!(
             "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
-            self.org, self.repo, self.branch
+            self.target.org, self.target.repo, self.target.branch
         )
     }
 
     pub fn raw_base(&self) -> String {
         format!(
             "https://raw.githubusercontent.com/{}/{}/{}",
-            self.org, self.repo, self.branch
+            self.target.org, self.target.repo, self.target.branch
         )
     }
 
     pub fn blob_base(&self) -> String {
         format!(
             "https://github.com/{}/{}/blob/{}",
-            self.org, self.repo, self.branch
+            self.target.org, self.target.repo, self.target.branch
         )
+    }
+
+    /// Direct link to `.brain-config.yml` in the target repo. Used by the
+    /// orphan-type banner CTA.
+    pub fn config_blob_url(&self) -> String {
+        format!("{}/.brain-config.yml", self.blob_base())
+    }
+}
+
+impl From<TargetConfig> for GithubClient {
+    fn from(target: TargetConfig) -> Self {
+        Self::new(target)
     }
 }
 

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use brain_domain::{BrainError, Edge, Node, TargetConfig};
+use brain_domain::{BrainError, Edge, GithubClient, Node, TargetConfig};
 use brain_graph::{RawFile, build_graph, is_included_md};
 use serde::Deserialize;
 
@@ -69,20 +69,22 @@ pub trait Storage: Send + Sync {
 }
 
 pub struct GithubStorage {
-    cfg: TargetConfig,
+    gh: GithubClient,
 }
 
 impl GithubStorage {
     pub fn new(cfg: TargetConfig) -> Self {
-        Self { cfg }
+        Self {
+            gh: GithubClient::new(cfg),
+        }
     }
 
     fn contents_url(&self, path: &str) -> String {
-        self.cfg.contents_url(path)
+        self.gh.contents_url(path)
     }
 
     fn branch(&self) -> &str {
-        &self.cfg.branch
+        &self.gh.target().branch
     }
 }
 
@@ -233,7 +235,7 @@ impl Storage for GithubStorage {
             return Ok(hit);
         }
         let client = http_client()?;
-        let tree_url = self.cfg.tree_url();
+        let tree_url = self.gh.tree_url();
         let tree: TreeResponse = client
             .get(&tree_url)
             .bearer_auth(token)

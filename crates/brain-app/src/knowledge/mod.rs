@@ -7,6 +7,7 @@ pub(crate) mod draft;
 mod editor;
 mod filter_panel;
 mod graph_canvas;
+mod orphan_banner;
 mod page;
 #[cfg(feature = "ssr")]
 pub mod runtime;

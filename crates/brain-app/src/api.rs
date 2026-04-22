@@ -499,7 +499,7 @@ async fn collect_repo_md_paths(
     let client = brain_storage::http_client()?;
     let _ = storage; // kept for future use if we swap to a storage method
     let cfg = crate::server::session::target_cfg()?;
-    let url = cfg.tree_url();
+    let url = brain_domain::GithubClient::new(cfg).tree_url();
     #[derive(serde::Deserialize)]
     struct Tree {
         tree: Vec<Entry>,

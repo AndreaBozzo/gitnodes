@@ -472,6 +472,12 @@ pub fn EditorPanel(
                 }
             </Show>
 
+            <Show when=move || frontmatter_malformed.get()>
+                <div class="px-3 py-2 rounded-md bg-rose-500/10 border border-rose-400/40 text-rose-100 text-xs">
+                    "This file's YAML frontmatter failed to parse. Saves are disabled to avoid overwriting custom fields. Fix the file on GitHub and reload."
+                </div>
+            </Show>
+
             <FrontmatterFields node_type=node_type title=title author=author config=config.get_value() />
 
             <Show when=move || mismatch.with(|m| m.is_some())>
@@ -546,7 +552,7 @@ pub fn EditorPanel(
                 </div>
                 <button
                     class="w-full px-4 py-2 rounded-md bg-teal-500 text-slate-950 text-sm font-semibold hover:bg-teal-400 transition-colors focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50"
-                    disabled=move || saving.get() || title.with(|t| t.is_empty())
+                    disabled=move || saving.get() || title.with(|t| t.is_empty()) || frontmatter_malformed.get()
                     on:click=on_submit
                 >
                     {move || match (saving.get(), is_edit.get()) {
@@ -583,7 +589,7 @@ fn FrontmatterFields(
         <div>
             <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"Type"</label>
             <div class="flex flex-wrap gap-2">
-                {config.node_types.iter().filter(|s| !s.directory.is_empty() || s.name != "tag").map(|spec| {
+                {config.creatable().map(|spec| {
                     let t = spec.name.clone();
                     let is_active = Memo::new({
                         let t = t.clone();

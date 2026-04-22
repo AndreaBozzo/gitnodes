@@ -27,7 +27,7 @@ pub fn DetailPanel(
         app_config
             .and_then(|r| r.get())
             .and_then(|r| r.ok())
-            .map(|c| c.target.blob_base())
+            .map(|c| brain_domain::GithubClient::new(c.target).blob_base())
             .unwrap_or_default()
     });
 

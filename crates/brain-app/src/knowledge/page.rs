@@ -8,6 +8,7 @@ use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
+use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
 use crate::api::{load_brain_config, load_brain_graph};
 
@@ -172,6 +173,7 @@ fn KnowledgeView(
                     </button>
                 </div>
             </header>
+            <OrphanBanner nodes=nodes config=config />
             <div class="flex-1 flex min-h-0">
                 <FilterPanel
                     all_tags=all_tags.clone()

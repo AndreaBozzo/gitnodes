@@ -6,7 +6,7 @@
 //! a missing file or parse/validation failure so the app keeps working.
 
 use base64::Engine;
-use brain_domain::{BrainConfig, BrainError, TargetConfig};
+use brain_domain::{BrainConfig, BrainError, GithubClient, TargetConfig};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -86,7 +86,8 @@ async fn fetch_and_parse(
         .user_agent("brain_ui")
         .build()
         .map_err(|e| BrainError::Io(format!("http client: {e}")))?;
-    let url = format!("{}?ref={}", target.contents_url(CONFIG_PATH), target.branch);
+    let gh = GithubClient::new(target.clone());
+    let url = format!("{}?ref={}", gh.contents_url(CONFIG_PATH), target.branch);
     let resp = client
         .get(&url)
         .bearer_auth(token)

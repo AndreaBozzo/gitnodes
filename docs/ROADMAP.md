@@ -25,16 +25,22 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
     - Sostituzione dell'enum `NodeType` in `brain-domain/src/types.rs` con `String` + lookup `Arc<BrainConfig>`.
     - Migrazione di `EditPrefill::from_raw`, `draft.rs` (localStorage schema-version bump per invalidare draft vecchi post-deploy), generazione template (consumare `NodeTypeSpec.frontmatter_seed`), ricavo directory/label/accent.
     - Prerequisito bloccante (frontmatter round-trip): ✅ risolto sopra.
-- [ ] **Graceful Fallback per Tipi Sconosciuti**:
-    - `config.lookup(type_str).unwrap_or(&config.default_type)` — niente `ParseError`, niente crash WASM su draft vecchi o nodi con `type:` non più censito.
-    - Banner UI sui nodi orfani con CTA "aggiungi questo tipo a `.brain-config.yml`".
-    - Nota: `#[serde(other)]` NON si applica qui perché `NodeType` non è più un enum; il fallback è sul lookup, non sulla deserializzazione.
-- [ ] **Creazione Guidata (Zero Typo)**:
-    - Menu "Nuovo Nodo" generato dinamicamente dalla config attiva.
-    - Autocompilazione del frontmatter YAML e del path di salvataggio.
-- [ ] **`GithubClient` Centralizzato (no trait yet)**:
-    - Tutte le costruzioni di URL verso `api.github.com` centralizzate in una singola struct `GithubClient` in `brain-domain/src/config.rs` o crate dedicato.
+- [x] **Graceful Fallback per Tipi Sconosciuti** — _2026-04-22_:
+    - `config.lookup(type_str).unwrap_or(&config.default_spec())` applicato in tutti i render site (graph canvas, detail bar/panel, stats header, editor).
+    - Banner UI amber su `/knowledge` (`orphan_banner.rs`) lista i tipi sconosciuti con conteggio + CTA esterno a `.brain-config.yml` via `GithubClient::config_blob_url()`. Dismissable per sessione.
+    - Bonus (gap latente scoperto durante il lavoro): `frontmatter_malformed` ora rende un banner rosé nell'editor e disabilita il pulsante Save, matchando il refuse server-side che esisteva già.
+- [x] **Creazione Guidata (Zero Typo)** — _2026-04-22_:
+    - Menu "Nuovo Nodo" generato da `config.creatable()` (sostituito il filtro manuale `!directory.is_empty() || name != "tag"` che divergeva per tipi con `creatable: false` + directory non vuota).
+    - Autocompilazione del frontmatter YAML (`NodeTypeSpec.frontmatter_seed`) e del path di salvataggio già attive da _2026-04-22_.
+- [x] **`GithubClient` Centralizzato (URL-only, no trait)** — _2026-04-22_:
+    - Nuova struct `GithubClient` in `brain-domain/src/config.rs` che possiede i quattro builder (`contents_url`, `tree_url`, `raw_base`, `blob_base`) più il nuovo `config_blob_url()` per il CTA del banner orfani.
+    - `TargetConfig` tenuto come puro data carrier (`{org, repo, branch}`); le URL builders rimosse dall'`impl TargetConfig`.
+    - Migrati tutti i 16 callsite (brain-storage, api.rs, config_loader, assets, markdown, detail_panel).
     - **NO `ForgeAdapter` trait in questa fase**: il design dell'abstraction viene fatto in Fase 4 contro un secondo adapter reale (GitLab/Gitea), non in astratto contro uno solo.
+    - **Deferred esplicitamente** (vedi Fase 2 → "GithubClient: pooling + header centralization"):
+        - `reqwest::Client` ricostruito ad ogni request; dovrebbe essere pooled dentro `GithubClient`.
+        - `Authorization: Bearer {token}` + `User-Agent` settati a mano ad ogni chiamata; centralizzare in helper `GithubClient::get/put/delete`.
+        - URL diretti in `brain-auth` (`/user`, `/orgs/.../members/...`, OAuth token endpoint) NON migrati — sono auth-domain, non repo-domain, e Fase 4 non li toccherà.
 - [ ] **Unified Issue System ("Tutto è un'Issue")**:
     - Abbandono delle dipendenze da feature proprietarie (es. GitHub Discussions).
     - Mapping di ogni entità comunicativa sulle **Issues**, usando **Labels** (es. `brain:discussion`, `brain:task`) per differenziare il comportamento UI.
@@ -56,6 +62,19 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
 - [ ] **Gestione "Link Rot" (Rename Transazionali)**:
     - Implementazione sicura del cambio nome file/cartella tramite transazioni `git mv`.
     - Aggiornamento contestuale del campo `path` in SQLite per mantenere intatto il legame storico.
+- [ ] **Graph cache scoping** _(caveat #8, mandatory before Fase 3/4)_:
+    - `static Mutex<Option<CacheEntry>>` in `brain-storage/src/lib.rs` oggi è process-global. Safe finché tutti gli authed org member vedono lo stesso repo.
+    - Diventa un bug in Fase 3 (RBAC: viste permission-differentiated leaked tra utenti) e Fase 4 (multi-forge/multi-target: un processo serve più repo).
+    - Azione: rikeying della cache per `(user_id_or_role, target)` prima che una delle due fasi atterri.
+- [ ] **Reload-on-save → Resource invalidation** _(caveat #7 del memory, Fase 2)_:
+    - Editor oggi fa `window.location.reload()` su Create/Update. Semplice ma costa un SSR round-trip completo.
+    - Target: bumpare un `graph_version: RwSignal<u64>` al save e farlo feedare `Resource::new_blocking`, così il resource refetcha senza reload.
+    - Accoppia naturalmente con SSE hot-reload: lo stesso signal viene bumpato sia dal save locale sia dal push webhook.
+- [ ] **`GithubClient`: pooling + header centralization** _(deferred da Fase 1)_:
+    - Sostituire `reqwest::Client::builder()...build()` per-request (brain-storage `http_client()`, config_loader `fetch_and_parse`, assets.rs) con un singleton pooled dentro `GithubClient` o in Leptos context.
+    - Esporre helper `get(path)`, `put(path, body)`, `delete(path)` che applicano `Authorization: Bearer {token}` + `User-Agent: brain_ui` una volta sola; rimuovere i `.bearer_auth(token)` manuali ai 9+ callsite.
+    - Valutare migrazione di `brain-auth` (`/user`, `/orgs/.../members/...`) dietro lo stesso client dopo che il pooling è in piedi.
+    - Nota: motivo dello split — in Fase 1 il refactor URL-only è sufficiente per il seam di Fase 4; la centralizzazione di client+header è una win di performance/DRY che può essere testata in isolamento senza bloccare altri lavori.
 
 ---
 
