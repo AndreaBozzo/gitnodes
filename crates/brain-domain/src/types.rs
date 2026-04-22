@@ -169,9 +169,13 @@ pub struct EditPrefill {
     pub related: Vec<String>,
     /// Full parsed frontmatter, preserved so `save_brain_file` can merge
     /// form-controlled fields without wiping custom keys (status, severity,
-    /// cliente, etc.). Empty map if the file has no frontmatter or it fails
-    /// to parse as YAML.
+    /// cliente, etc.). Empty map if the file has no frontmatter.
     pub frontmatter: BTreeMap<String, serde_yaml::Value>,
+    /// True when the source file had a frontmatter block that failed YAML
+    /// parsing. The editor must surface this and prevent saves to avoid
+    /// silently rewriting the file from defaults and dropping the original
+    /// keys.
+    pub frontmatter_malformed: bool,
 }
 
 /// What the editor panel should do when open.
@@ -199,7 +203,7 @@ impl EditPrefill {
             match serde_yaml::from_str::<BTreeMap<String, serde_yaml::Value>>(front) {
                 Ok(map) => out.frontmatter = map,
                 Err(_) => {
-                    out.frontmatter = BTreeMap::new();
+                    out.frontmatter_malformed = true;
                 }
             }
         }
@@ -215,8 +219,24 @@ impl EditPrefill {
                 _ => None,
             };
         }
-        if let Some(v) = out.frontmatter.get("topic").and_then(|v| v.as_str()) {
+        // Title lives under `topic:` for concepts, `progetto:` for preventivi.
+        // Fall back to the other key then to the H1 heading below.
+        let title_key = matches!(out.node_type, Some(NodeType::Preventivo))
+            .then_some("progetto")
+            .unwrap_or("topic");
+        if let Some(v) = out.frontmatter.get(title_key).and_then(|v| v.as_str()) {
             out.title = v.to_string();
+        }
+        if out.title.is_empty() {
+            // Cross-fallback so a typo or legacy file doesn't drop the title.
+            let alt = if title_key == "topic" {
+                "progetto"
+            } else {
+                "topic"
+            };
+            if let Some(v) = out.frontmatter.get(alt).and_then(|v| v.as_str()) {
+                out.title = v.to_string();
+            }
         }
         if let Some(v) = out.frontmatter.get("author").and_then(|v| v.as_str()) {
             out.author = v.to_string();
@@ -301,6 +321,10 @@ pub struct BrainFilePayload {
     /// default.
     #[serde(default)]
     pub preserved_frontmatter: Option<BTreeMap<String, serde_yaml::Value>>,
+    /// True when the source file's frontmatter failed to parse. Blocks save
+    /// server-side so we don't silently rewrite the file from defaults.
+    #[serde(default)]
+    pub frontmatter_malformed: bool,
 }
 
 #[cfg(test)]
@@ -365,11 +389,45 @@ mod tests {
     }
 
     #[test]
-    fn prefill_malformed_yaml_falls_back_to_empty_map() {
-        // Malformed YAML frontmatter must not panic or make the file uneditable.
+    fn prefill_malformed_yaml_flags_without_panicking() {
+        // Malformed YAML frontmatter must not panic, must be flagged so the
+        // server can refuse to silently rewrite the file from defaults even
+        // if the UI block is bypassed.
         let raw = "---\ntype: concept\n: not valid :\n---\nbody";
         let p = EditPrefill::from_raw("concepts/X.md", "s", raw);
         assert!(p.frontmatter.is_empty());
+        assert!(p.frontmatter_malformed);
         assert_eq!(p.body, "body");
+
+        let payload = BrainFilePayload {
+            node_type: NodeType::Concept,
+            title: "X".into(),
+            author: "alice".into(),
+            tags: vec![],
+            body: p.body.clone(),
+            related: p.related.clone(),
+            folder: None,
+            path: Some(p.path.clone()),
+            sha: Some(p.sha.clone()),
+            commit_message: None,
+            preserved_frontmatter: if p.frontmatter.is_empty() {
+                None
+            } else {
+                Some(p.frontmatter.clone())
+            },
+            frontmatter_malformed: p.frontmatter_malformed,
+        };
+        assert!(payload.frontmatter_malformed);
+    }
+
+    #[test]
+    fn prefill_preventivo_title_from_progetto() {
+        // Preventivo stores its title under `progetto:`, not `topic:`. Without
+        // this fallback the editor would open with an empty title and a save
+        // would blank out progetto.
+        let raw = "---\ntype: preventivo\nprogetto: \"Rewrite search\"\nstatus: draft\n---\n";
+        let p = EditPrefill::from_raw("preventivi/Foo.md", "s", raw);
+        assert_eq!(p.node_type, Some(NodeType::Preventivo));
+        assert_eq!(p.title, "Rewrite search");
     }
 }

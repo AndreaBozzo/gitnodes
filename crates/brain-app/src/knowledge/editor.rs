@@ -34,6 +34,7 @@ pub fn EditorPanel(
     let edit_path = RwSignal::new(Option::<String>::None);
     let edit_sha = RwSignal::new(Option::<String>::None);
     let preserved_frontmatter = RwSignal::new(Option::<BTreeMap<String, serde_yaml::Value>>::None);
+    let frontmatter_malformed = RwSignal::new(false);
     let custom_msg_open = RwSignal::new(read_custom_msg_pref());
     let custom_msg = RwSignal::new(String::new());
     Effect::new(move |_| {
@@ -65,6 +66,7 @@ pub fn EditorPanel(
             } else {
                 Some(p.frontmatter)
             });
+            frontmatter_malformed.set(p.frontmatter_malformed);
             folder.set(String::new());
         } else {
             prefilled_for.set(None);
@@ -72,6 +74,7 @@ pub fn EditorPanel(
                 edit_path.set(None);
                 edit_sha.set(None);
                 preserved_frontmatter.set(None);
+                frontmatter_malformed.set(false);
                 folder.set(String::new());
             }
         }
@@ -221,6 +224,7 @@ pub fn EditorPanel(
                 saved_at: draft::now_secs(),
                 base_sha,
                 preserved_frontmatter: preserved,
+                frontmatter_malformed: frontmatter_malformed.get_untracked(),
             };
             let key_for_timeout = key.clone();
             let new_handle = gloo_timers::callback::Timeout::new(2_000, move || {
@@ -250,6 +254,7 @@ pub fn EditorPanel(
             folder.set(f);
         }
         preserved_frontmatter.set(d.preserved_frontmatter);
+        frontmatter_malformed.set(d.frontmatter_malformed);
         restore_banner.set(None);
     };
     let discard_draft = move || {
@@ -286,6 +291,7 @@ pub fn EditorPanel(
                 None
             },
             preserved_frontmatter: preserved_frontmatter.get_untracked(),
+            frontmatter_malformed: frontmatter_malformed.get_untracked(),
         };
 
         saving.set(true);

@@ -891,6 +891,7 @@ mod merge_frontmatter_tests {
             sha: Some("sha".into()),
             commit_message: None,
             preserved_frontmatter: None,
+            frontmatter_malformed: false,
         }
     }
 

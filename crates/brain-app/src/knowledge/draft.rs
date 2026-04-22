@@ -32,6 +32,9 @@ pub struct Draft {
     /// `serde(default)` keeps pre-existing drafts deserializable with `None`.
     #[serde(default)]
     pub preserved_frontmatter: Option<BTreeMap<String, serde_yaml::Value>>,
+    /// Keeps the malformed-frontmatter guard active across draft restore.
+    #[serde(default)]
+    pub frontmatter_malformed: bool,
 }
 
 /// Build the localStorage key for a given repo scope and file path.
