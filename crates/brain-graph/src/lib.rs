@@ -129,7 +129,7 @@ pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<E
             title: format!("#{tag}"),
             summary: format!("Tag connecting {} docs.", docs.len()),
             node_type: config
-                .by_directory("")
+                .synthetic_tag_spec()
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "tag".to_string()),
             tags: vec![tag.clone()],
@@ -225,6 +225,24 @@ mod tests {
         let (nodes, _) = build_graph(&[f("concepts/A.md", a)], &config);
         assert_eq!(nodes.len(), 1);
         assert!(!nodes.iter().any(|n| n.node_type == "tag"));
+    }
+
+    #[test]
+    fn shared_tag_uses_custom_synthetic_tag_spec_name() {
+        let mut config = BrainConfig::default();
+        let tag_spec = config
+            .node_types
+            .iter_mut()
+            .find(|spec| spec.name == "tag")
+            .expect("default tag spec exists");
+        tag_spec.name = "keyword".to_string();
+        tag_spec.label = "Keyword".to_string();
+
+        let a = "---\ntype: concept\ntopic: A\ntags: [shared]\n---\n";
+        let b = "---\ntype: concept\ntopic: B\ntags: [shared]\n---\n";
+        let (nodes, _) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)], &config);
+
+        assert!(nodes.iter().any(|n| n.node_type == "keyword"));
     }
 
     #[test]

@@ -6,6 +6,19 @@ use super::draft::{self, Draft};
 use super::types::EditMode;
 use crate::api::{AppConfig, get_current_user, load_brain_template};
 
+fn markdown_body_label(node_type: &str) -> &'static str {
+    match node_type {
+        "concept" => "Summary",
+        "adr" => "Context",
+        "meeting" => "Summary / Notes",
+        "post-mortem" => "Incident Summary",
+        "preventivo" => "Riepilogo",
+        "runbook" => "Description",
+        "tag" => "Body",
+        _ => "Description",
+    }
+}
+
 /// Smart editor form that enforces Brain templates programmatically.
 #[component]
 pub fn EditorPanel(
@@ -724,15 +737,8 @@ fn MarkdownPreview(
                 <label class="text-[10px] uppercase tracking-widest text-slate-500">
                     {move || {
                         let t = node_type.get();
-                        let _spec = config.lookup(&t).unwrap_or(config.default_spec());
-                        if t == "concept" { "Summary" }
-                        else if t == "decision" { "Context" }
-                        else if t == "meeting" { "Summary / Notes" }
-                        else if t == "post_mortem" { "Incident Summary" }
-                        else if t == "preventivo" { "Riepilogo" }
-                        else if t == "runbook" { "Description" }
-                        else if t == "tag" { "Body" }
-                        else { "Description" }
+                        let _ = config.lookup(&t).unwrap_or(config.default_spec());
+                        markdown_body_label(&t)
                     }}
                 </label>
                 <button
@@ -792,6 +798,18 @@ fn MarkdownPreview(
                 <p class="text-[10px] text-teal-300 mt-1">{move || upload_status.get()}</p>
             </Show>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::markdown_body_label;
+
+    #[test]
+    fn markdown_body_label_uses_current_type_ids() {
+        assert_eq!(markdown_body_label("adr"), "Context");
+        assert_eq!(markdown_body_label("post-mortem"), "Incident Summary");
+        assert_eq!(markdown_body_label("custom"), "Description");
     }
 }
 

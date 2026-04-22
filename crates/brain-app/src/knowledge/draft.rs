@@ -11,6 +11,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+const DRAFT_SCHEMA_VERSION: u8 = 2;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Draft {
     pub node_type: String,
@@ -42,8 +44,8 @@ pub struct Draft {
 /// - `path` = `Some("...")` for edit mode, `None` for new-doc mode.
 pub fn storage_key(repo_scope: &str, path: Option<&str>) -> String {
     match path {
-        Some(p) => format!("brain-ui:draft:{repo_scope}:{p}"),
-        None => format!("brain-ui:draft:{repo_scope}:new"),
+        Some(p) => format!("brain-ui:draft:v{DRAFT_SCHEMA_VERSION}:{repo_scope}:{p}"),
+        None => format!("brain-ui:draft:v{DRAFT_SCHEMA_VERSION}:{repo_scope}:new"),
     }
 }
 
@@ -127,11 +129,11 @@ mod tests {
     fn key_scoping() {
         assert_eq!(
             storage_key("Dritara-Digital/Brain", None),
-            "brain-ui:draft:Dritara-Digital/Brain:new"
+            "brain-ui:draft:v2:Dritara-Digital/Brain:new"
         );
         assert_eq!(
             storage_key("Dritara-Digital/Brain", Some("concepts/foo.md")),
-            "brain-ui:draft:Dritara-Digital/Brain:concepts/foo.md"
+            "brain-ui:draft:v2:Dritara-Digital/Brain:concepts/foo.md"
         );
     }
 

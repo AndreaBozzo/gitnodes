@@ -79,7 +79,7 @@ pub fn DetailPanel(
                     })
                     .filter(|n| {
                         let is_tag = config.with_value(|c| {
-                            c.by_directory("").map(|s| s.name.as_str())
+                            c.synthetic_tag_spec().map(|s| s.name.as_str())
                                 == Some(n.node_type.as_str())
                                 || n.node_type == "tag"
                         });

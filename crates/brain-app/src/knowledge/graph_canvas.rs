@@ -99,7 +99,11 @@ pub fn GraphCanvas(
                     let id = n.id;
                     let spec = config_for_nodes.lookup(&n.node_type).unwrap_or_else(|| config_for_nodes.default_spec());
                     let accent = spec.accent_var.clone();
-                    let is_tag = config_for_nodes.by_directory("").map(|s| s.name.as_str()) == Some(n.node_type.as_str()) || n.node_type == "tag";
+                    let is_tag = config_for_nodes
+                        .synthetic_tag_spec()
+                        .map(|s| s.name.as_str())
+                        == Some(n.node_type.as_str())
+                        || n.node_type == "tag";
                     let title = n.title.clone();
                     let x = n.x;
                     let y = n.y;

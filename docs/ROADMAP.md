@@ -21,7 +21,7 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
     - **Deviazione deliberata dalla prescrizione originale:** validazione fail-soft, non fail-fast all'avvio. Il server parte prima che esista un token autenticato per leggere il repo; parsing/validation failure ora loggano warning e cadono sul default. La fail-fast originale sposterà al banner UI del prossimo step (admin vede l'errore invece che a runtime crash).
     - TTL-cache in memoria 30s (allineata al pattern di `brain-storage`) + `invalidate()` pronto per i webhook push di Fase 2.
     - Server fn `load_brain_config` esposta, registrata in `register_explicit`.
-- [ ] **NodeType → Config Lookup**:
+- [x] **NodeType → Config Lookup**:
     - Sostituzione dell'enum `NodeType` in `brain-domain/src/types.rs` con `String` + lookup `Arc<BrainConfig>`.
     - Migrazione di `EditPrefill::from_raw`, `draft.rs` (localStorage schema-version bump per invalidare draft vecchi post-deploy), generazione template (consumare `NodeTypeSpec.frontmatter_seed`), ricavo directory/label/accent.
     - Prerequisito bloccante (frontmatter round-trip): ✅ risolto sopra.
@@ -38,7 +38,7 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
 - [ ] **Unified Issue System ("Tutto è un'Issue")**:
     - Abbandono delle dipendenze da feature proprietarie (es. GitHub Discussions).
     - Mapping di ogni entità comunicativa sulle **Issues**, usando **Labels** (es. `brain:discussion`, `brain:task`) per differenziare il comportamento UI.
-
+- [ ] **Passaggio interno a yaml su repo Brain, testing, deploy su prod**
 ### Spostati fuori da Fase 1
 
 - **Pannello Impostazioni (Visual YAML Editor)** → **Fase 3**. È effettivamente un sotto-flusso admin-only e dipende da RBAC; fino ad allora gli admin editano YAML via commit come il resto del contenuto git-nativo.

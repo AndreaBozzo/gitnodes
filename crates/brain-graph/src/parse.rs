@@ -271,9 +271,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_unknown_type() {
+    fn parse_preserves_unknown_type() {
         let raw = "---\ntype: unknown\n---\n";
-        assert!(parse_file(raw, "x.md", "s").is_none());
+        let parsed = parse_file(raw, "x.md", "s").expect("unknown types now round-trip");
+        assert_eq!(parsed.node_type, "unknown");
     }
 
     #[test]

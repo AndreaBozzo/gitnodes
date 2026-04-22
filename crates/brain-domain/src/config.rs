@@ -184,6 +184,14 @@ impl BrainConfig {
         self.node_types.iter().filter(|s| s.creatable)
     }
 
+    /// Spec used for virtual tag nodes in the graph. Synthetic types are the
+    /// non-creatable entries with no backing directory.
+    pub fn synthetic_tag_spec(&self) -> Option<&NodeTypeSpec> {
+        self.node_types
+            .iter()
+            .find(|s| !s.creatable && s.directory.is_empty())
+    }
+
     pub fn by_directory(&self, dir: &str) -> Option<&NodeTypeSpec> {
         let dir = dir.trim_matches('/');
         if dir.is_empty() {

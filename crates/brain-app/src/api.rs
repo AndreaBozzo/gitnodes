@@ -788,7 +788,7 @@ fn merge_frontmatter(payload: &BrainFilePayload, author: &str, config: &BrainCon
     use serde_yaml::Value;
 
     if payload.node_type == "tag"
-        || config.by_directory("").map(|s| s.name.as_str()) == Some(payload.node_type.as_str())
+        || config.synthetic_tag_spec().map(|s| s.name.as_str()) == Some(payload.node_type.as_str())
     {
         return String::new();
     }
