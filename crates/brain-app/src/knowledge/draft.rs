@@ -8,13 +8,12 @@
 //! SSR-safe stubs keep this module compilable on the server build; all real
 //! work happens under `cfg(not(feature = "ssr"))`.
 
-use super::types::NodeType;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Draft {
-    pub node_type: NodeType,
+    pub node_type: String,
     pub title: String,
     pub author: String,
     pub tags: Vec<String>,

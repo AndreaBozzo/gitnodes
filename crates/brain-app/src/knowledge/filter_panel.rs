@@ -2,25 +2,30 @@ use std::collections::HashSet;
 
 use leptos::prelude::*;
 
-use super::types::NodeType;
-
 #[component]
 pub fn FilterPanel(
     all_tags: Vec<String>,
     active_tags: RwSignal<HashSet<String>>,
-    active_types: RwSignal<HashSet<NodeType>>,
+    active_types: RwSignal<HashSet<String>>,
+    config: brain_domain::BrainConfig,
 ) -> impl IntoView {
-    let type_buttons = NodeType::ALL
+    let type_buttons = config.node_types
         .iter()
-        .map(|t| {
-            let t = *t;
-            let is_on = Memo::new(move |_| active_types.with(|s| s.contains(&t)));
-            let toggle = move |_| {
-                active_types.update(|s| {
-                    if !s.remove(&t) {
-                        s.insert(t);
-                    }
-                });
+        .map(|spec| {
+            let t = spec.name.clone();
+            let is_on = Memo::new({
+                let t = t.clone();
+                move |_| active_types.with(|s| s.contains(&t))
+            });
+            let toggle = {
+                let t = t.clone();
+                move |_| {
+                    active_types.update(|s| {
+                        if !s.remove(&t) {
+                            s.insert(t.clone());
+                        }
+                    });
+                }
             };
             view! {
                 <button
@@ -33,8 +38,8 @@ pub fn FilterPanel(
                     class=("hover:border-slate-500", move || !is_on.get())
                     on:click=toggle
                 >
-                    <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", t.accent_var())></span>
-                    {t.label()}
+                    <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", spec.accent_var)></span>
+                    {spec.label.clone()}
                 </button>
             }
         })

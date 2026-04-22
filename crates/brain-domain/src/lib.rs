@@ -13,4 +13,4 @@ mod types;
 pub use config::{BrainConfig, BrandConfig, ConfigError, NodeTypeSpec, TargetConfig};
 pub use error::BrainError;
 pub use frontmatter::split_frontmatter;
-pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node, NodeType};
+pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node};

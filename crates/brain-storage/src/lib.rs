@@ -20,7 +20,11 @@ use serde::Deserialize;
 
 pub trait Storage: Send + Sync {
     async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError>;
-    async fn load_graph(&self, token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError>;
+    async fn load_graph(
+        &self,
+        token: &str,
+        config: &brain_domain::BrainConfig,
+    ) -> Result<(Vec<Node>, Vec<Edge>), BrainError>;
     async fn read_file(&self, token: &str, path: &str) -> Result<(String, String), BrainError>;
     #[allow(clippy::too_many_arguments)]
     async fn save_file(
@@ -220,7 +224,11 @@ impl Storage for GithubStorage {
         Ok(text)
     }
 
-    async fn load_graph(&self, token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
+    async fn load_graph(
+        &self,
+        token: &str,
+        config: &brain_domain::BrainConfig,
+    ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
         if let Some(hit) = cache_get() {
             return Ok(hit);
         }
@@ -294,7 +302,7 @@ impl Storage for GithubStorage {
                 content: text,
             });
         }
-        let (nodes, edges) = build_graph(&files);
+        let (nodes, edges) = build_graph(&files, config);
         cache_store(&nodes, &edges);
         Ok((nodes, edges))
     }
@@ -536,7 +544,11 @@ impl Storage for InMemoryStorage {
         Ok("".to_string())
     }
 
-    async fn load_graph(&self, _token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
+    async fn load_graph(
+        &self,
+        _token: &str,
+        _config: &brain_domain::BrainConfig,
+    ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
         Ok((Vec::new(), Vec::new()))
     }
 

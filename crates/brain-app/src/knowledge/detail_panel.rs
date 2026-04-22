@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use super::components::TagBadge;
-use super::types::{Edge, EditMode, EditPrefill, Node, NodeType};
+use super::types::{Edge, EditMode, EditPrefill, Node};
 use crate::api::{AppConfig, BrainFile, read_brain_file};
 #[cfg(not(feature = "ssr"))]
 use crate::api::{delete_brain_file, rename_brain_file};
@@ -13,7 +13,9 @@ pub fn DetailPanel(
     selected: RwSignal<Option<u32>>,
     edit_mode: RwSignal<EditMode>,
     graph_version: RwSignal<u64>,
+    config: brain_domain::BrainConfig,
 ) -> impl IntoView {
+    let config = StoredValue::new(config);
     let current = move || {
         selected
             .get()
@@ -75,7 +77,14 @@ pub fn DetailPanel(
                         };
                         ns.iter().find(|n| n.id == other)
                     })
-                    .filter(|n| n.node_type != NodeType::Tag && !n.path.is_empty())
+                    .filter(|n| {
+                        let is_tag = config.with_value(|c| {
+                            c.by_directory("").map(|s| s.name.as_str())
+                                == Some(n.node_type.as_str())
+                                || n.node_type == "tag"
+                        });
+                        !is_tag && !n.path.is_empty()
+                    })
                     .map(|n| (n.title.clone(), n.path.clone()))
                     .collect()
             })
@@ -134,8 +143,9 @@ pub fn DetailPanel(
         <Show when=move || current().map(|n| !n.path.is_empty()).unwrap_or(false)>
             {move || {
                 let node = current().expect("guarded by Show");
-                let accent = node.node_type.accent_var().to_string();
-                let label = node.node_type.label();
+                let spec = config.with_value(|c| c.lookup(&node.node_type).unwrap_or_else(|| c.default_spec()).clone());
+                let accent = spec.accent_var.clone();
+                let label = spec.label.clone();
                 let title = node.title.clone();
                 let tags = node.tags.clone();
                 let path = node.path.clone();
@@ -195,7 +205,7 @@ pub fn DetailPanel(
                                                         &bf.sha,
                                                         &bf.content,
                                                     );
-                                                    edit_mode.set(EditMode::Edit(prefill));
+                                                    edit_mode.set(EditMode::Edit(Box::new(prefill)));
                                                 }
                                             }
                                         >

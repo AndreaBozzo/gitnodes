@@ -1,8 +1,6 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "ssr")]
-use crate::knowledge::types::NodeType;
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 use brain_domain::{BrainConfig, BrandConfig, TargetConfig};
 
@@ -163,16 +161,19 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
 }
 
 #[server(LoadBrainTemplate, "/api", endpoint = "load_brain_template")]
-pub async fn load_brain_template(
-    node_type: crate::knowledge::types::NodeType,
-) -> Result<String, ServerFnError> {
+pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnError> {
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
-    let Some(filename) = node_type.template_filename() else {
+    let target = session::target_cfg().map_err(sfe)?;
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let config = crate::knowledge::config_loader::load(&target, &token).await;
+    let Some(filename) = config
+        .lookup(&node_type)
+        .and_then(|s| s.template_filename.as_deref())
+    else {
         return Ok(String::new());
     };
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
+    let storage = GithubStorage::new(target);
     let raw = storage.load_template(&token, filename).await.map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);
     Ok(body.trim_start_matches('\n').to_string())
@@ -183,8 +184,10 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError>
     use crate::server::session;
     use brain_storage::{GithubStorage, Storage};
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
-    storage.load_graph(&token).await.map_err(sfe)
+    let target = session::target_cfg().map_err(sfe)?;
+    let config = crate::knowledge::config_loader::load(&target, &token).await;
+    let storage = GithubStorage::new(target);
+    storage.load_graph(&token, &config).await.map_err(sfe)
 }
 
 #[server(ReadBrainFile, "/api", endpoint = "read_brain_file")]
@@ -221,6 +224,9 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
 
+    let target = session::target_cfg().map_err(sfe)?;
+    let config = crate::knowledge::config_loader::load(&target, &token).await;
+
     let related_section = if payload.related.is_empty() {
         String::new()
     } else {
@@ -241,7 +247,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
 
     let markdown = format!(
         "{}\n{}{}",
-        merge_frontmatter(&payload, &user),
+        merge_frontmatter(&payload, &user, &config),
         payload.body,
         related_section,
     );
@@ -259,7 +265,12 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
                 .folder
                 .as_deref()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| payload.node_type.directory())
+                .unwrap_or_else(|| {
+                    config
+                        .lookup(&payload.node_type)
+                        .map(|s| s.directory.as_str())
+                        .unwrap_or("")
+                })
                 .trim_matches('/');
             if dir.is_empty() {
                 format!("{}.md", slug)
@@ -276,7 +287,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     };
     let commit_msg = sanitize_commit_message(payload.commit_message.as_deref()).unwrap_or(auto_msg);
 
-    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
+    let storage = GithubStorage::new(target);
     let author_email = format!("{}@users.noreply.github.com", user);
 
     match storage
@@ -381,7 +392,7 @@ pub async fn rename_brain_file(
     let user = session::session_user_or_fallback(&s).await;
     let author_email = format!("{}@users.noreply.github.com", user);
     let cfg = session::target_cfg().map_err(sfe)?;
-    let storage = GithubStorage::new(cfg);
+    let storage = GithubStorage::new(cfg.clone());
 
     // Sanity: the source file still exists at the sha the client saw.
     let (old_content, live_sha) = storage.read_file(&token, &old_path).await.map_err(sfe)?;
@@ -391,9 +402,11 @@ pub async fn rename_brain_file(
         )));
     }
 
+    let config = crate::knowledge::config_loader::load(&cfg, &token).await;
+
     // Find every file that links to old_path. Walk the tree once, read each
     // candidate, and string-scan for link targets that resolve to old_path.
-    let (_nodes, _edges) = storage.load_graph(&token).await.map_err(sfe)?;
+    let (_nodes, _edges) = storage.load_graph(&token, &config).await.map_err(sfe)?;
     let all_paths = collect_repo_md_paths(&token, &storage).await.map_err(sfe)?;
 
     let mut updated_referrers = Vec::<String>::new();
@@ -766,80 +779,33 @@ fn today_iso() -> String {
     )
 }
 
-/// Seed a fresh frontmatter map from the template for this node type. Used
-/// only on create; updates start from the preserved map and overlay form
-/// fields.
-#[cfg(feature = "ssr")]
-fn seed_frontmatter(
-    node_type: NodeType,
-    title: &str,
-    date: &str,
-) -> std::collections::BTreeMap<String, serde_yaml::Value> {
-    use serde_yaml::Value;
-    let mut m = std::collections::BTreeMap::new();
-    let s = |v: &str| Value::String(v.to_string());
-    match node_type {
-        NodeType::Concept => {
-            m.insert("type".into(), s("concept"));
-            m.insert("topic".into(), s(title));
-            m.insert("date_created".into(), s(date));
-        }
-        NodeType::Decision => {
-            m.insert("type".into(), s("adr"));
-            m.insert("status".into(), s("draft"));
-            m.insert("date".into(), s(date));
-        }
-        NodeType::Meeting => {
-            m.insert("type".into(), s("meeting"));
-            m.insert("date".into(), s(date));
-        }
-        NodeType::PostMortem => {
-            m.insert("type".into(), s("post-mortem"));
-            m.insert("incident_date".into(), s(date));
-            m.insert("severity".into(), s(""));
-        }
-        NodeType::Preventivo => {
-            m.insert("type".into(), s("preventivo"));
-            m.insert("status".into(), s("draft"));
-            m.insert("date".into(), s(date));
-            m.insert("cliente".into(), s(""));
-            m.insert("progetto".into(), s(title));
-            m.insert("modello".into(), s("T&M"));
-        }
-        NodeType::Runbook => {
-            m.insert("type".into(), s("runbook"));
-            m.insert("service".into(), s(""));
-            m.insert("last_updated".into(), s(date));
-        }
-        NodeType::Tag => {}
-    }
-    m
-}
-
 /// Build the final frontmatter block by merging the form's authoritative
 /// fields onto the document's preserved map (update) or onto a seeded
 /// template (create). Preserves custom keys (status, severity, cliente,
 /// etc.) that the form doesn't manage, per the fix for caveat #5.
 #[cfg(feature = "ssr")]
-fn merge_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
+fn merge_frontmatter(payload: &BrainFilePayload, author: &str, config: &BrainConfig) -> String {
     use serde_yaml::Value;
 
-    if matches!(payload.node_type, NodeType::Tag) {
+    if payload.node_type == "tag"
+        || config.by_directory("").map(|s| s.name.as_str()) == Some(payload.node_type.as_str())
+    {
         return String::new();
     }
 
     let date = today_iso();
     let is_update = payload.preserved_frontmatter.is_some();
+    let spec = config
+        .lookup(&payload.node_type)
+        .unwrap_or_else(|| config.default_spec());
+
     let mut map = payload
         .preserved_frontmatter
         .clone()
-        .unwrap_or_else(|| seed_frontmatter(payload.node_type, &payload.title, &date));
+        .unwrap_or_else(|| spec.frontmatter_seed.clone());
 
     // Form-authoritative fields: always overwrite.
-    map.insert(
-        "type".into(),
-        Value::String(payload.node_type.frontmatter_type().to_string()),
-    );
+    map.insert("type".into(), Value::String(spec.name.clone()));
     map.insert("author".into(), Value::String(author.to_string()));
     map.insert(
         "tags".into(),
@@ -852,8 +818,8 @@ fn merge_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
         ),
     );
     // `topic` is controlled by the `title` form field for the types that use it.
-    if matches!(payload.node_type, NodeType::Concept | NodeType::Preventivo) {
-        let key = if matches!(payload.node_type, NodeType::Preventivo) {
+    if payload.node_type == "concept" || payload.node_type == "preventivo" {
+        let key = if payload.node_type == "preventivo" {
             "progetto"
         } else {
             "topic"
@@ -861,9 +827,22 @@ fn merge_frontmatter(payload: &BrainFilePayload, author: &str) -> String {
         map.insert(key.into(), Value::String(payload.title.clone()));
     }
 
-    // On update: refresh `last_updated` for runbooks; leave other dates alone.
-    // On create: the seed already placed the correct date fields.
-    if is_update && matches!(payload.node_type, NodeType::Runbook) {
+    if !is_update {
+        // Replicate legacy date injections for default types to avoid breaking existing workflows,
+        // but only if they are the default types.
+        match payload.node_type.as_str() {
+            "concept" => {
+                map.insert("date_created".into(), Value::String(date.clone()));
+            }
+            "adr" | "meeting" | "preventivo" => {
+                map.insert("date".into(), Value::String(date.clone()));
+            }
+            "post-mortem" => {
+                map.insert("incident_date".into(), Value::String(date.clone()));
+            }
+            _ => {}
+        }
+    } else if payload.node_type == "runbook" {
         map.insert("last_updated".into(), Value::String(date));
     }
 
@@ -878,7 +857,7 @@ mod merge_frontmatter_tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn base_payload(node_type: NodeType) -> BrainFilePayload {
+    fn base_payload(node_type: String) -> BrainFilePayload {
         BrainFilePayload {
             node_type,
             title: "T".into(),
@@ -906,10 +885,10 @@ mod merge_frontmatter_tests {
             "date".into(),
             serde_yaml::Value::String("2026-03-01".into()),
         );
-        let mut payload = base_payload(NodeType::Decision);
+        let mut payload = base_payload("adr".to_string());
         payload.preserved_frontmatter = Some(preserved);
 
-        let out = merge_frontmatter(&payload, "bob");
+        let out = merge_frontmatter(&payload, "bob", &BrainConfig::default());
         assert!(out.contains("status: accepted"), "out was: {out}");
         assert!(out.contains("date: 2026-03-01"), "out was: {out}");
         assert!(out.contains("author: bob"), "out was: {out}");
@@ -918,8 +897,8 @@ mod merge_frontmatter_tests {
 
     #[test]
     fn create_seeds_defaults() {
-        let payload = base_payload(NodeType::Decision);
-        let out = merge_frontmatter(&payload, "alice");
+        let payload = base_payload("adr".to_string());
+        let out = merge_frontmatter(&payload, "alice", &BrainConfig::default());
         assert!(out.contains("type: adr"));
         assert!(out.contains("status: draft"));
         assert!(out.starts_with("---\n"));
@@ -928,8 +907,11 @@ mod merge_frontmatter_tests {
 
     #[test]
     fn tag_type_emits_empty() {
-        let payload = base_payload(NodeType::Tag);
-        assert_eq!(merge_frontmatter(&payload, "x"), "");
+        let payload = base_payload("tag".to_string());
+        assert_eq!(
+            merge_frontmatter(&payload, "x", &BrainConfig::default()),
+            ""
+        );
     }
 
     #[test]
@@ -940,11 +922,11 @@ mod merge_frontmatter_tests {
             "tags".into(),
             serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("stale".into())]),
         );
-        let mut payload = base_payload(NodeType::Decision);
+        let mut payload = base_payload("adr".to_string());
         payload.preserved_frontmatter = Some(preserved);
         payload.tags = vec!["new".into()];
 
-        let out = merge_frontmatter(&payload, "bob");
+        let out = merge_frontmatter(&payload, "bob", &BrainConfig::default());
         assert!(out.contains("author: bob"));
         assert!(out.contains("- new"));
         assert!(!out.contains("old"));

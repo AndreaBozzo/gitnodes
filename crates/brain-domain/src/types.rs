@@ -1,143 +1,13 @@
 use crate::frontmatter::split_frontmatter;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum NodeType {
-    Concept,
-    Decision,
-    Meeting,
-    PostMortem,
-    Preventivo,
-    Runbook,
-    Tag,
-}
-
-impl NodeType {
-    pub const ALL: [NodeType; 7] = [
-        NodeType::Concept,
-        NodeType::Decision,
-        NodeType::Meeting,
-        NodeType::PostMortem,
-        NodeType::Preventivo,
-        NodeType::Runbook,
-        NodeType::Tag,
-    ];
-
-    /// Types a user can create via the editor (excludes Tag, which is virtual).
-    pub const CREATABLE: [NodeType; 6] = [
-        NodeType::Concept,
-        NodeType::Decision,
-        NodeType::Meeting,
-        NodeType::PostMortem,
-        NodeType::Preventivo,
-        NodeType::Runbook,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            NodeType::Concept => "Concept",
-            NodeType::Decision => "ADR",
-            NodeType::Meeting => "Meeting",
-            NodeType::PostMortem => "Post-mortem",
-            NodeType::Preventivo => "Preventivo",
-            NodeType::Runbook => "Runbook",
-            NodeType::Tag => "Tag",
-        }
-    }
-
-    pub fn accent(self) -> &'static str {
-        match self {
-            NodeType::Concept => "#2dd4bf",
-            NodeType::Decision => "#f59e0b",
-            NodeType::Meeting => "#a78bfa",
-            NodeType::PostMortem => "#f87171",
-            NodeType::Preventivo => "#38bdf8",
-            NodeType::Runbook => "#4ade80",
-            NodeType::Tag => "#64748b",
-        }
-    }
-
-    /// CSS custom-property reference for the accent colour.
-    /// Use in HTML `style` attributes; for SVG fills prefer `accent()`.
-    pub fn accent_var(self) -> &'static str {
-        match self {
-            NodeType::Concept => "var(--accent-concept)",
-            NodeType::Decision => "var(--accent-decision)",
-            NodeType::Meeting => "var(--accent-meeting)",
-            NodeType::PostMortem => "var(--accent-postmortem)",
-            NodeType::Preventivo => "var(--accent-preventivo)",
-            NodeType::Runbook => "var(--accent-runbook)",
-            NodeType::Tag => "var(--accent-tag)",
-        }
-    }
-
-    /// Returns the Brain repo directory for this type.
-    pub fn directory(self) -> &'static str {
-        match self {
-            NodeType::Concept => "concepts",
-            NodeType::Decision => "adrs",
-            NodeType::Meeting => "meetings",
-            NodeType::PostMortem => "post-mortems",
-            NodeType::Preventivo => "preventivi",
-            NodeType::Runbook => "runbooks",
-            NodeType::Tag => "",
-        }
-    }
-
-    /// Reverse of `directory()`: maps a canonical folder name back to the
-    /// type that owns it. Returns `None` for unknown folders (custom paths).
-    pub fn from_directory(dir: &str) -> Option<Self> {
-        match dir.trim_matches('/') {
-            "concepts" => Some(NodeType::Concept),
-            "adrs" => Some(NodeType::Decision),
-            "meetings" => Some(NodeType::Meeting),
-            "post-mortems" => Some(NodeType::PostMortem),
-            "preventivi" => Some(NodeType::Preventivo),
-            "runbooks" => Some(NodeType::Runbook),
-            _ => None,
-        }
-    }
-
-    /// Returns the Brain template frontmatter type value.
-    pub fn frontmatter_type(self) -> &'static str {
-        match self {
-            NodeType::Concept => "concept",
-            NodeType::Decision => "adr",
-            NodeType::Meeting => "meeting",
-            NodeType::PostMortem => "post-mortem",
-            NodeType::Preventivo => "preventivo",
-            NodeType::Runbook => "runbook",
-            NodeType::Tag => "",
-        }
-    }
-
-    /// Filename under `templates/` in the Brain repo. None = no template.
-    pub fn template_filename(self) -> Option<&'static str> {
-        match self {
-            NodeType::Concept => Some("ConceptNote.md"),
-            NodeType::Decision => Some("ADR.md"),
-            NodeType::PostMortem => Some("PostMortem.md"),
-            NodeType::Preventivo => Some("Preventivo.md"),
-            NodeType::Runbook => Some("Runbook.md"),
-            NodeType::Meeting | NodeType::Tag => None,
-        }
-    }
-}
-
-impl fmt::Display for NodeType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub id: u32,
     pub title: String,
     pub summary: String,
-    pub node_type: NodeType,
+    pub node_type: String,
     pub tags: Vec<String>,
     pub x: f32,
     pub y: f32,
@@ -160,7 +30,7 @@ pub struct Edge {
 pub struct EditPrefill {
     pub path: String,
     pub sha: String,
-    pub node_type: Option<NodeType>,
+    pub node_type: Option<String>,
     pub title: String,
     pub author: String,
     pub tags: Vec<String>,
@@ -184,7 +54,7 @@ pub enum EditMode {
     #[default]
     Closed,
     New,
-    Edit(EditPrefill),
+    Edit(Box<EditPrefill>),
 }
 
 impl EditPrefill {
@@ -209,21 +79,15 @@ impl EditPrefill {
         }
 
         if let Some(v) = out.frontmatter.get("type").and_then(|v| v.as_str()) {
-            out.node_type = match v {
-                "concept" => Some(NodeType::Concept),
-                "adr" => Some(NodeType::Decision),
-                "meeting" => Some(NodeType::Meeting),
-                "post-mortem" => Some(NodeType::PostMortem),
-                "preventivo" => Some(NodeType::Preventivo),
-                "runbook" => Some(NodeType::Runbook),
-                _ => None,
-            };
+            out.node_type = Some(v.to_string());
         }
         // Title lives under `topic:` for concepts, `progetto:` for preventivi.
         // Fall back to the other key then to the H1 heading below.
-        let title_key = matches!(out.node_type, Some(NodeType::Preventivo))
-            .then_some("progetto")
-            .unwrap_or("topic");
+        let title_key = if out.node_type.as_deref() == Some("preventivo") {
+            "progetto"
+        } else {
+            "topic"
+        };
         if let Some(v) = out.frontmatter.get(title_key).and_then(|v| v.as_str()) {
             out.title = v.to_string();
         }
@@ -299,7 +163,7 @@ impl EditPrefill {
 /// Payload sent from the editor form to create/update a Brain file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BrainFilePayload {
-    pub node_type: NodeType,
+    pub node_type: String,
     pub title: String,
     pub author: String,
     pub tags: Vec<String>,
@@ -332,26 +196,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn node_type_creatable_excludes_tag() {
-        assert!(!NodeType::CREATABLE.contains(&NodeType::Tag));
-        assert_eq!(NodeType::CREATABLE.len(), 6);
-    }
-
-    #[test]
-    fn node_type_directory_roundtrip_distinct() {
-        let dirs: Vec<&str> = NodeType::CREATABLE.iter().map(|t| t.directory()).collect();
-        let mut sorted = dirs.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(dirs.len(), sorted.len(), "directories must be unique");
-    }
-
-    #[test]
     fn prefill_parses_topic_and_tags() {
         let raw = "---\ntype: adr\ntopic: Foo Bar\ntags: [\"a\", b, 'c']\n---\nbody\n";
         let p = EditPrefill::from_raw("adrs/Foo.md", "abc", raw);
         assert_eq!(p.title, "Foo Bar");
-        assert_eq!(p.node_type, Some(NodeType::Decision));
+        assert_eq!(p.node_type, Some("adr".to_string()));
         assert_eq!(p.tags, vec!["a", "b", "c"]);
         assert_eq!(p.body, "body\n");
     }
@@ -377,7 +226,7 @@ mod tests {
         // save_brain_file can merge instead of regenerating.
         let raw = "---\ntype: adr\nstatus: accepted\ndate: 2026-03-01\nauthor: alice\ntags: [\"x\"]\n---\nbody\n";
         let p = EditPrefill::from_raw("adrs/F.md", "sha", raw);
-        assert_eq!(p.node_type, Some(NodeType::Decision));
+        assert_eq!(p.node_type, Some("adr".to_string()));
         assert_eq!(
             p.frontmatter.get("status").and_then(|v| v.as_str()),
             Some("accepted")
@@ -400,7 +249,7 @@ mod tests {
         assert_eq!(p.body, "body");
 
         let payload = BrainFilePayload {
-            node_type: NodeType::Concept,
+            node_type: "concept".to_string(),
             title: "X".into(),
             author: "alice".into(),
             tags: vec![],
@@ -427,7 +276,7 @@ mod tests {
         // would blank out progetto.
         let raw = "---\ntype: preventivo\nprogetto: \"Rewrite search\"\nstatus: draft\n---\n";
         let p = EditPrefill::from_raw("preventivi/Foo.md", "s", raw);
-        assert_eq!(p.node_type, Some(NodeType::Preventivo));
+        assert_eq!(p.node_type, Some("preventivo".to_string()));
         assert_eq!(p.title, "Rewrite search");
     }
 }
