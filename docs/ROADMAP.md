@@ -11,6 +11,8 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
 
 **Principio guida:** Fase 1 deve essere non-breaking per installazioni esistenti e libera da speculazione architetturale. Abstraction layers (trait) e admin UI vengono rimandati alle fasi dove esiste un secondo consumer/use-case che ne valida la forma.
 
+**Stato al 2026-04-23:** l'obiettivo tecnico della fase è sostanzialmente raggiunto. Tutti i deliverable infrastrutturali di de-hardcoding/configurabilità sono atterrati; restano aperti solo i workstream di convergenza prodotto e cutover sul caso reale `Brain`, necessari per dichiarare la fase chiusa anche operativamente.
+
 - [x] **Frontmatter round-trip (prerequisito bloccante, ex-caveat #5)** — _2026-04-22_
     - `EditPrefill::from_raw` parsa l'intero frontmatter YAML in `BTreeMap<String, serde_yaml::Value>`.
     - `BrainFilePayload.preserved_frontmatter` propaga il dict all'update; `merge_frontmatter` fa overlay dei campi del form invece di rigenerare da template.
@@ -48,10 +50,17 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
     - `editor.rs::markdown_body_label` eliminata; label letto da `spec.body_label` con fallback `"Description"`.
     - `BrainConfig::default()` aggiornata per riprodurre il comportamento pre-change dei sette tipi built-in.
     - Test di round-trip custom-type aggiunti in `brain-domain/src/types.rs` (load) e `brain-app/src/api.rs` (save, create+update).
-- [ ] **Unified Issue System ("Tutto è un'Issue")**:
-    - Abbandono delle dipendenze da feature proprietarie (es. GitHub Discussions).
-    - Mapping di ogni entità comunicativa sulle **Issues**, usando **Labels** (es. `brain:discussion`, `brain:task`) per differenziare il comportamento UI.
-- [ ] **Passaggio interno a yaml su repo Brain, testing, deploy su prod**
+- [ ] **Convergenza del modello operativo su Work Items + binding provider**:
+    - Definizione di un'entità interna `WorkItem` come modello operativo minimo e stabile (`brain_id`, `kind`, `state`, `labels`, `assignees`, `content_path`, binding esterno opzionale).
+    - Le Issues dei forge diventano un **backend/binding** del modello, non la sua ontologia: supportano il caso principale ma non definiscono l'identità interna del sistema.
+    - Definizione di una tassonomia minima di label (`brain:discussion`, `brain:task`, `brain:decision`, ecc.) e del mapping machine-readable in config, così la UI può derivare il comportamento senza introdurre nuovi switch GitHub-centrici.
+    - Chiarimento del confine di responsabilità fra Markdown/frontmatter, projection locale e work item fields: stato, assignee, label, milestone e commenti devono avere una source of truth esplicita prima di atterrare in runtime.
+    - Deliverable di chiusura della Fase 1: contratto prodotto/dati approvato sul modello `WorkItem` e sul binding provider. Projection runtime, sync e UI operativa atterrano in Fase 2; impersonation, review workflow e PR automation restano in Fase 3.
+- [ ] **Dogfooding su repo Brain + cutover di produzione**:
+    - Adozione di `.brain-config.yml` dentro il repo `Brain`, smettendo di dipendere dal default compilato nel binario come configurazione primaria.
+    - Regressione end-to-end sul caso reale: create/edit/delete/rename/render per tipi built-in e almeno un tipo custom, inclusi `Related / See also`, template loading e fallback per tipi sconosciuti.
+    - Verifica operativa in prod di sessioni/cookie, asset proxy, env vars e rollback path.
+    - La Fase 1 si considera chiusa quando il deployment di produzione gira sul repo `Brain` in modalità config-driven senza regressioni funzionali.
 ### Spostati fuori da Fase 1
 
 - **Pannello Impostazioni (Visual YAML Editor)** → **Fase 3**. È effettivamente un sotto-flusso admin-only e dipende da RBAC; fino ad allora gli admin editano YAML via commit come il resto del contenuto git-nativo.
@@ -61,27 +70,41 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
 ## 🟡 Fase 2: Operatività, Sync e Dati
 Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia dell'integrità dei dati.
 
-- [ ] **Type: Task**:
-    - Introduzione del nodo di tipo operativo per il tracciamento di attività, linkato 1:1 a un'Issue (Stato Open/Closed, Assignees).
-- [ ] **Sincronizzazione Esterna (Inbound Webhooks & SSE)**:
-    - Endpoint in Axum dedicato alla ricezione di Webhooks (`push`, `issues`) dal Forge.
-    - Invalidazione della cache SQLite e invio di eventi **SSE (Server-Sent Events)** al frontend Leptos per l'Hot Reload del grafo.
-- [ ] **Gestione "Link Rot" (Rename Transazionali)**:
-    - Implementazione sicura del cambio nome file/cartella tramite transazioni `git mv`.
-    - Aggiornamento contestuale del campo `path` in SQLite per mantenere intatto il legame storico.
-- [ ] **Graph cache scoping** _(caveat #8, mandatory before Fase 3/4)_:
-    - `static Mutex<Option<CacheEntry>>` in `brain-storage/src/lib.rs` oggi è process-global. Safe finché tutti gli authed org member vedono lo stesso repo.
-    - Diventa un bug in Fase 3 (RBAC: viste permission-differentiated leaked tra utenti) e Fase 4 (multi-forge/multi-target: un processo serve più repo).
-    - Azione: rikeying della cache per `(user_id_or_role, target)` prima che una delle due fasi atterri.
-- [ ] **Reload-on-save → Resource invalidation** _(caveat #7 del memory, Fase 2)_:
-    - Editor oggi fa `window.location.reload()` su Create/Update. Semplice ma costa un SSR round-trip completo.
-    - Target: bumpare un `graph_version: RwSignal<u64>` al save e farlo feedare `Resource::new_blocking`, così il resource refetcha senza reload.
-    - Accoppia naturalmente con SSE hot-reload: lo stesso signal viene bumpato sia dal save locale sia dal push webhook.
-- [ ] **`GithubClient`: pooling + header centralization** _(deferred da Fase 1)_:
-    - Sostituire `reqwest::Client::builder()...build()` per-request (brain-storage `http_client()`, config_loader `fetch_and_parse`, assets.rs) con un singleton pooled dentro `GithubClient` o in Leptos context.
-    - Esporre helper `get(path)`, `put(path, body)`, `delete(path)` che applicano `Authorization: Bearer {token}` + `User-Agent: brain_ui` una volta sola; rimuovere i `.bearer_auth(token)` manuali ai 9+ callsite.
-    - Valutare migrazione di `brain-auth` (`/user`, `/orgs/.../members/...`) dietro lo stesso client dopo che il pooling è in piedi.
-    - Nota: motivo dello split — in Fase 1 il refactor URL-only è sufficiente per il seam di Fase 4; la centralizzazione di client+header è una win di performance/DRY che può essere testata in isolamento senza bloccare altri lavori.
+- [ ] **Projection Layer SQLite (dal session store alla materialized view del contenuto)**:
+    - Espandere l'uso di SQLite oltre sessioni/audit: tabelle per `nodes`, `edges`, `files`, `backlinks`, `work_items`, `work_item_bindings` e stato dell'ultimo sync.
+    - Costruire un bootstrap iniziale dal tree Git e una pipeline idempotente di upsert, così il frontend legge la proiezione locale invece di dipendere dal tree walk live ad ogni refetch.
+    - Formalizzare Git come source of truth e SQLite come read model/write-through cache, evitando che Fase 3 introduca background jobs su una base ancora in-memory.
+- [ ] **Fondazione del modello Work Item**:
+    - Introdurre `task` come primo `work_item_kind` via config/template reali, non via hardcode, lasciando aperta l'estensione a `discussion`, `decision`, `incident`, ecc.
+    - Rendere l'identità interna (`brain_id`) separata dal binding esterno (`GitHub #123`, `GitLab #456`, ...), così offline mode e multi-forge non dipendono dall'oggetto provider.
+    - Decidere se il binding 1:1 `task ↔ issue` è una policy iniziale o una regola rigida, e coprire esplicitamente le eccezioni (`draft task`, `local-only item`, `provider item senza doc`).
+    - Rendere esplicita la source of truth: Work Item come dominio operativo, provider issue come backend di collaborazione, Markdown/frontmatter come supporto editoriale e linking semantico.
+    - Primo scope di UI: badge/stato/filtri/detail panel coerenti e visibilità del binding esterno. Commenti, review branch e PR restano fuori fino alla Fase 3.
+- [ ] **Sincronizzazione inbound: Webhooks, projection refresh e SSE**:
+    - Endpoint Axum per `push` e per gli eventi del backend operativo esterno (Issues/Work Items del forge) con validazione firma, idempotenza e fan-out verso invalidazione/selective refresh della proiezione locale.
+    - Su `push`: invalidare solo il target corretto, aggiornare config/template/graph projection e pubblicare evento SSE al frontend.
+    - Sugli eventi operativi esterni: aggiornare `work_items` e `work_item_bindings` senza aspettare un commit Git.
+    - Lato Leptos: `EventSource` con reconnect/backoff e instradamento su segnali dedicati (`graph_version` o equivalenti) senza full route reset.
+- [ ] **Completamento della resource invalidation lato write-path**:
+    - L'infrastruttura base esiste già: save, delete e rename bumpano `graph_version`, che a sua volta refetcha `Resource::new_blocking`.
+    - Resta da unificare il comportamento: stesso pathway di invalidazione per save locale, rename, delete e update inbound da SSE/webhook.
+    - Preservare stato UI durante il refetch (selezione corrente, editor aperto, path rinominato) invece di trattare ogni refresh come hard reset implicito.
+- [ ] **Gestione "Link Rot" con rename atomici**:
+    - Lo use-case esiste già, ma oggi `rename_brain_file` esegue N+2 commit via Contents API (uno per referrer, poi create+delete).
+    - Migrare a un'unica operazione logica via Git Data API (`blobs`/`trees`/`commit`/`refs`) per ottenere rename + rewrite backlink atomici e ridurre churn nella history.
+    - Aggiornare nella stessa transazione la proiezione locale (`path`, backlink, eventuali riferimenti work-item/binding) per evitare drift temporanei fra Git e SQLite.
+- [ ] **Scoping delle cache runtime** _(mandatory before Fase 3/4)_:
+    - Oggi il problema non riguarda solo il grafo: cache process-global esistono in `brain-storage` (graph/template) e `config_loader` (config), con chiavi troppo deboli o assenti.
+    - Prima di RBAC e multi-target bisogna rikeyare almeno per `target`; dove la visibilità può divergere serve anche lo scope per `user_id_or_role`.
+    - L'invalidazione da webhook o write-path deve colpire solo le entry del target corretto, non azzerare stato globale del processo.
+- [ ] **`GithubClient`: pooling, header centralization e seam per sync jobs** _(deferred da Fase 1)_:
+    - Sostituire i `reqwest::Client::builder()...build()` per-request con un client pooled condiviso, riusato da storage, config loader, asset proxy e futuri sync jobs.
+    - Esporre helper per `get/put/delete/post` che centralizzano `Authorization`, `User-Agent`, retry policy, eventuali conditional requests e logging.
+    - Separare chiaramente il dominio repo/content dal dominio auth: gli endpoint OAuth possono restare fuori dal client condiviso finché non esiste un beneficio operativo netto.
+- [ ] **Rebuild, reconciliation e drift recovery**:
+    - I webhook non saranno perfetti: serve un full rebuild/manual reindex per ricostruire la projection layer se un evento viene perso o fallisce a metà.
+    - Registrare watermark/lag/errori di sync in SQLite o audit log, così la Fase 3 può appoggiarsi a job di background osservabili invece che opachi.
+    - Questo diventa il paracadute operativo per rate-limit shielding, multi-target e history navigation delle fasi successive.
 
 ---
 
@@ -89,14 +112,14 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
 Abilitare l'uso della piattaforma a team estesi, sfruttando l'App OAuth esistente.
 
 - [ ] **Impersonation tramite OAuth**:
-    - Utilizzo dell'access token univoco dell'utente loggato per eseguire azioni sul Forge a suo nome (es. commenti o apertura PR).
+    - Utilizzo dell'access token univoco dell'utente loggato per eseguire azioni sul Forge a suo nome (es. commenti su work item bindati o apertura PR).
 - [ ] **Workflow di Review (Branching & PR)**:
     - Flusso "Proponi Modifica" per utenti non-admin.
     - Creazione automatica di branch temporanei e apertura di Pull Request (tramite REST) direttamente dalla UI.
 - [ ] **Rate-Limit Shielding**:
     - Centralizzazione delle chiamate al Forge tramite job in background di Axum. Il frontend interroga esclusivamente la cache SQLite.
 - [ ] **Pannello Impostazioni (Visual YAML Editor)** _(spostato da Fase 1)_:
-    - Interfaccia UI dedicata (solo `Admin`, dipende dall'RBAC di questa fase) per creare e modificare i "Tipi di Nodo" tramite form visuali (Color Picker, gestione cartelle, mapping Issue/Task).
+    - Interfaccia UI dedicata (solo `Admin`, dipende dall'RBAC di questa fase) per creare e modificare i "Tipi di Nodo" tramite form visuali (Color Picker, gestione cartelle, mapping `work_item_kind`/binding provider).
     - Il backend Axum serializza (`serde_yaml`) e pusha le modifiche a `.brain-config.yml` sul branch principale.
 
 ---
@@ -105,7 +128,7 @@ Abilitare l'uso della piattaforma a team estesi, sfruttando l'App OAuth esistent
 Esplorazione del passato e indipendenza totale dal provider.
 
 - [ ] **Git Time Jump**:
-    - Navigazione della history dalla UI (visualizzazione di un nodo a uno specifico SHA), mantenendo a schermo i commenti attuali dell'Issue collegata.
+    - Navigazione della history dalla UI (visualizzazione di un nodo a uno specifico SHA), mantenendo a schermo lo stato conversazionale corrente del `WorkItem` bindato quando presente.
 - [ ] **`ForgeAdapter` Trait + Multi-Forge Support** _(trait spostato da Fase 1)_:
     - Estrazione del `trait ForgeAdapter` da `GithubClient` (Fase 1), progettato contro i requisiti reali dei nuovi adapter — non in astratto.
     - Sviluppo degli adapter ufficiali per **GitLab** e **Gitea/Codeberg**.
@@ -122,7 +145,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
     - Creazione di un proxy sicuro in Axum che sfrutti l'OAuth token dell'utente per interrogare le API AI di GitHub/Copilot (garantendo RBAC e accounting corretto).
 - [ ] **Outbound Webhooks Engine**:
     - Motore di eventi in background (Axum) per inviare webhook a sistemi esterni (GitHub Actions, Zapier, CI/CD).
-    - Configurazione dei trigger tramite il file `.brain-config.yml` (es. `on_task_close: https://...`).
+    - Configurazione dei trigger tramite il file `.brain-config.yml` (es. `on_work_item_done: https://...`).
 
 ### ROADMAP IS ALWAYS SUBJECT TO CHANGES AND REALIGNMENTS, this sketch is meant to be indicative of the direction.
 

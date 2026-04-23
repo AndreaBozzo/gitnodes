@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
+use crate::work_items::WorkItemKind;
+
 /// The GitHub repository the app reads from and writes to.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TargetConfig {
@@ -129,6 +131,12 @@ pub struct NodeTypeSpec {
     /// back to `"Description"` when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_label: Option<String>,
+    /// Optional classification for node types that participate in the
+    /// operational model. This stays provider-agnostic: a `task` node type can
+    /// later bind 1:1 to a GitHub Issue, GitLab Issue, or remain local/offline
+    /// without the domain model changing shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_kind: Option<WorkItemKind>,
 }
 
 fn default_true() -> bool {
@@ -142,6 +150,10 @@ impl NodeTypeSpec {
     /// still win because CSS only uses the fallback when the var is unset.
     pub fn accent_var(&self) -> String {
         format!("var(--accent-{}, {})", self.name, self.accent)
+    }
+
+    pub fn is_work_item(&self) -> bool {
+        self.work_item_kind.is_some()
     }
 }
 
@@ -336,6 +348,7 @@ impl Default for BrainConfig {
                     date_create_field: Some("date_created".into()),
                     date_update_field: None,
                     body_label: Some("Summary".into()),
+                    work_item_kind: None,
                 },
                 NodeTypeSpec {
                     name: "adr".into(),
@@ -349,6 +362,7 @@ impl Default for BrainConfig {
                     date_create_field: Some("date".into()),
                     date_update_field: None,
                     body_label: Some("Context".into()),
+                    work_item_kind: None,
                 },
                 NodeTypeSpec {
                     name: "meeting".into(),
@@ -362,6 +376,7 @@ impl Default for BrainConfig {
                     date_create_field: Some("date".into()),
                     date_update_field: None,
                     body_label: Some("Summary / Notes".into()),
+                    work_item_kind: None,
                 },
                 NodeTypeSpec {
                     name: "post-mortem".into(),
@@ -375,6 +390,7 @@ impl Default for BrainConfig {
                     date_create_field: Some("incident_date".into()),
                     date_update_field: None,
                     body_label: Some("Incident Summary".into()),
+                    work_item_kind: None,
                 },
                 NodeTypeSpec {
                     name: "preventivo".into(),
@@ -392,6 +408,7 @@ impl Default for BrainConfig {
                     date_create_field: Some("date".into()),
                     date_update_field: None,
                     body_label: Some("Riepilogo".into()),
+                    work_item_kind: None,
                 },
                 NodeTypeSpec {
                     name: "runbook".into(),
@@ -405,6 +422,7 @@ impl Default for BrainConfig {
                     date_create_field: None,
                     date_update_field: Some("last_updated".into()),
                     body_label: Some("Description".into()),
+                    work_item_kind: None,
                 },
                 NodeTypeSpec {
                     name: "tag".into(),
@@ -418,6 +436,7 @@ impl Default for BrainConfig {
                     date_create_field: None,
                     date_update_field: None,
                     body_label: Some("Body".into()),
+                    work_item_kind: None,
                 },
             ],
             default_type: "concept".into(),
@@ -551,5 +570,24 @@ node_types:
         let yaml = serde_yaml::to_string(&cfg).unwrap();
         let parsed = BrainConfig::parse(&yaml).unwrap();
         assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn parses_optional_work_item_kind() {
+        let yaml = r##"
+default_type: task
+node_types:
+  - name: task
+    label: Task
+    directory: tasks
+    accent: "#112233"
+    work_item_kind: task
+"##;
+        let cfg = BrainConfig::parse(yaml).unwrap();
+        assert_eq!(
+            cfg.lookup("task").and_then(|s| s.work_item_kind.clone()),
+            Some(WorkItemKind::Task)
+        );
+        assert!(cfg.lookup("task").is_some_and(|s| s.is_work_item()));
     }
 }

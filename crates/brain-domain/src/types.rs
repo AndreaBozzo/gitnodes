@@ -277,6 +277,7 @@ mod tests {
             date_create_field: Some("creato_il".into()),
             date_update_field: None,
             body_label: Some("Corpo".into()),
+            work_item_kind: None,
         });
         let raw = "---\ntype: articolo\ntitolo: \"Il Mio Pezzo\"\n---\n";
         let p = EditPrefill::from_raw("articoli/Foo.md", "s", raw, &cfg);

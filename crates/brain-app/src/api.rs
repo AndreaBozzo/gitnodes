@@ -912,6 +912,7 @@ mod merge_frontmatter_tests {
             date_create_field: Some("creato_il".into()),
             date_update_field: Some("aggiornato_il".into()),
             body_label: Some("Corpo".into()),
+            work_item_kind: None,
         });
 
         // Create path: title_key and date_create_field both get injected.
