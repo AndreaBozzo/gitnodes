@@ -199,11 +199,14 @@ pub fn DetailPanel(
                                             disabled=move || loaded_file().is_none()
                                             on:click=move |_| {
                                                 if let Some(bf) = loaded_file() {
-                                                    let prefill = EditPrefill::from_raw(
-                                                        &path_for_edit,
-                                                        &bf.sha,
-                                                        &bf.content,
-                                                    );
+                                                    let prefill = config.with_value(|c| {
+                                                        EditPrefill::from_raw(
+                                                            &path_for_edit,
+                                                            &bf.sha,
+                                                            &bf.content,
+                                                            c,
+                                                        )
+                                                    });
                                                     edit_mode.set(EditMode::Edit(Box::new(prefill)));
                                                 }
                                             }

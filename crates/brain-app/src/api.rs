@@ -815,33 +815,17 @@ fn merge_frontmatter(payload: &BrainFilePayload, author: &str, config: &BrainCon
                 .collect(),
         ),
     );
-    // `topic` is controlled by the `title` form field for the types that use it.
-    if payload.node_type == "concept" || payload.node_type == "preventivo" {
-        let key = if payload.node_type == "preventivo" {
-            "progetto"
-        } else {
-            "topic"
-        };
+    // Title is controlled by the form for types that declare a title_key.
+    if let Some(key) = spec.title_key.as_deref() {
         map.insert(key.into(), Value::String(payload.title.clone()));
     }
 
     if !is_update {
-        // Replicate legacy date injections for default types to avoid breaking existing workflows,
-        // but only if they are the default types.
-        match payload.node_type.as_str() {
-            "concept" => {
-                map.insert("date_created".into(), Value::String(date.clone()));
-            }
-            "adr" | "meeting" | "preventivo" => {
-                map.insert("date".into(), Value::String(date.clone()));
-            }
-            "post-mortem" => {
-                map.insert("incident_date".into(), Value::String(date.clone()));
-            }
-            _ => {}
+        if let Some(field) = spec.date_create_field.as_deref() {
+            map.insert(field.into(), Value::String(date));
         }
-    } else if payload.node_type == "runbook" {
-        map.insert("last_updated".into(), Value::String(date));
+    } else if let Some(field) = spec.date_update_field.as_deref() {
+        map.insert(field.into(), Value::String(date));
     }
 
     match serde_yaml::to_string(&map) {
@@ -909,6 +893,48 @@ mod merge_frontmatter_tests {
         assert_eq!(
             merge_frontmatter(&payload, "x", &BrainConfig::default()),
             ""
+        );
+    }
+
+    #[test]
+    fn custom_type_respects_spec_title_and_date_fields() {
+        use brain_domain::NodeTypeSpec;
+        let mut cfg = BrainConfig::default();
+        cfg.node_types.push(NodeTypeSpec {
+            name: "articolo".into(),
+            label: "Articolo".into(),
+            directory: "articoli".into(),
+            accent: "#abcdef".into(),
+            template_filename: None,
+            creatable: true,
+            frontmatter_seed: BTreeMap::new(),
+            title_key: Some("titolo".into()),
+            date_create_field: Some("creato_il".into()),
+            date_update_field: Some("aggiornato_il".into()),
+            body_label: Some("Corpo".into()),
+        });
+
+        // Create path: title_key and date_create_field both get injected.
+        let mut payload = base_payload("articolo".to_string());
+        payload.title = "Il Mio Articolo".into();
+        let out = merge_frontmatter(&payload, "me", &cfg);
+        assert!(out.contains("titolo: Il Mio Articolo"), "out was: {out}");
+        assert!(out.contains("creato_il:"), "out was: {out}");
+        assert!(
+            !out.contains("aggiornato_il:"),
+            "update field must not appear on create: {out}"
+        );
+
+        // Update path: date_update_field is used instead.
+        let mut payload = base_payload("articolo".to_string());
+        payload.title = "Il Mio Articolo".into();
+        payload.preserved_frontmatter = Some(BTreeMap::new());
+        let out = merge_frontmatter(&payload, "me", &cfg);
+        assert!(out.contains("titolo: Il Mio Articolo"));
+        assert!(out.contains("aggiornato_il:"), "out was: {out}");
+        assert!(
+            !out.contains("creato_il:"),
+            "create field must not appear on update: {out}"
         );
     }
 

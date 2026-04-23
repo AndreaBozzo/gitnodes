@@ -111,6 +111,24 @@ pub struct NodeTypeSpec {
     /// `{status: "draft"}`). Merged with form-controlled fields at save time.
     #[serde(default)]
     pub frontmatter_seed: BTreeMap<String, serde_yaml::Value>,
+    /// Frontmatter key that stores the human title for this type (e.g.
+    /// `"topic"` for concepts, `"progetto"` for preventivi). When `None`,
+    /// the title is not injected into frontmatter on save — callers that
+    /// need to read a title from frontmatter should fall back to `"topic"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_key: Option<String>,
+    /// Frontmatter field to populate with today's date when a new doc of this
+    /// type is created. `None` = no create-time date injection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_create_field: Option<String>,
+    /// Frontmatter field to refresh with today's date on every update. `None`
+    /// = no update-time date injection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_update_field: Option<String>,
+    /// UI label used above the markdown body textarea in the editor. Falls
+    /// back to `"Description"` when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_label: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -143,6 +161,7 @@ pub struct BrainConfig {
 /// Reserved names that clash with known repo paths. A node type cannot use
 /// these as its `name` or `directory`.
 const RESERVED: &[&str] = &["tags", "templates"];
+const RESERVED_FRONTMATTER_FIELDS: &[&str] = &["type", "author", "tags"];
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -158,6 +177,12 @@ pub enum ConfigError {
     UnknownDefault(String),
     #[error("reserved name {0:?} cannot be used as a node type name or directory")]
     ReservedName(String),
+    #[error("invalid {field} {key:?} for type {name:?}")]
+    InvalidFrontmatterField {
+        name: String,
+        field: &'static str,
+        key: String,
+    },
     #[error("node_types is empty")]
     Empty,
 }
@@ -196,6 +221,7 @@ impl BrainConfig {
                     accent: spec.accent.clone(),
                 });
             }
+            validate_frontmatter_fields(spec)?;
         }
         if !names.contains(&self.default_type) {
             return Err(ConfigError::UnknownDefault(self.default_type.clone()));
@@ -240,6 +266,49 @@ fn is_valid_hex_color(s: &str) -> bool {
     bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|b| b.is_ascii_hexdigit())
 }
 
+fn validate_frontmatter_fields(spec: &NodeTypeSpec) -> Result<(), ConfigError> {
+    for (field, key) in [
+        ("title_key", spec.title_key.as_deref()),
+        ("date_create_field", spec.date_create_field.as_deref()),
+        ("date_update_field", spec.date_update_field.as_deref()),
+    ] {
+        let Some(key) = key else {
+            continue;
+        };
+        if key.trim().is_empty() || RESERVED_FRONTMATTER_FIELDS.contains(&key) {
+            return Err(ConfigError::InvalidFrontmatterField {
+                name: spec.name.clone(),
+                field,
+                key: key.to_string(),
+            });
+        }
+    }
+
+    if let (Some(title_key), Some(date_create_field)) =
+        (spec.title_key.as_deref(), spec.date_create_field.as_deref())
+        && title_key == date_create_field
+    {
+        return Err(ConfigError::InvalidFrontmatterField {
+            name: spec.name.clone(),
+            field: "date_create_field",
+            key: date_create_field.to_string(),
+        });
+    }
+
+    if let (Some(title_key), Some(date_update_field)) =
+        (spec.title_key.as_deref(), spec.date_update_field.as_deref())
+        && title_key == date_update_field
+    {
+        return Err(ConfigError::InvalidFrontmatterField {
+            name: spec.name.clone(),
+            field: "date_update_field",
+            key: date_update_field.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 impl Default for BrainConfig {
     /// Equivalent to the hardcoded `NodeType` enum — repos without a
     /// `.brain-config.yml` must behave identically to pre-Phase-1 installs.
@@ -263,6 +332,10 @@ impl Default for BrainConfig {
                     template_filename: Some("ConceptNote.md".into()),
                     creatable: true,
                     frontmatter_seed: BTreeMap::new(),
+                    title_key: Some("topic".into()),
+                    date_create_field: Some("date_created".into()),
+                    date_update_field: None,
+                    body_label: Some("Summary".into()),
                 },
                 NodeTypeSpec {
                     name: "adr".into(),
@@ -272,6 +345,10 @@ impl Default for BrainConfig {
                     template_filename: Some("ADR.md".into()),
                     creatable: true,
                     frontmatter_seed: seed(&[("status", s("draft"))]),
+                    title_key: None,
+                    date_create_field: Some("date".into()),
+                    date_update_field: None,
+                    body_label: Some("Context".into()),
                 },
                 NodeTypeSpec {
                     name: "meeting".into(),
@@ -281,6 +358,10 @@ impl Default for BrainConfig {
                     template_filename: None,
                     creatable: true,
                     frontmatter_seed: BTreeMap::new(),
+                    title_key: None,
+                    date_create_field: Some("date".into()),
+                    date_update_field: None,
+                    body_label: Some("Summary / Notes".into()),
                 },
                 NodeTypeSpec {
                     name: "post-mortem".into(),
@@ -290,6 +371,10 @@ impl Default for BrainConfig {
                     template_filename: Some("PostMortem.md".into()),
                     creatable: true,
                     frontmatter_seed: seed(&[("severity", s(""))]),
+                    title_key: None,
+                    date_create_field: Some("incident_date".into()),
+                    date_update_field: None,
+                    body_label: Some("Incident Summary".into()),
                 },
                 NodeTypeSpec {
                     name: "preventivo".into(),
@@ -303,6 +388,10 @@ impl Default for BrainConfig {
                         ("cliente", s("")),
                         ("modello", s("T&M")),
                     ]),
+                    title_key: Some("progetto".into()),
+                    date_create_field: Some("date".into()),
+                    date_update_field: None,
+                    body_label: Some("Riepilogo".into()),
                 },
                 NodeTypeSpec {
                     name: "runbook".into(),
@@ -312,6 +401,10 @@ impl Default for BrainConfig {
                     template_filename: Some("Runbook.md".into()),
                     creatable: true,
                     frontmatter_seed: seed(&[("service", s(""))]),
+                    title_key: None,
+                    date_create_field: None,
+                    date_update_field: Some("last_updated".into()),
+                    body_label: Some("Description".into()),
                 },
                 NodeTypeSpec {
                     name: "tag".into(),
@@ -321,6 +414,10 @@ impl Default for BrainConfig {
                     template_filename: None,
                     creatable: false,
                     frontmatter_seed: BTreeMap::new(),
+                    title_key: None,
+                    date_create_field: None,
+                    date_update_field: None,
+                    body_label: Some("Body".into()),
                 },
             ],
             default_type: "concept".into(),
@@ -413,6 +510,38 @@ node_types:
         assert!(matches!(
             BrainConfig::parse(yaml),
             Err(ConfigError::ReservedName(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_reserved_frontmatter_field_mapping() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233", title_key: tags }
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::InvalidFrontmatterField {
+                field: "title_key",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_title_key_collision_with_date_field() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233", title_key: topic, date_create_field: topic }
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::InvalidFrontmatterField {
+                field: "date_create_field",
+                ..
+            })
         ));
     }
 

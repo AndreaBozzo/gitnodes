@@ -1,3 +1,4 @@
+use crate::config::BrainConfig;
 use crate::frontmatter::split_frontmatter;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -60,7 +61,7 @@ pub enum EditMode {
 impl EditPrefill {
     /// Parse a raw markdown file (with YAML frontmatter) from the Brain repo
     /// into the structured fields the editor expects. Body is preserved verbatim.
-    pub fn from_raw(path: &str, sha: &str, raw: &str) -> Self {
+    pub fn from_raw(path: &str, sha: &str, raw: &str, config: &BrainConfig) -> Self {
         let (front, body) = split_frontmatter(raw);
         let mut out = EditPrefill {
             path: path.to_string(),
@@ -81,26 +82,17 @@ impl EditPrefill {
         if let Some(v) = out.frontmatter.get("type").and_then(|v| v.as_str()) {
             out.node_type = Some(v.to_string());
         }
-        // Title lives under `topic:` for concepts, `progetto:` for preventivi.
-        // Fall back to the other key then to the H1 heading below.
-        let title_key = if out.node_type.as_deref() == Some("preventivo") {
-            "progetto"
-        } else {
-            "topic"
-        };
+        // Title key is per-type (declared in NodeTypeSpec). Custom types that
+        // omit `title_key` fall back to `"topic"` so legacy/unconfigured files
+        // don't silently drop the title.
+        let title_key = out
+            .node_type
+            .as_deref()
+            .and_then(|t| config.lookup(t))
+            .and_then(|s| s.title_key.as_deref())
+            .unwrap_or("topic");
         if let Some(v) = out.frontmatter.get(title_key).and_then(|v| v.as_str()) {
             out.title = v.to_string();
-        }
-        if out.title.is_empty() {
-            // Cross-fallback so a typo or legacy file doesn't drop the title.
-            let alt = if title_key == "topic" {
-                "progetto"
-            } else {
-                "topic"
-            };
-            if let Some(v) = out.frontmatter.get(alt).and_then(|v| v.as_str()) {
-                out.title = v.to_string();
-            }
         }
         if let Some(v) = out.frontmatter.get("author").and_then(|v| v.as_str()) {
             out.author = v.to_string();
@@ -198,7 +190,7 @@ mod tests {
     #[test]
     fn prefill_parses_topic_and_tags() {
         let raw = "---\ntype: adr\ntopic: Foo Bar\ntags: [\"a\", b, 'c']\n---\nbody\n";
-        let p = EditPrefill::from_raw("adrs/Foo.md", "abc", raw);
+        let p = EditPrefill::from_raw("adrs/Foo.md", "abc", raw, &BrainConfig::default());
         assert_eq!(p.title, "Foo Bar");
         assert_eq!(p.node_type, Some("adr".to_string()));
         assert_eq!(p.tags, vec!["a", "b", "c"]);
@@ -208,14 +200,14 @@ mod tests {
     #[test]
     fn prefill_falls_back_to_h1_title() {
         let raw = "---\ntype: concept\n---\n# Concept: Alpha\n\ncontent";
-        let p = EditPrefill::from_raw("concepts/Alpha.md", "sha", raw);
+        let p = EditPrefill::from_raw("concepts/Alpha.md", "sha", raw, &BrainConfig::default());
         assert_eq!(p.title, "Alpha");
     }
 
     #[test]
     fn prefill_extracts_related_links() {
         let raw = "---\ntype: concept\n---\n# X\n\n## Related\n- [Foo](../concepts/Foo.md)\n- [ext](https://example.com)\n";
-        let p = EditPrefill::from_raw("concepts/X.md", "s", raw);
+        let p = EditPrefill::from_raw("concepts/X.md", "s", raw, &BrainConfig::default());
         assert_eq!(p.related, vec!["concepts/Foo.md"]);
     }
 
@@ -225,7 +217,7 @@ mod tests {
         // ADR, severity on a post-mortem) must round-trip the full map so
         // save_brain_file can merge instead of regenerating.
         let raw = "---\ntype: adr\nstatus: accepted\ndate: 2026-03-01\nauthor: alice\ntags: [\"x\"]\n---\nbody\n";
-        let p = EditPrefill::from_raw("adrs/F.md", "sha", raw);
+        let p = EditPrefill::from_raw("adrs/F.md", "sha", raw, &BrainConfig::default());
         assert_eq!(p.node_type, Some("adr".to_string()));
         assert_eq!(
             p.frontmatter.get("status").and_then(|v| v.as_str()),
@@ -243,7 +235,7 @@ mod tests {
         // server can refuse to silently rewrite the file from defaults even
         // if the UI block is bypassed.
         let raw = "---\ntype: concept\n: not valid :\n---\nbody";
-        let p = EditPrefill::from_raw("concepts/X.md", "s", raw);
+        let p = EditPrefill::from_raw("concepts/X.md", "s", raw, &BrainConfig::default());
         assert!(p.frontmatter.is_empty());
         assert!(p.frontmatter_malformed);
         assert_eq!(p.body, "body");
@@ -270,12 +262,35 @@ mod tests {
     }
 
     #[test]
+    fn prefill_custom_type_reads_title_from_configured_key() {
+        use crate::config::NodeTypeSpec;
+        let mut cfg = BrainConfig::default();
+        cfg.node_types.push(NodeTypeSpec {
+            name: "articolo".into(),
+            label: "Articolo".into(),
+            directory: "articoli".into(),
+            accent: "#abcdef".into(),
+            template_filename: None,
+            creatable: true,
+            frontmatter_seed: BTreeMap::new(),
+            title_key: Some("titolo".into()),
+            date_create_field: Some("creato_il".into()),
+            date_update_field: None,
+            body_label: Some("Corpo".into()),
+        });
+        let raw = "---\ntype: articolo\ntitolo: \"Il Mio Pezzo\"\n---\n";
+        let p = EditPrefill::from_raw("articoli/Foo.md", "s", raw, &cfg);
+        assert_eq!(p.node_type, Some("articolo".to_string()));
+        assert_eq!(p.title, "Il Mio Pezzo");
+    }
+
+    #[test]
     fn prefill_preventivo_title_from_progetto() {
         // Preventivo stores its title under `progetto:`, not `topic:`. Without
         // this fallback the editor would open with an empty title and a save
         // would blank out progetto.
         let raw = "---\ntype: preventivo\nprogetto: \"Rewrite search\"\nstatus: draft\n---\n";
-        let p = EditPrefill::from_raw("preventivi/Foo.md", "s", raw);
+        let p = EditPrefill::from_raw("preventivi/Foo.md", "s", raw, &BrainConfig::default());
         assert_eq!(p.node_type, Some("preventivo".to_string()));
         assert_eq!(p.title, "Rewrite search");
     }
