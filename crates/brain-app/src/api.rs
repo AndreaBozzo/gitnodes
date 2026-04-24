@@ -210,12 +210,13 @@ pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnEr
 #[server(LoadBrainGraph, "/api", endpoint = "load_brain_graph")]
 pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
     use crate::server::session;
-    use brain_storage::Storage;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = session::target_cfg().map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     let storage = session::storage().map_err(sfe)?;
-    storage.load_graph(&token, &config).await.map_err(sfe)
+    crate::server::projection::load_graph(&storage, &token, &config)
+        .await
+        .map_err(sfe)
 }
 
 #[server(ReadBrainFile, "/api", endpoint = "read_brain_file")]
@@ -300,7 +301,6 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     let commit_msg = sanitize_commit_message(payload.commit_message.as_deref()).unwrap_or(auto_msg);
 
     let storage = session::storage().map_err(sfe)?;
-    let _ = target; // target was used for config load; storage now derives from context
     let author_email = format!("{}@users.noreply.github.com", user);
 
     match storage
@@ -322,6 +322,14 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
                 "create"
             };
             crate::server::audit::log(kind, Some(&user), &file_path).await;
+            rebuild_projection_after_write(
+                &storage,
+                &target,
+                &token,
+                &user,
+                &format!("write:{file_path}"),
+            )
+            .await;
             Ok(path)
         }
         Err(e) => {
@@ -343,6 +351,7 @@ pub async fn delete_brain_file(
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
+    let target = session::target_cfg().map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = sanitize_commit_message(commit_message.as_deref())
         .unwrap_or_else(|| format!("Delete {} via Brain UI", path));
@@ -354,6 +363,14 @@ pub async fn delete_brain_file(
     {
         Ok(_) => {
             crate::server::audit::log("delete", Some(&user), &path).await;
+            rebuild_projection_after_write(
+                &storage,
+                &target,
+                &token,
+                &user,
+                &format!("delete:{path}"),
+            )
+            .await;
             Ok(())
         }
         Err(e) => {
@@ -492,6 +509,15 @@ pub async fn rename_brain_file(
             "{old_path} -> {new_path} ({} referrers)",
             updated_referrers.len()
         ),
+    )
+    .await;
+
+    rebuild_projection_after_write(
+        &storage,
+        &cfg,
+        &token,
+        &user,
+        &format!("rename:{old_path}->{new_path}"),
     )
     .await;
 
@@ -786,6 +812,25 @@ fn short_content_hash(bytes: &[u8]) -> String {
     format!("{:x}", h.finish()).chars().take(8).collect()
 }
 
+#[cfg(feature = "ssr")]
+async fn rebuild_projection_after_write(
+    storage: &brain_storage::GithubStorage,
+    target: &TargetConfig,
+    token: &str,
+    user: &str,
+    reason: &str,
+) {
+    let config = crate::knowledge::config_loader::load(target, token).await;
+    if let Err(error) = crate::server::projection::rebuild(storage, token, &config, reason).await {
+        crate::server::audit::log(
+            "projection_error",
+            Some(user),
+            &format!("{reason}: {error}"),
+        )
+        .await;
+    }
+}
+
 #[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]
 pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     use crate::server::session;
@@ -796,21 +841,37 @@ pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     storage.list_folders(&token).await.map_err(sfe)
 }
 
-/// Drop the per-target graph, template, and config caches and force the next
-/// load to re-fetch from the forge. The cheapest way to close the gap between
-/// an out-of-band `git push` and the UI noticing — Phase 2A baseline before
-/// SSE/webhooks land in Phase 2B.
+/// Drop the per-target in-memory caches and rebuild the local SQLite
+/// projection from the forge. This is the explicit manual reindex path used
+/// for drift recovery until inbound webhooks/SSE exist.
 #[server(RefreshBrainGraph, "/api", endpoint = "refresh_brain_graph")]
 pub async fn refresh_brain_graph() -> Result<(), ServerFnError> {
     use crate::server::session;
     use brain_domain::TargetKey;
-    let _s = session::require_authenticated().await.map_err(sfe)?;
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
     let target = session::target_cfg().map_err(sfe)?;
     let key = TargetKey::from(&target);
     brain_storage::invalidate(&key);
     brain_storage::invalidate_template(&key);
     crate::knowledge::config_loader::invalidate(&key);
-    Ok(())
+    let storage = session::storage().map_err(sfe)?;
+    let config = crate::knowledge::config_loader::load(&target, &token).await;
+    match crate::server::projection::rebuild(&storage, &token, &config, "manual_refresh").await {
+        Ok(()) => {
+            crate::server::audit::log("projection_rebuild", Some(&user), key.as_str()).await;
+            Ok(())
+        }
+        Err(error) => {
+            crate::server::audit::log(
+                "projection_error",
+                Some(&user),
+                &format!("manual_refresh {}: {}", key.as_str(), error),
+            )
+            .await;
+            Err(sfe(error))
+        }
+    }
 }
 
 #[cfg(feature = "ssr")]

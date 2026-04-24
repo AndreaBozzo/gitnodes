@@ -65,7 +65,8 @@ async fn main() {
         brain_storage::GithubHttp::new().expect("failed to build pooled GitHub HTTP client");
     tracing::info!("github http client built (pooled, target-agnostic)");
 
-    // Persistent session store backed by SQLite.
+    // Persistent runtime store backed by SQLite.
+    // Holds sessions, audit events, and the local graph projection.
     // Use a standard URL format. Default to local sqlite.
     let db_url =
         std::env::var("SESSION_DB_URL").unwrap_or_else(|_| "sqlite://data/sessions.db".to_string());
@@ -94,6 +95,10 @@ async fn main() {
         .connect_with(sqlite_opts)
         .await
         .expect("failed to open sessions SQLite pool");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .expect("enable sqlite foreign keys");
     let session_store = SqliteStore::new(pool.clone());
     session_store
         .migrate()
@@ -102,7 +107,11 @@ async fn main() {
     brain_app::server::audit::migrate(&pool)
         .await
         .expect("audit table migration");
+    brain_app::server::projection::migrate(&pool)
+        .await
+        .expect("projection table migration");
     brain_app::server::audit::init(pool.clone());
+    brain_app::server::projection::init(pool.clone());
     // OAuth callback is a cross-site redirect back from github.com, so the session
     // cookie must be SameSite=Lax (Strict would drop it and kill CSRF state check).
     // Secure=false allows http://127.0.0.1 in dev; set SESSION_COOKIE_SECURE=1 in prod.

@@ -227,16 +227,15 @@ fn KnowledgeView(
     }
 }
 
-/// Drops the server-side per-target caches and bumps `graph_version` so the
-/// `Resource` re-fetches. Cheap baseline answer to "I just pushed externally,
-/// why doesn't the UI show it" until SSE/webhooks land in Phase 2B.
+/// Rebuilds the server-side per-target SQLite projection and bumps
+/// `graph_version` so the `Resource` re-reads the refreshed snapshot.
 #[component]
 fn RefreshButton(graph_version: RwSignal<u64>) -> impl IntoView {
     let busy = RwSignal::new(false);
     view! {
         <button
             class="px-3 py-1.5 rounded-md bg-slate-800/60 border border-slate-700 text-slate-300 text-xs font-medium hover:bg-slate-700/70 hover:text-slate-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
-            title="Drop the server cache and re-fetch the graph from the repo."
+            title="Rebuild the local graph projection from the repo."
             disabled=move || busy.get()
             on:click=move |_| {
                 if busy.get_untracked() {

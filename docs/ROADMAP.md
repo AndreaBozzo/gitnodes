@@ -2,7 +2,7 @@
 
 Questo documento delinea l'evoluzione di **Brain UI** da un visualizzatore di grafi Markdown a un CMS distribuito, collaborativo, platform-agnostic e potenziato dall'Intelligenza Artificiale.
 
-**Stato architetturale corrente:** Git e il repo target restano la *Single Source of Truth*. SQLite oggi copre sessioni e audit log; la sua evoluzione a *Materialized View* locale per nodi, edge e work item appartiene alla Fase 2 e non va considerata una capability già disponibile.
+**Stato architetturale corrente:** Git e il repo target restano la *Single Source of Truth*. SQLite copre sessioni, audit log e una projection locale target-scoped per `nodes`, `edges`, `files` e `backlinks`, con rebuild esplicito e watermark/error state. La sincronizzazione inbound (webhook/SSE) e la materializzazione operativa dei work item restano capability di Fase 2B ancora aperte.
 
 ---
 
@@ -83,14 +83,15 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
 
 ### 2B. Projection, sync e operatività
 
-- [ ] **Projection Layer SQLite**
-    - Espandere SQLite oltre sessioni/audit: tabelle `nodes`, `edges`, `files`, `backlinks`, `work_items`, `work_item_bindings`, stato ultimo sync.
-    - Schema multi-tenant fin dal giorno zero: ogni tabella ha `target_id` come FK, così il backend è multi-repo capable anche se la UI rimane ancorata a un singolo target per sessione. Risolve il Caveat #8 senza una migrazione successiva.
-    - Bootstrap iniziale dal tree Git + pipeline idempotente di upsert; il frontend legge la proiezione locale invece del tree walk live.
-    - Formalizzare Git come source of truth e SQLite come read model/write-through cache.
-- [ ] **Rebuild, reconciliation e drift recovery**
-    - Full rebuild/manual reindex per ricostruire la projection se un webhook viene perso o fallisce a metà.
-    - Watermark/lag/errori di sync in SQLite o audit log — base osservabile per i background job di Fase 3.
+- [x] **Projection Layer SQLite** — _2026-04-24_
+    - SQLite esteso oltre sessioni/audit con tabelle `targets`, `projection_sync_state`, `nodes`, `edges`, `files`, `backlinks`, `work_items`, `work_item_bindings`.
+    - Schema multi-tenant fin dal giorno zero: ogni tabella di projection usa `target_id` come FK verso `targets`, così il backend resta multi-repo capable anche con UI single-target per sessione.
+    - Bootstrap iniziale dal tree Git via `GithubStorage::fetch_raw_files()` + `server::projection::rebuild()`, con pipeline idempotente di full upsert per target.
+    - `LoadBrainGraph` legge la projection SQLite locale; Git resta source of truth, SQLite diventa read model locale con riallineamento post-write.
+- [x] **Rebuild, reconciliation e drift recovery** — _2026-04-24_
+    - `RefreshBrainGraph` esegue un full rebuild/manual reindex della projection invece di limitarsi al cache busting.
+    - `projection_sync_state` conserva `last_attempt_at`, `last_success_at`, `last_error_at`, `last_error`, `last_reason` e i count principali, fornendo watermark e stato osservabile.
+    - In caso di reconcile fallito con snapshot già valida, il backend serve l'ultima projection buona e registra l'errore, riducendo il rischio di UI vuota per drift o sync parziali.
 - [ ] **Sincronizzazione inbound: Webhooks + SSE**
     - Endpoint Axum per `push` e per eventi operativi del forge: validazione firma, idempotenza, fan-out verso invalidazione/selective refresh della proiezione.
     - Su `push`: invalidare solo il target corretto, aggiornare config/template/graph projection, pubblicare evento SSE al frontend.
@@ -175,7 +176,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 5. ~~Update path regenerates frontmatter from templates~~ — **DONE 2026-04-22**. `merge_frontmatter` fa overlay dei campi del form sulla mappa preservata invece di rigenerare da template. Tests in `brain-app::api::merge_frontmatter_tests`.
 
-6. ~~No auto-refresh after out-of-band commits~~ — **DONE 2026-04-24**. `RefreshBrainGraph` server fn + `RefreshButton` component in the knowledge header bust the graph, template, and config caches on demand. The 30s TTL still bounds background staleness; the button closes the "commit esterno → reload manuale" gap.
+6. ~~No auto-refresh after out-of-band commits~~ — **DONE 2026-04-24**. `RefreshBrainGraph` server fn + `RefreshButton` component in the knowledge header now trigger a full rebuild of the local SQLite projection after invalidating graph, template, and config caches. The button closes the "commit esterno → reload manuale" gap and doubles as manual reindex/drift recovery until webhook/SSE sync lands.
 
 7. **Rename issues N+2 Contents API commits** — `rename_brain_file` commits once per backlinked file plus a create and a delete. Chosen for simplicity; migrate to Git Data API if commit churn becomes a complaint.
 

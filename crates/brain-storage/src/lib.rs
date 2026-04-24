@@ -88,11 +88,13 @@ impl GithubHttp {
     /// Build a pooled, target-agnostic client. Call once at server startup;
     /// downstream callers clone the result.
     pub fn new() -> Result<Self, BrainError> {
-        let inner = reqwest::Client::builder()
-            .user_agent("brain_ui")
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| BrainError::Io(format!("http client: {e}")))?;
+        let inner = {
+            let builder = reqwest::Client::builder().user_agent("brain_ui");
+            #[cfg(not(target_arch = "wasm32"))]
+            let builder = builder.timeout(Duration::from_secs(30));
+            builder.build()
+        }
+        .map_err(|e| BrainError::Io(format!("http client: {e}")))?;
         Ok(Self {
             inner: Arc::new(inner),
         })
@@ -201,6 +203,62 @@ impl GithubStorage {
 
     fn target_key(&self) -> TargetKey {
         TargetKey::from(self.gh.target())
+    }
+
+    /// Fetch every markdown file that participates in the Brain graph from the
+    /// current target repository.
+    pub async fn fetch_raw_files(&self, token: &str) -> Result<Vec<RawFile>, BrainError> {
+        let tree_url = self.gh.tree_url();
+        let tree: TreeResponse =
+            GithubHttp::send_json(self.http.get(&tree_url, token), "tree").await?;
+
+        let mut candidates: Vec<String> = tree
+            .tree
+            .into_iter()
+            .filter(|entry| entry.kind == "blob")
+            .filter(|entry| is_included_md(&entry.path))
+            .map(|entry| entry.path)
+            .collect();
+        candidates.sort();
+
+        let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
+        for path in &candidates {
+            let url = format!("{}?ref={}", self.contents_url(path), self.branch());
+            let body: ContentResponse =
+                match GithubHttp::send_json(self.http.get(&url, token), "content").await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        tracing::warn!(path, error = %error, "content fetch failed");
+                        continue;
+                    }
+                };
+            let cleaned: String = body
+                .content
+                .chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect();
+            let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(path, error = %error, "base64 decode failed");
+                    continue;
+                }
+            };
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(_) => {
+                    tracing::warn!(path, "non-utf8 content, skipping");
+                    continue;
+                }
+            };
+            files.push(RawFile {
+                path: path.clone(),
+                sha: body.sha,
+                content: text,
+            });
+        }
+
+        Ok(files)
     }
 }
 
@@ -366,55 +424,7 @@ impl Storage for GithubStorage {
         if let Some(hit) = cache_get(&key) {
             return Ok(hit);
         }
-        let tree_url = self.gh.tree_url();
-        let tree: TreeResponse =
-            GithubHttp::send_json(self.http.get(&tree_url, token), "tree").await?;
-
-        let mut candidates: Vec<String> = tree
-            .tree
-            .into_iter()
-            .filter(|e| e.kind == "blob")
-            .filter(|e| is_included_md(&e.path))
-            .map(|e| e.path)
-            .collect();
-        candidates.sort();
-
-        let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
-        for path in &candidates {
-            let url = format!("{}?ref={}", self.contents_url(path), self.branch());
-            let body: ContentResponse =
-                match GithubHttp::send_json(self.http.get(&url, token), "content").await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!(path, error = %e, "content fetch failed");
-                        continue;
-                    }
-                };
-            let cleaned: String = body
-                .content
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(path, error = %e, "base64 decode failed");
-                    continue;
-                }
-            };
-            let text = match String::from_utf8(bytes) {
-                Ok(t) => t,
-                Err(_) => {
-                    tracing::warn!(path, "non-utf8 content, skipping");
-                    continue;
-                }
-            };
-            files.push(RawFile {
-                path: path.clone(),
-                sha: body.sha,
-                content: text,
-            });
-        }
+        let files = self.fetch_raw_files(token).await?;
         let (nodes, edges) = build_graph(&files, config);
         cache_store(&key, &nodes, &edges);
         Ok((nodes, edges))
