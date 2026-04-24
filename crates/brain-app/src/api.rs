@@ -504,14 +504,16 @@ pub async fn rename_brain_file(
 #[cfg(feature = "ssr")]
 async fn collect_repo_md_paths(
     token: &str,
-    _storage: &brain_storage::GithubStorage,
+    storage: &brain_storage::GithubStorage,
 ) -> Result<Vec<String>, BrainError> {
+    use brain_domain::GithubClient;
     use brain_graph::is_included_md;
     use brain_storage::GithubHttp;
     // Reuse graph load's internal logic by re-reading the tree directly. Keep
-    // this narrow — we only need paths, not parsed docs.
-    let http = crate::server::session::github_http()?;
-    let url = http.github().tree_url();
+    // this narrow — we only need paths, not parsed docs. Build the URL from
+    // the storage's actual target so a rename always reads the tree of the
+    // repo it's modifying, never the process-default target.
+    let url = GithubClient::new(storage.target().clone()).tree_url();
     #[derive(serde::Deserialize)]
     struct Tree {
         tree: Vec<Entry>,
@@ -522,7 +524,7 @@ async fn collect_repo_md_paths(
         #[serde(rename = "type")]
         kind: String,
     }
-    let resp: Tree = GithubHttp::send_json(http.get(&url, token), "tree").await?;
+    let resp: Tree = GithubHttp::send_json(storage.http().get(&url, token), "tree").await?;
     Ok(resp
         .tree
         .into_iter()

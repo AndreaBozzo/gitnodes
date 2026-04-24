@@ -56,12 +56,14 @@ async fn main() {
         )
         .init();
 
-    // Single pooled HTTP client for the whole process. Threaded through Leptos
-    // context so server fns and the asset proxy share connection state instead
-    // of building a fresh `reqwest::Client` per request.
-    let gh_http = brain_storage::GithubHttp::new(target_cfg.clone())
-        .expect("failed to build pooled GitHub HTTP client");
-    tracing::info!("github http client built (pooled)");
+    // Single pooled, **target-agnostic** HTTP client for the whole process.
+    // Threaded through Leptos context so server fns and the asset proxy share
+    // connection state. The transport carries no target binding; each call
+    // site supplies the right `TargetConfig` per request — that's what keeps
+    // a future Brain-Switcher (Phase 3) from silently reading the wrong repo.
+    let gh_http =
+        brain_storage::GithubHttp::new().expect("failed to build pooled GitHub HTTP client");
+    tracing::info!("github http client built (pooled, target-agnostic)");
 
     // Persistent session store backed by SQLite.
     // Use a standard URL format. Default to local sqlite.
@@ -155,6 +157,7 @@ async fn main() {
         )
         .with_state(brain_app::server::assets::AssetProxyState {
             http: gh_http.clone(),
+            target: target_cfg.clone(),
         });
 
     let app = Router::new()

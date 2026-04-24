@@ -20,7 +20,15 @@ pub fn KnowledgePage() -> impl IntoView {
         |_| async { load_brain_graph().await },
     );
 
-    let config = Resource::new_blocking(|| (), |_| async { load_brain_config().await });
+    // Key the config Resource on `graph_version` too. Without this, the
+    // refresh button (and any future webhook) would invalidate the server
+    // cache and re-fetch the graph against the new config while the UI's
+    // type metadata, filter panel, and orphan banner stay frozen on the old
+    // config until a full page reload.
+    let config = Resource::new_blocking(
+        move || graph_version.get(),
+        |_| async { load_brain_config().await },
+    );
 
     view! {
         <Suspense fallback=|| view! {

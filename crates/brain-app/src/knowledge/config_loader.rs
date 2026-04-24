@@ -9,7 +9,7 @@
 //! cannot leak one repo's config into another's response.
 
 use base64::Engine;
-use brain_domain::{BrainConfig, BrainError, TargetConfig, TargetKey};
+use brain_domain::{BrainConfig, BrainError, GithubClient, TargetConfig, TargetKey};
 use brain_storage::GithubHttp;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -94,18 +94,16 @@ async fn fetch_and_parse(
     target: &TargetConfig,
     token: &str,
 ) -> Result<Option<BrainConfig>, BrainError> {
-    // Pull the shared pooled client from Leptos context when available; fall
-    // back to a fresh per-call client only when a server fn ran outside the
-    // request handler (rare — primarily test paths).
+    // The transport is target-agnostic — pull it from context for connection
+    // pooling — but the URL **must** be built from the explicit `target`
+    // argument so a multi-target caller (Phase 3) can load any repo's config
+    // without being silently rerouted to the startup default.
     let http = match leptos::prelude::use_context::<GithubHttp>() {
         Some(h) => h,
-        None => GithubHttp::new(target.clone())?,
+        None => GithubHttp::new()?,
     };
-    let url = format!(
-        "{}?ref={}",
-        http.github().contents_url(CONFIG_PATH),
-        target.branch
-    );
+    let gh = GithubClient::new(target.clone());
+    let url = format!("{}?ref={}", gh.contents_url(CONFIG_PATH), target.branch);
     let resp = http
         .get(&url, token)
         .send()

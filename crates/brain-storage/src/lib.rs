@@ -70,23 +70,24 @@ pub trait Storage: Send + Sync {
     fn invalidate_cache(&self);
 }
 
-/// Pooled HTTP client for the GitHub REST API. Wraps a shared `reqwest::Client`
-/// with the URL-builder `GithubClient` from `brain-domain` and centralises
-/// `Authorization`, `User-Agent`, `Accept`, and `X-GitHub-Api-Version` headers.
+/// Target-agnostic HTTP transport for the GitHub REST API. Wraps a shared
+/// `reqwest::Client` and centralises `Authorization`, `User-Agent`, `Accept`,
+/// and `X-GitHub-Api-Version` headers.
 ///
-/// Cheap to clone (the underlying `Client` and `GithubClient` are both `Arc`-
-/// or stateless-friendly internally; constructing a single instance at server
-/// startup and threading it through Leptos context is the intended pattern).
+/// **Carries no target binding.** A single instance built at server startup is
+/// safe to share across every target the process talks to; the per-call
+/// `GithubClient` (URL builder) decides which repo to hit. This split is what
+/// keeps Phase 3's multi-target switcher from accidentally reading the wrong
+/// repository through a startup-bound transport.
 #[derive(Clone)]
 pub struct GithubHttp {
     inner: Arc<reqwest::Client>,
-    gh: GithubClient,
 }
 
 impl GithubHttp {
-    /// Build a pooled client for the given target. Should be called **once** at
-    /// server startup; downstream callers clone the result.
-    pub fn new(target: TargetConfig) -> Result<Self, BrainError> {
+    /// Build a pooled, target-agnostic client. Call once at server startup;
+    /// downstream callers clone the result.
+    pub fn new() -> Result<Self, BrainError> {
         let inner = reqwest::Client::builder()
             .user_agent("brain_ui")
             .connect_timeout(Duration::from_secs(30))
@@ -95,27 +96,13 @@ impl GithubHttp {
             .map_err(|e| BrainError::Io(format!("http client: {e}")))?;
         Ok(Self {
             inner: Arc::new(inner),
-            gh: GithubClient::new(target),
         })
     }
 
     /// Shared `reqwest::Client` (cheap clone). Exposed for ad-hoc callers that
-    /// need direct access (e.g. the asset proxy) — most code should use the
-    /// header helpers below instead.
+    /// need direct access — most code should use the header helpers below.
     pub fn client(&self) -> Arc<reqwest::Client> {
         self.inner.clone()
-    }
-
-    pub fn github(&self) -> &GithubClient {
-        &self.gh
-    }
-
-    pub fn target(&self) -> &TargetConfig {
-        self.gh.target()
-    }
-
-    pub fn target_key(&self) -> TargetKey {
-        TargetKey::from(self.gh.target())
     }
 
     fn auth_headers(rb: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
@@ -168,36 +155,53 @@ impl GithubHttp {
     }
 }
 
+/// Combination of target-agnostic HTTP transport + target-bound URL builder.
+/// Built per-call from whatever target the caller actually wants to talk to.
+/// Use [`GithubStorage::new`] in production; its inputs make the target
+/// binding explicit and prevent the "transport bound at startup" foot-gun.
 pub struct GithubStorage {
     http: GithubHttp,
+    gh: GithubClient,
 }
 
 impl GithubStorage {
-    /// Build a storage that owns a fresh pooled client. Prefer
-    /// [`GithubStorage::with_http`] when a shared client is already in
-    /// scope (e.g. inside a server fn that pulls `GithubHttp` from context).
-    pub fn new(cfg: TargetConfig) -> Self {
-        // SAFETY-ish: on `reqwest::Client::builder().build()` failure we
-        // surface the error lazily by panicking — startup should have already
-        // built the canonical client. This path remains for tests/legacy.
-        let http = GithubHttp::new(cfg).expect("reqwest client");
-        Self { http }
+    /// Build a storage from an existing pooled transport and an explicit
+    /// target. This is the production constructor — the target is **always**
+    /// the one the caller passed, never silently inherited from process-wide
+    /// state.
+    pub fn new(http: GithubHttp, target: TargetConfig) -> Self {
+        Self {
+            http,
+            gh: GithubClient::new(target),
+        }
     }
 
-    pub fn with_http(http: GithubHttp) -> Self {
-        Self { http }
+    /// Test-only convenience that builds its own transport. Production code
+    /// should reuse the startup-built `GithubHttp` to keep connection pooling
+    /// effective.
+    pub fn standalone(target: TargetConfig) -> Self {
+        let http = GithubHttp::new().expect("reqwest client");
+        Self::new(http, target)
+    }
+
+    pub fn http(&self) -> &GithubHttp {
+        &self.http
+    }
+
+    pub fn target(&self) -> &TargetConfig {
+        self.gh.target()
     }
 
     fn contents_url(&self, path: &str) -> String {
-        self.http.github().contents_url(path)
+        self.gh.contents_url(path)
     }
 
     fn branch(&self) -> &str {
-        &self.http.target().branch
+        &self.gh.target().branch
     }
 
     fn target_key(&self) -> TargetKey {
-        self.http.target_key()
+        TargetKey::from(self.gh.target())
     }
 }
 
@@ -319,7 +323,7 @@ pub struct GhDirEntry {
 /// Build a fresh, **unpooled** `reqwest::Client`. Retained only for ad-hoc
 /// callers (e.g. one-off scripts) that don't have a `GithubHttp` in scope.
 /// New code should hold or borrow `GithubHttp::client()` instead.
-#[deprecated(note = "use GithubHttp::new(target).client() and share the pooled client")]
+#[deprecated(note = "use GithubHttp::new().client() and share the pooled client")]
 pub fn http_client() -> Result<reqwest::Client, BrainError> {
     reqwest::Client::builder()
         .user_agent("brain_ui")
@@ -363,7 +367,7 @@ impl Storage for GithubStorage {
         if let Some(hit) = cache_get(&key) {
             return Ok(hit);
         }
-        let tree_url = self.http.github().tree_url();
+        let tree_url = self.gh.tree_url();
         let tree: TreeResponse =
             GithubHttp::send_json(self.http.get(&tree_url, token), "tree").await?;
 
@@ -770,13 +774,32 @@ mod cache_tests {
     }
 
     #[test]
-    fn pooled_client_is_shared_via_clone() {
-        let http = GithubHttp::new(target("o", "r", "main")).expect("client");
-        let storage1 = GithubStorage::with_http(http.clone());
-        let storage2 = GithubStorage::with_http(http.clone());
+    fn pooled_client_is_shared_across_targets() {
+        // The pooled HTTP transport is target-agnostic: the same `GithubHttp`
+        // backs storages for entirely different repos. This is the property
+        // that lets Phase 3's multi-target switcher reuse one connection pool
+        // across every target the user navigates to.
+        let http = GithubHttp::new().expect("client");
+        let storage_a = GithubStorage::new(http.clone(), target("o", "a", "main"));
+        let storage_b = GithubStorage::new(http.clone(), target("o", "b", "main"));
         assert!(
-            Arc::ptr_eq(&storage1.http.inner, &storage2.http.inner),
-            "GithubStorage instances built from the same GithubHttp must share the underlying reqwest::Client"
+            Arc::ptr_eq(&storage_a.http.inner, &storage_b.http.inner),
+            "storages must share the underlying reqwest::Client even across targets"
+        );
+        assert_ne!(storage_a.target_key(), storage_b.target_key());
+    }
+
+    #[test]
+    fn storage_url_uses_constructor_target_not_transport_default() {
+        // Regression for the "transport silently re-bound to startup target"
+        // class of bug: the URL must come from the target passed at storage
+        // construction, regardless of any other GithubHttp around.
+        let http = GithubHttp::new().expect("client");
+        let storage = GithubStorage::new(http, target("acme", "knowledge", "main"));
+        let url = storage.contents_url("notes/a.md");
+        assert!(
+            url.contains("/repos/acme/knowledge/contents/"),
+            "url must come from the constructor target, got: {url}"
         );
     }
 

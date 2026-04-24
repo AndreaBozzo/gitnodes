@@ -21,20 +21,31 @@ pub fn target_cfg() -> Result<TargetConfig, BrainError> {
 }
 
 /// Pull the shared pooled `GithubHttp` out of the Leptos server context.
-/// Falls back to constructing a fresh per-call client only when no shared
-/// instance was provided (test paths) so callers stay a single line.
+/// Falls back to constructing a fresh per-call transport only when no shared
+/// instance was provided (test paths). The transport is target-agnostic, so
+/// no fallback target is needed.
 pub fn github_http() -> Result<GithubHttp, BrainError> {
     if let Some(http) = use_context::<GithubHttp>() {
         return Ok(http);
     }
-    let target = target_cfg()?;
-    GithubHttp::new(target)
+    GithubHttp::new()
 }
 
-/// Build a `GithubStorage` from the shared pooled HTTP client. All server fns
-/// that need storage should go through this helper instead of `GithubStorage::new`.
+/// Build a `GithubStorage` for the **session's** target using the shared
+/// pooled HTTP client. The target is read fresh from context every call so a
+/// future Brain-Switcher (Phase 3) that swaps the per-request `TargetConfig`
+/// is honoured immediately, without touching the pooled transport.
 pub fn storage() -> Result<GithubStorage, BrainError> {
-    Ok(GithubStorage::with_http(github_http()?))
+    let target = target_cfg()?;
+    Ok(GithubStorage::new(github_http()?, target))
+}
+
+/// Build a `GithubStorage` for an **explicit** target. Use this when the
+/// caller already has the right `TargetConfig` in hand (e.g. config_loader
+/// loading `.brain-config.yml` for a specific repo) instead of the
+/// session-default target. Reuses the shared pooled transport.
+pub fn storage_for(target: TargetConfig) -> Result<GithubStorage, BrainError> {
+    Ok(GithubStorage::new(github_http()?, target))
 }
 
 /// Pull Session + GitHub token (fails with `Unauthenticated` if missing).

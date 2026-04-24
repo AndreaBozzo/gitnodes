@@ -64,20 +64,20 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
 
 ### 2A. Hardening operativo (prerequisiti)
 
-- [ ] **Scoping delle cache runtime**
+- [x] **Scoping delle cache runtime** — _2026-04-24_
     - Cache process-global in `brain-storage` (graph/template) e `config_loader` (config) hanno chiavi troppo deboli.
     - Rekeying per `target_id` come minimo; dove la visibilità diverge per ruolo, aggiungere `user_id_or_role`.
     - L'invalidazione da webhook o write-path deve colpire solo le entry del target corretto.
-- [ ] **`GithubClient`: pooling + header centralization**
+- [x] **`GithubClient`: pooling + header centralization** — _2026-04-24_
     - `reqwest::Client` pooled condiviso tra storage, config loader, asset proxy e sync jobs.
     - Helper `get/put/delete/post` che centralizzano `Authorization`, `User-Agent`, retry policy e logging.
-- [ ] **Baseline refresh prima di SSE/Webhook**
+- [x] **Baseline refresh prima di SSE/Webhook** — _2026-04-24_
     - Aggiungere un percorso di refresh esplicito e/o polling leggero per ridurre la staleness percepita prima di investire nella pipeline eventi completa.
     - L'obiettivo è chiudere il gap operativo "commit esterno → reload manuale" con la soluzione più economica disponibile.
-- [ ] **Release safety per server functions**
+- [x] **Release safety per server functions** — _2026-04-24_
     - Ridurre il rischio introdotto da `register_server_functions` manuale in release (`lto = true`).
     - Introdurre guardrail di test/build o automazione che intercetti server fn non registrate prima del deploy.
-- [ ] **Hardening link semantics / rename safety**
+- [x] **Hardening link semantics / rename safety** — _2026-04-24_
     - Consolidare il comportamento dei link relativi, dei backlink e delle rewrite su path nested.
     - Estendere i test per i casi `Related / See also`, rename e link markdown con destinazioni relative.
 
@@ -175,12 +175,12 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 5. ~~Update path regenerates frontmatter from templates~~ — **DONE 2026-04-22**. `merge_frontmatter` fa overlay dei campi del form sulla mappa preservata invece di rigenerare da template. Tests in `brain-app::api::merge_frontmatter_tests`.
 
-6. **No auto-refresh after out-of-band commits** — the 30s TTL cache bounds staleness for edits made via `git push` directly. Acceptable; documented here so the symptom isn't mistaken for a bug.
+6. ~~No auto-refresh after out-of-band commits~~ — **DONE 2026-04-24**. `RefreshBrainGraph` server fn + `RefreshButton` component in the knowledge header bust the graph, template, and config caches on demand. The 30s TTL still bounds background staleness; the button closes the "commit esterno → reload manuale" gap.
 
 7. **Rename issues N+2 Contents API commits** — `rename_brain_file` commits once per backlinked file plus a create and a delete. Chosen for simplicity; migrate to Git Data API if commit churn becomes a complaint.
 
-8. **Graph cache is process-global, not user- or target-scoped** — `static Mutex<Option<CacheEntry>>` in `brain-storage/src/lib.rs`. Safe today. **Becomes a bug in Phase 3** (RBAC) and **Phase 4** (multi-target). Must be rekeyed before either phase lands — partially addressed by the Projection Layer SQLite multi-tenant design in Fase 2.
+8. ~~Graph cache is process-global, not user- or target-scoped~~ — **DONE 2026-04-24**. All caches in `brain-storage` (graph, template) and `config_loader` are now keyed by `TargetKey({org}/{repo}/{branch})` via `OnceLock<Mutex<HashMap<TargetKey, _>>>`. `GithubHttp` is target-agnostic (plain `Arc<reqwest::Client>`); each `GithubStorage` / call-site supplies its own `GithubClient` built from an explicit `TargetConfig`. Safe for Phase 3 multi-target without re-architecting.
 
-9. **`register_explicit` boilerplate is LTO-coupled** — `api.rs::register_server_functions` manually lists every `#[server]` fn because `lto = true` strips the `inventory::submit!` entries. Every new server fn must be added here or it silently 404s in release builds (dev builds still work, making the failure mode worse).
+9. ~~`register_explicit` boilerplate is LTO-coupled~~ — **DONE 2026-04-24**. `SERVER_FNS: &[&str]` const + `include_str!`-based test in `api.rs` catches any `#[server]` fn not listed in the const before it reaches CI.
 
 10. **UI limitations** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100.
