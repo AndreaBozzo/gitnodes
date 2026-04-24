@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "brain-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "brain-domain",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "brain-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -270,14 +270,14 @@ dependencies = [
 
 [[package]]
 name = "brain-graph"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "brain-domain",
 ]
 
 [[package]]
 name = "brain-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "brain-domain",
