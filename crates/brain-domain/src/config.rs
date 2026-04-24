@@ -18,6 +18,30 @@ pub struct TargetConfig {
     pub branch: String,
 }
 
+/// Stable, hashable identity for a target repo. Used as the cache key in
+/// brain-storage and config_loader so a future multi-target deployment cannot
+/// cross-contaminate a graph or template cache between repositories.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TargetKey(String);
+
+impl TargetKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&TargetConfig> for TargetKey {
+    fn from(t: &TargetConfig) -> Self {
+        Self(format!("{}/{}/{}", t.org, t.repo, t.branch))
+    }
+}
+
+impl std::fmt::Display for TargetKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Builds GitHub REST + raw + blob URLs for a target repository. This is the
 /// single seam Phase 4's forge abstraction will retarget — keep direct
 /// `https://api.github.com/...` format strings out of the rest of the codebase.

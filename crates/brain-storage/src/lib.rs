@@ -10,13 +10,15 @@
 //!
 //! Returns typed `BrainError` values; callers adapt to their transport at the edge.
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use brain_domain::{BrainError, Edge, GithubClient, Node, TargetConfig};
+use brain_domain::{BrainError, Edge, GithubClient, Node, TargetConfig, TargetKey};
 use brain_graph::{RawFile, build_graph, is_included_md};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 pub trait Storage: Send + Sync {
     async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError>;
@@ -68,27 +70,141 @@ pub trait Storage: Send + Sync {
     fn invalidate_cache(&self);
 }
 
-pub struct GithubStorage {
+/// Pooled HTTP client for the GitHub REST API. Wraps a shared `reqwest::Client`
+/// with the URL-builder `GithubClient` from `brain-domain` and centralises
+/// `Authorization`, `User-Agent`, `Accept`, and `X-GitHub-Api-Version` headers.
+///
+/// Cheap to clone (the underlying `Client` and `GithubClient` are both `Arc`-
+/// or stateless-friendly internally; constructing a single instance at server
+/// startup and threading it through Leptos context is the intended pattern).
+#[derive(Clone)]
+pub struct GithubHttp {
+    inner: Arc<reqwest::Client>,
     gh: GithubClient,
 }
 
-impl GithubStorage {
-    pub fn new(cfg: TargetConfig) -> Self {
-        Self {
-            gh: GithubClient::new(cfg),
+impl GithubHttp {
+    /// Build a pooled client for the given target. Should be called **once** at
+    /// server startup; downstream callers clone the result.
+    pub fn new(target: TargetConfig) -> Result<Self, BrainError> {
+        let inner = reqwest::Client::builder()
+            .user_agent("brain_ui")
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| BrainError::Io(format!("http client: {e}")))?;
+        Ok(Self {
+            inner: Arc::new(inner),
+            gh: GithubClient::new(target),
+        })
+    }
+
+    /// Shared `reqwest::Client` (cheap clone). Exposed for ad-hoc callers that
+    /// need direct access (e.g. the asset proxy) — most code should use the
+    /// header helpers below instead.
+    pub fn client(&self) -> Arc<reqwest::Client> {
+        self.inner.clone()
+    }
+
+    pub fn github(&self) -> &GithubClient {
+        &self.gh
+    }
+
+    pub fn target(&self) -> &TargetConfig {
+        self.gh.target()
+    }
+
+    pub fn target_key(&self) -> TargetKey {
+        TargetKey::from(self.gh.target())
+    }
+
+    fn auth_headers(rb: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
+        rb.bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+    }
+
+    pub fn get(&self, url: &str, token: &str) -> reqwest::RequestBuilder {
+        Self::auth_headers(self.inner.get(url), token)
+    }
+
+    pub fn put(&self, url: &str, token: &str) -> reqwest::RequestBuilder {
+        Self::auth_headers(self.inner.put(url), token)
+    }
+
+    pub fn delete(&self, url: &str, token: &str) -> reqwest::RequestBuilder {
+        Self::auth_headers(self.inner.delete(url), token)
+    }
+
+    pub fn post(&self, url: &str, token: &str) -> reqwest::RequestBuilder {
+        Self::auth_headers(self.inner.post(url), token)
+    }
+
+    /// Send a request and decode JSON. Centralises the
+    /// `.send().error_for_status().json()` chain. `ctx` is a short string used
+    /// in error and warning messages so callers don't have to repeat it three
+    /// times per call site.
+    pub async fn send_json<T: DeserializeOwned>(
+        rb: reqwest::RequestBuilder,
+        ctx: &str,
+    ) -> Result<T, BrainError> {
+        let resp = rb
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("{ctx} fetch: {e}")))?;
+        let status = resp.status();
+        tracing::debug!(%status, ctx, "github response");
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(512).collect();
+            tracing::warn!(%status, ctx, body = %snippet, "github non-success");
+            return Err(BrainError::github(format!(
+                "{ctx} status {status}: {snippet}"
+            )));
         }
-    }
-
-    fn contents_url(&self, path: &str) -> String {
-        self.gh.contents_url(path)
-    }
-
-    fn branch(&self) -> &str {
-        &self.gh.target().branch
+        resp.json::<T>()
+            .await
+            .map_err(|e| BrainError::github(format!("{ctx} parse: {e}")))
     }
 }
 
+pub struct GithubStorage {
+    http: GithubHttp,
+}
+
+impl GithubStorage {
+    /// Build a storage that owns a fresh pooled client. Prefer
+    /// [`GithubStorage::with_http`] when a shared client is already in
+    /// scope (e.g. inside a server fn that pulls `GithubHttp` from context).
+    pub fn new(cfg: TargetConfig) -> Self {
+        // SAFETY-ish: on `reqwest::Client::builder().build()` failure we
+        // surface the error lazily by panicking — startup should have already
+        // built the canonical client. This path remains for tests/legacy.
+        let http = GithubHttp::new(cfg).expect("reqwest client");
+        Self { http }
+    }
+
+    pub fn with_http(http: GithubHttp) -> Self {
+        Self { http }
+    }
+
+    fn contents_url(&self, path: &str) -> String {
+        self.http.github().contents_url(path)
+    }
+
+    fn branch(&self) -> &str {
+        &self.http.target().branch
+    }
+
+    fn target_key(&self) -> TargetKey {
+        self.http.target_key()
+    }
+}
+
+// --- per-target caches ---------------------------------------------------
+
 const CACHE_TTL: Duration = Duration::from_secs(30);
+const TEMPLATE_TTL: Duration = Duration::from_secs(600);
 
 struct CacheEntry {
     stored_at: Instant,
@@ -96,31 +212,34 @@ struct CacheEntry {
     edges: Vec<Edge>,
 }
 
-static CACHE: Mutex<Option<CacheEntry>> = Mutex::new(None);
-
-const TEMPLATE_TTL: Duration = Duration::from_secs(600);
-
 struct TemplateEntry {
     stored_at: Instant,
     body: String,
 }
 
-static TEMPLATE_CACHE: Mutex<Option<std::collections::HashMap<String, TemplateEntry>>> =
-    Mutex::new(None);
+fn graph_cache() -> &'static Mutex<HashMap<TargetKey, CacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<TargetKey, CacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-fn template_cache_get(filename: &str) -> Option<String> {
-    let guard = TEMPLATE_CACHE.lock().ok()?;
-    let map = guard.as_ref()?;
-    let entry = map.get(filename)?;
+fn template_cache() -> &'static Mutex<HashMap<TargetKey, HashMap<String, TemplateEntry>>> {
+    static CACHE: OnceLock<Mutex<HashMap<TargetKey, HashMap<String, TemplateEntry>>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn template_cache_get(key: &TargetKey, filename: &str) -> Option<String> {
+    let guard = template_cache().lock().ok()?;
+    let entry = guard.get(key)?.get(filename)?;
     if entry.stored_at.elapsed() > TEMPLATE_TTL {
         return None;
     }
     Some(entry.body.clone())
 }
 
-fn template_cache_store(filename: &str, body: &str) {
-    if let Ok(mut guard) = TEMPLATE_CACHE.lock() {
-        let map = guard.get_or_insert_with(std::collections::HashMap::new);
+fn template_cache_store(key: &TargetKey, filename: &str, body: &str) {
+    if let Ok(mut guard) = template_cache().lock() {
+        let map = guard.entry(key.clone()).or_default();
         map.insert(
             filename.to_string(),
             TemplateEntry {
@@ -131,28 +250,42 @@ fn template_cache_store(filename: &str, body: &str) {
     }
 }
 
-pub fn invalidate() {
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = None;
+/// Drop the graph cache for a single target. Called from every successful
+/// write path and from the manual `RefreshGraph` server fn.
+pub fn invalidate(key: &TargetKey) {
+    if let Ok(mut guard) = graph_cache().lock() {
+        guard.remove(key);
     }
 }
 
-fn cache_get() -> Option<(Vec<Node>, Vec<Edge>)> {
-    let guard = CACHE.lock().ok()?;
-    let entry = guard.as_ref()?;
+/// Drop the template cache for a single target. Templates rarely change but
+/// the cache had no invalidation at all before; the manual refresh path uses
+/// this to force a clean reload.
+pub fn invalidate_template(key: &TargetKey) {
+    if let Ok(mut guard) = template_cache().lock() {
+        guard.remove(key);
+    }
+}
+
+fn cache_get(key: &TargetKey) -> Option<(Vec<Node>, Vec<Edge>)> {
+    let guard = graph_cache().lock().ok()?;
+    let entry = guard.get(key)?;
     if entry.stored_at.elapsed() > CACHE_TTL {
         return None;
     }
     Some((entry.nodes.clone(), entry.edges.clone()))
 }
 
-fn cache_store(nodes: &[Node], edges: &[Edge]) {
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = Some(CacheEntry {
-            stored_at: Instant::now(),
-            nodes: nodes.to_vec(),
-            edges: edges.to_vec(),
-        });
+fn cache_store(key: &TargetKey, nodes: &[Node], edges: &[Edge]) {
+    if let Ok(mut guard) = graph_cache().lock() {
+        guard.insert(
+            key.clone(),
+            CacheEntry {
+                stored_at: Instant::now(),
+                nodes: nodes.to_vec(),
+                edges: edges.to_vec(),
+            },
+        );
     }
 }
 
@@ -183,6 +316,10 @@ pub struct GhDirEntry {
     pub kind: String,
 }
 
+/// Build a fresh, **unpooled** `reqwest::Client`. Retained only for ad-hoc
+/// callers (e.g. one-off scripts) that don't have a `GithubHttp` in scope.
+/// New code should hold or borrow `GithubHttp::client()` instead.
+#[deprecated(note = "use GithubHttp::new(target).client() and share the pooled client")]
 pub fn http_client() -> Result<reqwest::Client, BrainError> {
     reqwest::Client::builder()
         .user_agent("brain_ui")
@@ -192,26 +329,17 @@ pub fn http_client() -> Result<reqwest::Client, BrainError> {
 
 impl Storage for GithubStorage {
     async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError> {
-        if let Some(hit) = template_cache_get(filename) {
+        let key = self.target_key();
+        if let Some(hit) = template_cache_get(&key, filename) {
             return Ok(hit);
         }
-        let client = http_client()?;
         let url = format!(
             "{}?ref={}",
             self.contents_url(&format!("templates/{filename}")),
             self.branch()
         );
-        let body: ContentResponse = client
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("template fetch: {e}")))?
-            .error_for_status()
-            .map_err(|e| BrainError::github(format!("template status: {e}")))?
-            .json()
-            .await
-            .map_err(|e| BrainError::github(format!("template parse: {e}")))?;
+        let body: ContentResponse =
+            GithubHttp::send_json(self.http.get(&url, token), "template").await?;
         let cleaned: String = body
             .content
             .chars()
@@ -222,7 +350,7 @@ impl Storage for GithubStorage {
             .map_err(|e| BrainError::parse(format!("template b64: {e}")))?;
         let text = String::from_utf8(bytes)
             .map_err(|e| BrainError::parse(format!("template utf8: {e}")))?;
-        template_cache_store(filename, &text);
+        template_cache_store(&key, filename, &text);
         Ok(text)
     }
 
@@ -231,22 +359,13 @@ impl Storage for GithubStorage {
         token: &str,
         config: &brain_domain::BrainConfig,
     ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
-        if let Some(hit) = cache_get() {
+        let key = self.target_key();
+        if let Some(hit) = cache_get(&key) {
             return Ok(hit);
         }
-        let client = http_client()?;
-        let tree_url = self.gh.tree_url();
-        let tree: TreeResponse = client
-            .get(&tree_url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("tree fetch: {e}")))?
-            .error_for_status()
-            .map_err(|e| BrainError::github(format!("tree status: {e}")))?
-            .json()
-            .await
-            .map_err(|e| BrainError::github(format!("tree parse: {e}")))?;
+        let tree_url = self.http.github().tree_url();
+        let tree: TreeResponse =
+            GithubHttp::send_json(self.http.get(&tree_url, token), "tree").await?;
 
         let mut candidates: Vec<String> = tree
             .tree
@@ -260,25 +379,14 @@ impl Storage for GithubStorage {
         let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
         for path in &candidates {
             let url = format!("{}?ref={}", self.contents_url(path), self.branch());
-            let resp = match client.get(&url).bearer_auth(token).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(path, error = %e, "content fetch failed");
-                    continue;
-                }
-            };
-            let status = resp.status();
-            if !status.is_success() {
-                tracing::warn!(path, %status, "content fetch non-success");
-                continue;
-            }
-            let body: ContentResponse = match resp.json().await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(path, error = %e, "content parse failed");
-                    continue;
-                }
-            };
+            let body: ContentResponse =
+                match GithubHttp::send_json(self.http.get(&url, token), "content").await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(path, error = %e, "content fetch failed");
+                        continue;
+                    }
+                };
             let cleaned: String = body
                 .content
                 .chars()
@@ -305,24 +413,14 @@ impl Storage for GithubStorage {
             });
         }
         let (nodes, edges) = build_graph(&files, config);
-        cache_store(&nodes, &edges);
+        cache_store(&key, &nodes, &edges);
         Ok((nodes, edges))
     }
 
     async fn read_file(&self, token: &str, path: &str) -> Result<(String, String), BrainError> {
-        let client = http_client()?;
         let url = format!("{}?ref={}", self.contents_url(path), self.branch());
-        let resp: ContentResponse = client
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("get_content: {e}")))?
-            .error_for_status()
-            .map_err(|e| BrainError::github(format!("content status: {e}")))?
-            .json()
-            .await
-            .map_err(|e| BrainError::github(format!("content parse: {e}")))?;
+        let resp: ContentResponse =
+            GithubHttp::send_json(self.http.get(&url, token), "content").await?;
 
         let cleaned: String = resp
             .content
@@ -348,7 +446,6 @@ impl Storage for GithubStorage {
         author_name: &str,
         author_email: &str,
     ) -> Result<String, BrainError> {
-        let client = http_client()?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
 
         let mut body = serde_json::json!({
@@ -368,16 +465,16 @@ impl Storage for GithubStorage {
         }
 
         let url = self.contents_url(path);
-        let response = client
-            .put(&url)
-            .bearer_auth(token)
+        let response = self
+            .http
+            .put(&url, token)
             .json(&body)
             .send()
             .await
             .map_err(|e| BrainError::github(format!("PUT: {e}")))?;
 
         if response.status().is_success() {
-            invalidate();
+            invalidate(&self.target_key());
             Ok(path.to_string())
         } else {
             let status = response.status();
@@ -399,7 +496,6 @@ impl Storage for GithubStorage {
         author_name: &str,
         author_email: &str,
     ) -> Result<(), BrainError> {
-        let client = http_client()?;
         let body = serde_json::json!({
             "message": message,
             "sha": sha,
@@ -411,16 +507,16 @@ impl Storage for GithubStorage {
         });
 
         let url = self.contents_url(path);
-        let response = client
-            .delete(&url)
-            .bearer_auth(token)
+        let response = self
+            .http
+            .delete(&url, token)
             .json(&body)
             .send()
             .await
             .map_err(|e| BrainError::github(format!("DELETE: {e}")))?;
 
         if response.status().is_success() {
-            invalidate();
+            invalidate(&self.target_key());
             Ok(())
         } else {
             let status = response.status();
@@ -466,7 +562,6 @@ impl Storage for GithubStorage {
         author_name: &str,
         author_email: &str,
     ) -> Result<String, BrainError> {
-        let client = http_client()?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
         let body = serde_json::json!({
             "message": message,
@@ -478,14 +573,19 @@ impl Storage for GithubStorage {
             }
         });
         let url = self.contents_url(path);
-        let response = client
-            .put(&url)
-            .bearer_auth(token)
+        let response = self
+            .http
+            .put(&url, token)
             .json(&body)
             .send()
             .await
             .map_err(|e| BrainError::github(format!("PUT: {e}")))?;
         if response.status().is_success() {
+            // An uploaded asset doesn't change the markdown graph but it _can_
+            // appear in `![alt](...)` markdown that we just rendered; bumping
+            // the cache here is cheap insurance against stale image links and
+            // closes the gap that was a latent bug pre-Phase-2A.
+            invalidate(&self.target_key());
             Ok(path.to_string())
         } else {
             let status = response.status();
@@ -499,19 +599,9 @@ impl Storage for GithubStorage {
     }
 
     async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError> {
-        let client = http_client()?;
         let url = format!("{}?ref={}", self.contents_url(""), self.branch());
-        let items: Vec<GhDirEntry> = client
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("get_content: {e}")))?
-            .error_for_status()
-            .map_err(|e| BrainError::github(format!("content status: {e}")))?
-            .json()
-            .await
-            .map_err(|e| BrainError::github(format!("content parse: {e}")))?;
+        let items: Vec<GhDirEntry> =
+            GithubHttp::send_json(self.http.get(&url, token), "list_folders").await?;
 
         let folders: Vec<String> = items
             .iter()
@@ -523,7 +613,7 @@ impl Storage for GithubStorage {
     }
 
     fn invalidate_cache(&self) {
-        invalidate();
+        invalidate(&self.target_key());
     }
 }
 
@@ -612,4 +702,87 @@ impl Storage for InMemoryStorage {
     }
 
     fn invalidate_cache(&self) {}
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn target(org: &str, repo: &str, branch: &str) -> TargetConfig {
+        TargetConfig {
+            org: org.into(),
+            repo: repo.into(),
+            branch: branch.into(),
+        }
+    }
+
+    // Each test uses a unique repo name so the shared static cache map can't
+    // cause cross-test interference under `cargo test`'s default parallel
+    // executor. `invalidate_all()` would force serialisation, which is more
+    // brittle than just picking distinct keys.
+    #[test]
+    fn graph_cache_isolates_targets() {
+        let a = TargetKey::from(&target("o", "graph_iso_a", "main"));
+        let b = TargetKey::from(&target("o", "graph_iso_b", "main"));
+        invalidate(&a);
+        invalidate(&b);
+
+        cache_store(&a, &[], &[]);
+        assert!(cache_get(&a).is_some(), "target A populated");
+        assert!(cache_get(&b).is_none(), "target B must not see A's entry");
+
+        invalidate(&a);
+        assert!(cache_get(&a).is_none(), "after invalidate(A) A is empty");
+    }
+
+    #[test]
+    fn template_cache_isolates_targets() {
+        let a = TargetKey::from(&target("o", "tpl_iso_a", "main"));
+        let b = TargetKey::from(&target("o", "tpl_iso_b", "main"));
+        invalidate_template(&a);
+        invalidate_template(&b);
+
+        template_cache_store(&a, "ConceptNote.md", "BODY-A");
+        assert_eq!(
+            template_cache_get(&a, "ConceptNote.md").as_deref(),
+            Some("BODY-A")
+        );
+        assert!(template_cache_get(&b, "ConceptNote.md").is_none());
+
+        invalidate_template(&a);
+        assert!(template_cache_get(&a, "ConceptNote.md").is_none());
+    }
+
+    #[test]
+    fn invalidate_only_affects_named_target() {
+        let a = TargetKey::from(&target("o", "inv_one_a", "main"));
+        let b = TargetKey::from(&target("o", "inv_one_b", "main"));
+        invalidate(&a);
+        invalidate(&b);
+
+        cache_store(&a, &[], &[]);
+        cache_store(&b, &[], &[]);
+        invalidate(&a);
+        assert!(cache_get(&a).is_none());
+        assert!(cache_get(&b).is_some(), "invalidating A must not touch B");
+
+        invalidate(&b); // cleanup so re-runs of this test are deterministic
+    }
+
+    #[test]
+    fn pooled_client_is_shared_via_clone() {
+        let http = GithubHttp::new(target("o", "r", "main")).expect("client");
+        let storage1 = GithubStorage::with_http(http.clone());
+        let storage2 = GithubStorage::with_http(http.clone());
+        assert!(
+            Arc::ptr_eq(&storage1.http.inner, &storage2.http.inner),
+            "GithubStorage instances built from the same GithubHttp must share the underlying reqwest::Client"
+        );
+    }
+
+    #[test]
+    fn target_key_format_is_org_repo_branch() {
+        let k = TargetKey::from(&target("dritara", "brain", "main"));
+        assert_eq!(k.as_str(), "dritara/brain/main");
+    }
 }

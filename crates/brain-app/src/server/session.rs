@@ -4,6 +4,7 @@
 //! that every authed `#[server]` fn was repeating.
 
 use brain_domain::{BrainError, TargetConfig};
+use brain_storage::{GithubHttp, GithubStorage};
 use leptos::prelude::use_context;
 use tower_sessions::Session;
 
@@ -17,6 +18,23 @@ pub fn session() -> Result<Session, BrainError> {
 /// Pull the `TargetConfig` out of the Leptos server context.
 pub fn target_cfg() -> Result<TargetConfig, BrainError> {
     use_context::<TargetConfig>().ok_or_else(|| BrainError::other("No target config available"))
+}
+
+/// Pull the shared pooled `GithubHttp` out of the Leptos server context.
+/// Falls back to constructing a fresh per-call client only when no shared
+/// instance was provided (test paths) so callers stay a single line.
+pub fn github_http() -> Result<GithubHttp, BrainError> {
+    if let Some(http) = use_context::<GithubHttp>() {
+        return Ok(http);
+    }
+    let target = target_cfg()?;
+    GithubHttp::new(target)
+}
+
+/// Build a `GithubStorage` from the shared pooled HTTP client. All server fns
+/// that need storage should go through this helper instead of `GithubStorage::new`.
+pub fn storage() -> Result<GithubStorage, BrainError> {
+    Ok(GithubStorage::with_http(github_http()?))
 }
 
 /// Pull Session + GitHub token (fails with `Unauthenticated` if missing).

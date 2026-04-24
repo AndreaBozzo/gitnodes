@@ -10,7 +10,7 @@ use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
-use crate::api::{load_brain_config, load_brain_graph};
+use crate::api::{load_brain_config, load_brain_graph, refresh_brain_graph};
 
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
@@ -157,8 +157,9 @@ fn KnowledgeView(
                         }).collect::<Vec<_>>();
                         stats_views.into_view()
                     }
+                    <RefreshButton graph_version=graph_version />
                     <button
-                        class="ml-4 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
+                        class="ml-2 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
                         on:click=move |_| {
                             edit_mode.update(|m| {
                                 *m = if matches!(m, EditMode::Closed) {
@@ -215,5 +216,33 @@ fn KnowledgeView(
                 config=config.get_value()
             />
         </div>
+    }
+}
+
+/// Drops the server-side per-target caches and bumps `graph_version` so the
+/// `Resource` re-fetches. Cheap baseline answer to "I just pushed externally,
+/// why doesn't the UI show it" until SSE/webhooks land in Phase 2B.
+#[component]
+fn RefreshButton(graph_version: RwSignal<u64>) -> impl IntoView {
+    let busy = RwSignal::new(false);
+    view! {
+        <button
+            class="px-3 py-1.5 rounded-md bg-slate-800/60 border border-slate-700 text-slate-300 text-xs font-medium hover:bg-slate-700/70 hover:text-slate-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
+            title="Drop the server cache and re-fetch the graph from the repo."
+            disabled=move || busy.get()
+            on:click=move |_| {
+                if busy.get_untracked() {
+                    return;
+                }
+                busy.set(true);
+                leptos::task::spawn_local(async move {
+                    let _ = refresh_brain_graph().await;
+                    graph_version.update(|v| *v += 1);
+                    busy.set(false);
+                });
+            }
+        >
+            {move || if busy.get() { "Refreshing…" } else { "Refresh" }}
+        </button>
     }
 }

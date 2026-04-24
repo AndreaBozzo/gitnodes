@@ -31,6 +31,33 @@ fn sanitize_commit_message(raw: Option<&str>) -> Option<String> {
     Some(out)
 }
 
+/// Canonical list of every `#[server]` fn in this crate. Single source of
+/// truth for both `register_server_functions` (runtime registration) and the
+/// `server_fns_registered_match_attributes` test (build-time guardrail).
+///
+/// **Adding a new `#[server]` fn requires adding its struct name here.** The
+/// regression test fails the build otherwise — preventing the silent
+/// release-mode 404 documented in caveat #9.
+#[cfg(feature = "ssr")]
+#[cfg_attr(not(test), allow(dead_code))]
+const SERVER_FNS: &[&str] = &[
+    "GetAppConfig",
+    "LoadBrainConfig",
+    "LoadAuditLog",
+    "ListSessions",
+    "RevokeSession",
+    "GetCurrentUser",
+    "LoadBrainTemplate",
+    "LoadBrainGraph",
+    "ReadBrainFile",
+    "SaveBrainFile",
+    "DeleteBrainFile",
+    "RenameBrainFile",
+    "UploadAsset",
+    "ListBrainFolders",
+    "RefreshBrainGraph",
+];
+
 #[cfg(feature = "ssr")]
 pub fn register_server_functions() {
     // LTO (`lto = true` in [profile.release]) strips the `inventory::submit!`
@@ -38,6 +65,8 @@ pub fn register_server_functions() {
     // `register_explicit` bypasses inventory and directly inserts each server
     // function into the global handler map.
     use leptos::server_fn::axum::register_explicit;
+    register_explicit::<GetAppConfig>();
+    register_explicit::<LoadBrainConfig>();
     register_explicit::<LoadAuditLog>();
     register_explicit::<ListSessions>();
     register_explicit::<RevokeSession>();
@@ -47,11 +76,10 @@ pub fn register_server_functions() {
     register_explicit::<ReadBrainFile>();
     register_explicit::<SaveBrainFile>();
     register_explicit::<DeleteBrainFile>();
-    register_explicit::<ListBrainFolders>();
-    register_explicit::<GetAppConfig>();
-    register_explicit::<UploadAsset>();
     register_explicit::<RenameBrainFile>();
-    register_explicit::<LoadBrainConfig>();
+    register_explicit::<UploadAsset>();
+    register_explicit::<ListBrainFolders>();
+    register_explicit::<RefreshBrainGraph>();
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,7 +191,7 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
 #[server(LoadBrainTemplate, "/api", endpoint = "load_brain_template")]
 pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
     let target = session::target_cfg().map_err(sfe)?;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
@@ -173,7 +201,7 @@ pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnEr
     else {
         return Ok(String::new());
     };
-    let storage = GithubStorage::new(target);
+    let storage = session::storage().map_err(sfe)?;
     let raw = storage.load_template(&token, filename).await.map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);
     Ok(body.trim_start_matches('\n').to_string())
@@ -182,22 +210,22 @@ pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnEr
 #[server(LoadBrainGraph, "/api", endpoint = "load_brain_graph")]
 pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = session::target_cfg().map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
-    let storage = GithubStorage::new(target);
+    let storage = session::storage().map_err(sfe)?;
     storage.load_graph(&token, &config).await.map_err(sfe)
 }
 
 #[server(ReadBrainFile, "/api", endpoint = "read_brain_file")]
 pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let cfg = session::target_cfg().map_err(sfe)?;
-    let storage = GithubStorage::new(cfg.clone());
+    let storage = session::storage().map_err(sfe)?;
     let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
 
     let (body, _fm) = crate::markdown::split_frontmatter(&content);
@@ -219,7 +247,7 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
 )]
 pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -271,7 +299,8 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     };
     let commit_msg = sanitize_commit_message(payload.commit_message.as_deref()).unwrap_or(auto_msg);
 
-    let storage = GithubStorage::new(target);
+    let storage = session::storage().map_err(sfe)?;
+    let _ = target; // target was used for config load; storage now derives from context
     let author_email = format!("{}@users.noreply.github.com", user);
 
     match storage
@@ -310,7 +339,7 @@ pub async fn delete_brain_file(
     commit_message: Option<String>,
 ) -> Result<(), ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -318,7 +347,7 @@ pub async fn delete_brain_file(
     let commit_msg = sanitize_commit_message(commit_message.as_deref())
         .unwrap_or_else(|| format!("Delete {} via Brain UI", path));
 
-    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
+    let storage = session::storage().map_err(sfe)?;
     match storage
         .delete_file(&token, &path, &sha, &commit_msg, &user, &author_email)
         .await
@@ -354,7 +383,7 @@ pub async fn rename_brain_file(
     commit_message: Option<String>,
 ) -> Result<RenameResult, ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
 
     let old_path = old_path.trim().trim_matches('/').to_string();
     let new_path = new_path.trim().trim_matches('/').to_string();
@@ -376,7 +405,7 @@ pub async fn rename_brain_file(
     let user = session::session_user_or_fallback(&s).await;
     let author_email = format!("{}@users.noreply.github.com", user);
     let cfg = session::target_cfg().map_err(sfe)?;
-    let storage = GithubStorage::new(cfg.clone());
+    let storage = session::storage().map_err(sfe)?;
 
     // Sanity: the source file still exists at the sha the client saw.
     let (old_content, live_sha) = storage.read_file(&token, &old_path).await.map_err(sfe)?;
@@ -475,15 +504,14 @@ pub async fn rename_brain_file(
 #[cfg(feature = "ssr")]
 async fn collect_repo_md_paths(
     token: &str,
-    storage: &brain_storage::GithubStorage,
+    _storage: &brain_storage::GithubStorage,
 ) -> Result<Vec<String>, BrainError> {
     use brain_graph::is_included_md;
+    use brain_storage::GithubHttp;
     // Reuse graph load's internal logic by re-reading the tree directly. Keep
     // this narrow — we only need paths, not parsed docs.
-    let client = brain_storage::http_client()?;
-    let _ = storage; // kept for future use if we swap to a storage method
-    let cfg = crate::server::session::target_cfg()?;
-    let url = brain_domain::GithubClient::new(cfg).tree_url();
+    let http = crate::server::session::github_http()?;
+    let url = http.github().tree_url();
     #[derive(serde::Deserialize)]
     struct Tree {
         tree: Vec<Entry>,
@@ -494,17 +522,7 @@ async fn collect_repo_md_paths(
         #[serde(rename = "type")]
         kind: String,
     }
-    let resp: Tree = client
-        .get(&url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| BrainError::github(format!("tree fetch: {e}")))?
-        .error_for_status()
-        .map_err(|e| BrainError::github(format!("tree status: {e}")))?
-        .json()
-        .await
-        .map_err(|e| BrainError::github(format!("tree parse: {e}")))?;
+    let resp: Tree = GithubHttp::send_json(http.get(&url, token), "tree").await?;
     Ok(resp
         .tree
         .into_iter()
@@ -653,7 +671,7 @@ const MAX_ASSET_BYTES: usize = 2 * 1024 * 1024;
 )]
 pub async fn upload_asset(filename: String, bytes: Vec<u8>) -> Result<String, ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
 
     if bytes.is_empty() {
         return Err(sfe(BrainError::parse("Empty upload")));
@@ -690,7 +708,7 @@ pub async fn upload_asset(filename: String, bytes: Vec<u8>) -> Result<String, Se
     );
 
     let commit_msg = format!("Upload {asset_path} via Brain UI");
-    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
+    let storage = session::storage().map_err(sfe)?;
     match storage
         .upload_binary(
             &token,
@@ -769,11 +787,28 @@ fn short_content_hash(bytes: &[u8]) -> String {
 #[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]
 pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
     use crate::server::session;
-    use brain_storage::{GithubStorage, Storage};
+    use brain_storage::Storage;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = GithubStorage::new(session::target_cfg().map_err(sfe)?);
+    let storage = session::storage().map_err(sfe)?;
     storage.list_folders(&token).await.map_err(sfe)
+}
+
+/// Drop the per-target graph, template, and config caches and force the next
+/// load to re-fetch from the forge. The cheapest way to close the gap between
+/// an out-of-band `git push` and the UI noticing — Phase 2A baseline before
+/// SSE/webhooks land in Phase 2B.
+#[server(RefreshBrainGraph, "/api", endpoint = "refresh_brain_graph")]
+pub async fn refresh_brain_graph() -> Result<(), ServerFnError> {
+    use crate::server::session;
+    use brain_domain::TargetKey;
+    let _s = session::require_authenticated().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    let key = TargetKey::from(&target);
+    brain_storage::invalidate(&key);
+    brain_storage::invalidate_template(&key);
+    crate::knowledge::config_loader::invalidate(&key);
+    Ok(())
 }
 
 #[cfg(feature = "ssr")]
@@ -988,5 +1023,255 @@ mod merge_frontmatter_tests {
         );
 
         assert!(out.contains("- [another-runbook](./another-runbook.md)"));
+    }
+}
+
+/// Tests for `rewrite_links` covering the rename path. Codifies the
+/// invariants that Phase 2A's "rename safety" deliverable must keep:
+/// fragments preserved, non-`.md` links left alone, every prefix variant
+/// (`./`, `../`, bare) handled, external URLs untouched.
+#[cfg(all(test, feature = "ssr"))]
+mod rewrite_links_tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_bare_link_in_same_directory() {
+        let body = "see [old](old.md) for details";
+        let out = rewrite_links(
+            body,
+            "concepts/host.md",
+            "concepts/old.md",
+            "concepts/new.md",
+        );
+        assert_eq!(out.as_deref(), Some("see [old](./new.md) for details"));
+    }
+
+    #[test]
+    fn rewrites_dot_slash_prefixed_link() {
+        let body = "see [old](./old.md)";
+        let out = rewrite_links(
+            body,
+            "concepts/host.md",
+            "concepts/old.md",
+            "concepts/new.md",
+        );
+        assert_eq!(out.as_deref(), Some("see [old](./new.md)"));
+    }
+
+    #[test]
+    fn rewrites_parent_relative_link() {
+        let body = "see [x](../adrs/old.md)";
+        let out = rewrite_links(body, "concepts/host.md", "adrs/old.md", "adrs/new.md");
+        assert_eq!(out.as_deref(), Some("see [x](../adrs/new.md)"));
+    }
+
+    #[test]
+    fn preserves_fragment_after_rename() {
+        let body = "jump to [section](./old.md#deep-section)";
+        let out = rewrite_links(
+            body,
+            "concepts/host.md",
+            "concepts/old.md",
+            "concepts/new.md",
+        );
+        assert_eq!(
+            out.as_deref(),
+            Some("jump to [section](./new.md#deep-section)")
+        );
+    }
+
+    #[test]
+    fn preserves_fragment_with_parent_relative_link() {
+        let body = "[a](../sub/old.md#h2)";
+        let out = rewrite_links(body, "host/x.md", "sub/old.md", "sub/new.md");
+        assert_eq!(out.as_deref(), Some("[a](../sub/new.md#h2)"));
+    }
+
+    #[test]
+    fn ignores_image_links_with_md_lookalike_in_alt() {
+        // The link target is an image, not a markdown doc. The matcher checks
+        // `.md` on `path_part`, so `image.png` must not be touched even if
+        // surrounding markdown looks similar.
+        let body = "![ConceptNote](./img.png) and [doc](./old.md)";
+        let out = rewrite_links(
+            body,
+            "concepts/host.md",
+            "concepts/old.md",
+            "concepts/new.md",
+        );
+        let updated = out.expect("at least the .md link should rewrite");
+        assert!(
+            updated.contains("![ConceptNote](./img.png)"),
+            "image untouched: {updated}"
+        );
+        assert!(
+            updated.contains("[doc](./new.md)"),
+            "doc rewritten: {updated}"
+        );
+    }
+
+    #[test]
+    fn leaves_external_http_links_alone() {
+        let body = "[home](https://example.com/old.md)";
+        let out = rewrite_links(
+            body,
+            "concepts/host.md",
+            "concepts/old.md",
+            "concepts/new.md",
+        );
+        assert!(out.is_none(), "external URL must not match");
+    }
+
+    #[test]
+    fn returns_none_when_no_link_matches() {
+        let body = "[other](./other.md)";
+        let out = rewrite_links(
+            body,
+            "concepts/host.md",
+            "concepts/old.md",
+            "concepts/new.md",
+        );
+        assert!(out.is_none(), "non-matching link returns None");
+    }
+
+    #[test]
+    fn rewrites_nested_to_nested_across_depths() {
+        // Host file in `notes/x.md` links to `concepts/a.md`; rename target
+        // lives at `adrs/deep/b.md`. Output must use the correct relative
+        // path from the host's directory.
+        let body = "[a](../concepts/a.md)";
+        let out = rewrite_links(body, "notes/x.md", "concepts/a.md", "adrs/deep/b.md");
+        assert_eq!(out.as_deref(), Some("[a](../adrs/deep/b.md)"));
+    }
+
+    #[test]
+    fn case_only_rename_is_treated_as_distinct_path() {
+        // GitHub Contents API is case-sensitive; a rename Foo.md -> foo.md
+        // must rewrite links pointing at `Foo.md`. The match is exact-string
+        // on the resolved path, so this confirms case-sensitivity isn't
+        // accidentally normalised away.
+        let body = "[x](./Foo.md)";
+        let out = rewrite_links(body, "host.md", "Foo.md", "foo.md");
+        assert_eq!(out.as_deref(), Some("[x](./foo.md)"));
+
+        // Inverse: a link to `foo.md` must NOT be rewritten when only `Foo.md`
+        // was renamed.
+        let body = "[x](./foo.md)";
+        let out = rewrite_links(body, "host.md", "Foo.md", "foo.md");
+        assert!(out.is_none(), "case-different link must not match");
+    }
+
+    #[test]
+    fn rewrites_multiple_links_in_one_document() {
+        let body = "first [a](./old.md) then [b](./old.md#anchor) and [c](./other.md)";
+        let out = rewrite_links(body, "host.md", "old.md", "new.md");
+        assert_eq!(
+            out.as_deref(),
+            Some("first [a](./new.md) then [b](./new.md#anchor) and [c](./other.md)")
+        );
+    }
+
+    #[test]
+    fn rewrites_into_new_directory() {
+        // Renaming into a previously-nonexistent directory must produce a valid
+        // relative path (the `save_file` Contents API call creates intermediate
+        // dirs; rewrite_links itself just needs to emit the right string).
+        let body = "[x](./old.md)";
+        let out = rewrite_links(body, "host.md", "old.md", "fresh/new.md");
+        assert_eq!(out.as_deref(), Some("[x](./fresh/new.md)"));
+    }
+
+    #[test]
+    fn does_not_rewrite_link_pointing_at_host_file_itself() {
+        // A self-referential link (e.g. a doc linking back to its own anchor
+        // via `[x](./host.md#section)`) should not match a rename of a
+        // different file.
+        let body = "[self](./host.md#top)";
+        let out = rewrite_links(
+            body,
+            "concepts/host.md",
+            "concepts/old.md",
+            "concepts/new.md",
+        );
+        assert!(out.is_none());
+    }
+}
+
+/// Regression guard for caveat #9: `lto = true` strips Leptos's
+/// `inventory::submit!` entries, so every `#[server]` fn must be listed in
+/// `SERVER_FNS` and registered explicitly. Without this test, adding a server
+/// fn without registering it silently 404s in release builds.
+#[cfg(all(test, feature = "ssr"))]
+mod server_fn_registration_tests {
+    use super::SERVER_FNS;
+
+    /// Source of `api.rs` at build time. Embedding it here keeps the test
+    /// independent of the crate's filesystem layout.
+    const API_SRC: &str = include_str!("api.rs");
+
+    /// Pull the struct name out of `#[server(Name, ...)]` or `#[server(\n    Name,\n ...`).
+    fn extract_server_fn_names(src: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let needle = "#[server(";
+        for (idx, _) in src.match_indices(needle) {
+            // Skip occurrences that are inside a string literal in this very
+            // file (the `let needle = "#[server(";` line above) by requiring
+            // the match to be at the start of a line modulo whitespace.
+            let line_start = src[..idx].rfind('\n').map(|n| n + 1).unwrap_or(0);
+            let prefix = &src[line_start..idx];
+            if !prefix.chars().all(|c| c.is_whitespace()) {
+                continue;
+            }
+            let after = &src[idx + needle.len()..];
+            // Skip whitespace and commas; first ident is the struct name.
+            let trimmed = after.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+            let name: String = trimmed
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn server_fns_registered_match_attributes() {
+        let mut found = extract_server_fn_names(API_SRC);
+        found.sort();
+        found.dedup();
+
+        let mut declared: Vec<String> = SERVER_FNS.iter().map(|s| (*s).to_string()).collect();
+        declared.sort();
+        declared.dedup();
+
+        assert_eq!(
+            found, declared,
+            "every #[server(...)] fn in api.rs must appear in SERVER_FNS \
+             (and register_server_functions). Found in source: {found:?}; \
+             declared in SERVER_FNS: {declared:?}"
+        );
+    }
+
+    #[test]
+    fn extract_server_fn_names_ignores_string_literal_occurrences() {
+        // Sanity: the literal needle in this test file should not be picked up
+        // because it's not at start-of-line.
+        let sample = "fn x() { let needle = \"#[server(Bogus,\"; }";
+        let names = extract_server_fn_names(sample);
+        assert!(
+            names.is_empty(),
+            "string-literal #[server( must be ignored: {names:?}"
+        );
+    }
+
+    #[test]
+    fn extract_server_fn_names_finds_real_attributes() {
+        let sample = "#[server(Foo, \"/api\")]\npub async fn foo() {}\n\
+                       #[server(\n    Bar,\n    \"/api\",\n)]\npub async fn bar() {}\n";
+        let mut names = extract_server_fn_names(sample);
+        names.sort();
+        assert_eq!(names, vec!["Bar".to_string(), "Foo".to_string()]);
     }
 }

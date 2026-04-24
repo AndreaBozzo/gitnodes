@@ -15,17 +15,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use brain_storage::{ContentResponse, http_client};
+use brain_storage::{ContentResponse, GithubHttp};
 use tower_sessions::Session;
 
 use super::auth;
-use brain_domain::TargetConfig;
 
-/// Axum state for the asset handler — just the target repo. We pull the token
-/// off the session at request time.
+/// Axum state for the asset handler — the shared pooled HTTP client. The token
+/// is pulled off the session at request time.
 #[derive(Clone)]
 pub struct AssetProxyState {
-    pub target: TargetConfig,
+    pub http: GithubHttp,
 }
 
 pub async fn serve_asset(
@@ -47,16 +46,12 @@ pub async fn serve_asset(
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
 
-    let gh = brain_domain::GithubClient::new(state.target.clone());
     let url = format!(
         "{}?ref={}",
-        gh.contents_url(&repo_path),
-        state.target.branch
+        state.http.github().contents_url(&repo_path),
+        state.http.target().branch
     );
-    let Ok(client) = http_client() else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "http client").into_response();
-    };
-    let resp = match client.get(&url).bearer_auth(&token).send().await {
+    let resp = match state.http.get(&url, &token).send().await {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_GATEWAY, "upstream fetch").into_response(),
     };

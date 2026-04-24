@@ -56,6 +56,13 @@ async fn main() {
         )
         .init();
 
+    // Single pooled HTTP client for the whole process. Threaded through Leptos
+    // context so server fns and the asset proxy share connection state instead
+    // of building a fresh `reqwest::Client` per request.
+    let gh_http = brain_storage::GithubHttp::new(target_cfg.clone())
+        .expect("failed to build pooled GitHub HTTP client");
+    tracing::info!("github http client built (pooled)");
+
     // Persistent session store backed by SQLite.
     // Use a standard URL format. Default to local sqlite.
     let db_url =
@@ -147,7 +154,7 @@ async fn main() {
             axum::routing::get(brain_app::server::assets::serve_asset),
         )
         .with_state(brain_app::server::assets::AssetProxyState {
-            target: target_cfg.clone(),
+            http: gh_http.clone(),
         });
 
     let app = Router::new()
@@ -162,15 +169,18 @@ async fn main() {
             axum::routing::post({
                 let target_for_api = target_cfg.clone();
                 let brand_for_api = brand_cfg.clone();
+                let http_for_api = gh_http.clone();
                 move |session: Session, request: Request<Body>| {
                     let target = target_for_api.clone();
                     let brand = brand_for_api.clone();
+                    let http = http_for_api.clone();
                     async move {
                         leptos_axum::handle_server_fns_with_context(
                             move || {
                                 provide_context(session.clone());
                                 provide_context(target.clone());
                                 provide_context(brand.clone());
+                                provide_context(http.clone());
                             },
                             request,
                         )
@@ -184,16 +194,19 @@ async fn main() {
         .leptos_routes_with_handler(routes, {
             let target_for_ssr = target_cfg.clone();
             let brand_for_ssr = brand_cfg.clone();
+            let http_for_ssr = gh_http.clone();
             move |session: Session, request: Request<Body>| {
                 let options = options_for_ssr.clone();
                 let target = target_for_ssr.clone();
                 let brand = brand_for_ssr.clone();
+                let http = http_for_ssr.clone();
                 async move {
                     let handler = leptos_axum::render_app_to_stream_with_context(
                         move || {
                             provide_context(session.clone());
                             provide_context(target.clone());
                             provide_context(brand.clone());
+                            provide_context(http.clone());
                         },
                         move || shell(options.clone()),
                     );
