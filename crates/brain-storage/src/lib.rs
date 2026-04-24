@@ -90,7 +90,6 @@ impl GithubHttp {
     pub fn new() -> Result<Self, BrainError> {
         let inner = reqwest::Client::builder()
             .user_agent("brain_ui")
-            .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| BrainError::Io(format!("http client: {e}")))?;
