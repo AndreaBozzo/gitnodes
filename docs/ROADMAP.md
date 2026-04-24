@@ -11,7 +11,7 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
 
 **Principio guida:** Fase 1 deve essere non-breaking per installazioni esistenti e libera da speculazione architetturale. Abstraction layers (trait) e admin UI vengono rimandati alle fasi dove esiste un secondo consumer/use-case che ne valida la forma.
 
-**Stato al 2026-04-23:** l'obiettivo tecnico della fase è sostanzialmente raggiunto. Tutti i deliverable infrastrutturali di de-hardcoding/configurabilità sono atterrati; restano aperti solo i workstream di convergenza prodotto e cutover sul caso reale `Brain`, necessari per dichiarare la fase chiusa anche operativamente.
+**Stato al 2026-04-24:** tutti i deliverable tecnici e di contratto-prodotto sono chiusi. Il merge di `staging → master` di Brain_UI e la verifica operativa in produzione sul repo `Brain` con `.brain-config.yml` esplicito sono l'ultimo passo per dichiarare la fase chiusa operativamente.
 
 - [x] **Frontmatter round-trip (prerequisito bloccante, ex-caveat #5)** — _2026-04-22_
     - `EditPrefill::from_raw` parsa l'intero frontmatter YAML in `BTreeMap<String, serde_yaml::Value>`.
@@ -50,17 +50,17 @@ Rimozione dell'hardcoding per rendere la Brain UI un tool generico e platform-ag
     - `editor.rs::markdown_body_label` eliminata; label letto da `spec.body_label` con fallback `"Description"`.
     - `BrainConfig::default()` aggiornata per riprodurre il comportamento pre-change dei sette tipi built-in.
     - Test di round-trip custom-type aggiunti in `brain-domain/src/types.rs` (load) e `brain-app/src/api.rs` (save, create+update).
-- [ ] **Convergenza del modello operativo su Work Items + binding provider**:
-    - Definizione di un'entità interna `WorkItem` come modello operativo minimo e stabile (`brain_id`, `kind`, `state`, `labels`, `assignees`, `content_path`, binding esterno opzionale).
-    - Le Issues dei forge diventano un **backend/binding** del modello, non la sua ontologia: supportano il caso principale ma non definiscono l'identità interna del sistema.
-    - Definizione di una tassonomia minima di label (`brain:discussion`, `brain:task`, `brain:decision`, ecc.) e del mapping machine-readable in config, così la UI può derivare il comportamento senza introdurre nuovi switch GitHub-centrici.
-    - Chiarimento del confine di responsabilità fra Markdown/frontmatter, projection locale e work item fields: stato, assignee, label, milestone e commenti devono avere una source of truth esplicita prima di atterrare in runtime.
-    - Deliverable di chiusura della Fase 1: contratto prodotto/dati approvato sul modello `WorkItem` e sul binding provider. Projection runtime, sync e UI operativa atterrano in Fase 2; impersonation, review workflow e PR automation restano in Fase 3.
-- [ ] **Dogfooding su repo Brain + cutover di produzione**:
-    - Adozione di `.brain-config.yml` dentro il repo `Brain`, smettendo di dipendere dal default compilato nel binario come configurazione primaria.
-    - Regressione end-to-end sul caso reale: create/edit/delete/rename/render per tipi built-in e almeno un tipo custom, inclusi `Related / See also`, template loading e fallback per tipi sconosciuti.
-    - Verifica operativa in prod di sessioni/cookie, asset proxy, env vars e rollback path.
-    - La Fase 1 si considera chiusa quando il deployment di produzione gira sul repo `Brain` in modalità config-driven senza regressioni funzionali.
+- [x] **Convergenza del modello operativo su Work Items + binding provider** — _2026-04-24_:
+    - `WorkItem` in `brain-domain/src/work_items.rs`: `brain_id`, `kind` (Task/Discussion/Decision/Incident/Change), `state` (Backlog→Cancelled), `labels`, `assignees`, `content_path`, `external_binding` opzionale, `system_of_record` (Brain/External/Split).
+    - `ExternalWorkItemBinding`: `system` (Github/Gitlab/Gitea/Forgejo/Custom), `project`, `item_key`, `provider_id?`, `url?`. Le Issues del forge sono un backend/binding, non l'ontologia.
+    - `WorkItemLabelSpec` + `label_taxonomy: Vec<WorkItemLabelSpec>` in `BrainConfig`: mapping machine-readable `kind → kind_label` + `state → forge_label`. Cinque kind built-in (`brain:task`, `brain:discussion`, `brain:decision`, `brain:incident`, `brain:change`) con state-label opzionali (`brain:in-progress`, `brain:blocked`, `brain:done`).
+    - Helper `BrainConfig::labels_for_kind()` e `all_kind_labels()`. Config senza `label_taxonomy` usa il default built-in (non breaking).
+    - Confine source-of-truth dichiarato: frontmatter = verità editoriale; `WorkItem` = dominio operativo; SQLite = read model (Fase 2); forge issue = backend di collaborazione opzionale.
+    - Projection runtime, sync e UI operativa atterrano in Fase 2; impersonation, review workflow e PR automation restano in Fase 3.
+- [x] **Dogfooding su repo Brain + cutover di produzione** — _2026-04-24_ _(parziale: YAML in staging, merge a master in corso)_:
+    - `.brain-config.yml` creato in `Brain` repo: tutti e sette i tipi built-in espliciti + `label_taxonomy` completa. Equivalente 1:1 al `BrainConfig::default()` — zero regressioni attese.
+    - Merge del branch `staging` di Brain_UI su `master` necessario per attivare il config-driven path in produzione.
+    - Regressione e-2-e e verifica operativa in prod da completare post-merge (create/edit/delete/rename per tutti i tipi, template loading, orphan banner, fallback su tipo sconosciuto).
 ### Spostati fuori da Fase 1
 
 - **Pannello Impostazioni (Visual YAML Editor)** → **Fase 3**. È effettivamente un sotto-flusso admin-only e dipende da RBAC; fino ad allora gli admin editano YAML via commit come il resto del contenuto git-nativo.

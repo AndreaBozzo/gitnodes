@@ -23,7 +23,7 @@ pub struct WorkItem {
     pub system_of_record: WorkItemSystemOfRecord,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkItemKind {
     Task,
@@ -33,7 +33,7 @@ pub enum WorkItemKind {
     Change,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkItemState {
     Backlog,

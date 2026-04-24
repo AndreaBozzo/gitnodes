@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::work_items::WorkItemKind;
+use crate::work_items::{WorkItemKind, WorkItemState};
 
 /// The GitHub repository the app reads from and writes to.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,6 +157,27 @@ impl NodeTypeSpec {
     }
 }
 
+/// Machine-readable mapping from a `WorkItemKind` + `WorkItemState` pair to the
+/// provider labels that represent it. This lets the UI and sync layer translate
+/// between Brain's internal state model and the label set on the external forge
+/// without hardcoding GitHub-specific strings in application code.
+///
+/// The `state_labels` map is optional. When omitted, state is managed only via
+/// Brain frontmatter and is not projected onto the external issue.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorkItemLabelSpec {
+    /// The internal kind this entry describes (e.g. `task`, `incident`).
+    pub kind: WorkItemKind,
+    /// Canonical label for this kind on the external forge (e.g. `"brain:task"`).
+    /// Used when creating or filtering issues on the provider.
+    pub kind_label: String,
+    /// Optional state → label mapping. When present, transitioning a WorkItem
+    /// to a given state will apply/remove the corresponding forge label.
+    /// States not listed here are managed only in Brain frontmatter.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub state_labels: BTreeMap<WorkItemState, String>,
+}
+
 /// Top-level config parsed from `.brain-config.yml` at the repo root, or the
 /// built-in default when the file is absent.
 ///
@@ -168,6 +189,14 @@ pub struct BrainConfig {
     pub node_types: Vec<NodeTypeSpec>,
     /// Name of the spec used when a doc references an unknown type.
     pub default_type: String,
+    /// Machine-readable taxonomy of Work Item labels. Drives forge-label sync
+    /// and UI filters without hardcoding provider strings anywhere else.
+    /// Defaults to the five built-in kinds with `brain:*` label names.
+    #[serde(
+        default = "default_label_taxonomy",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub label_taxonomy: Vec<WorkItemLabelSpec>,
 }
 
 /// Reserved names that clash with known repo paths. A node type cannot use
@@ -271,6 +300,52 @@ impl BrainConfig {
         }
         self.node_types.iter().find(|s| s.directory == dir)
     }
+
+    /// Label spec for the given `WorkItemKind`, or `None` if the taxonomy does
+    /// not include that kind (custom config may intentionally omit some).
+    pub fn labels_for_kind(&self, kind: &WorkItemKind) -> Option<&WorkItemLabelSpec> {
+        self.label_taxonomy.iter().find(|e| &e.kind == kind)
+    }
+
+    /// All `kind_label` strings defined in the taxonomy. Useful for seeding the
+    /// label set on a forge project or building a filter predicate.
+    pub fn all_kind_labels(&self) -> impl Iterator<Item = &str> {
+        self.label_taxonomy.iter().map(|e| e.kind_label.as_str())
+    }
+}
+
+fn default_label_taxonomy() -> Vec<WorkItemLabelSpec> {
+    use WorkItemKind::*;
+    use WorkItemState::*;
+    let entry = |kind: WorkItemKind, kind_label: &str, states: &[(WorkItemState, &str)]| {
+        WorkItemLabelSpec {
+            kind,
+            kind_label: kind_label.into(),
+            state_labels: states
+                .iter()
+                .map(|(s, l)| (s.clone(), l.to_string()))
+                .collect(),
+        }
+    };
+    vec![
+        entry(
+            Task,
+            "brain:task",
+            &[
+                (InProgress, "brain:in-progress"),
+                (Blocked, "brain:blocked"),
+                (Done, "brain:done"),
+            ],
+        ),
+        entry(Discussion, "brain:discussion", &[]),
+        entry(Decision, "brain:decision", &[(Done, "brain:done")]),
+        entry(
+            Incident,
+            "brain:incident",
+            &[(InProgress, "brain:in-progress"), (Done, "brain:done")],
+        ),
+        entry(Change, "brain:change", &[(Done, "brain:done")]),
+    ]
 }
 
 fn is_valid_hex_color(s: &str) -> bool {
@@ -440,6 +515,7 @@ impl Default for BrainConfig {
                 },
             ],
             default_type: "concept".into(),
+            label_taxonomy: default_label_taxonomy(),
         }
     }
 }
@@ -562,6 +638,41 @@ node_types:
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn default_label_taxonomy_has_five_kinds() {
+        let cfg = BrainConfig::default();
+        assert_eq!(cfg.label_taxonomy.len(), 5);
+        let task_spec = cfg.labels_for_kind(&WorkItemKind::Task).unwrap();
+        assert_eq!(task_spec.kind_label, "brain:task");
+        assert!(
+            task_spec
+                .state_labels
+                .contains_key(&WorkItemState::InProgress)
+        );
+        let all: Vec<&str> = cfg.all_kind_labels().collect();
+        assert!(all.contains(&"brain:task"));
+        assert!(all.contains(&"brain:incident"));
+    }
+
+    #[test]
+    fn label_taxonomy_roundtrips_yaml() {
+        let cfg = BrainConfig::default();
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        let parsed = BrainConfig::parse(&yaml).unwrap();
+        assert_eq!(cfg.label_taxonomy, parsed.label_taxonomy);
+    }
+
+    #[test]
+    fn config_without_label_taxonomy_uses_default() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233" }
+"##;
+        let cfg = BrainConfig::parse(yaml).unwrap();
+        assert_eq!(cfg.label_taxonomy.len(), 5);
     }
 
     #[test]
