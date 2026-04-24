@@ -126,4 +126,4 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) and the `Known caveats` section within.
 
 ## License
 
-Internal tool — not published.
+2026@AndreaBozzo -- All rights reserved
