@@ -62,9 +62,9 @@ Required at runtime:
 | ----------------------- | ------------------------------------ |
 | `GITHUB_CLIENT_ID`      | GitHub OAuth app client ID           |
 | `GITHUB_CLIENT_SECRET`  | GitHub OAuth app client secret       |
-| `GITHUB_ORG`            | Target org for membership check      |
-| `GITHUB_REPO`           | Target repo (e.g. `Brain`)           |
-| `GITHUB_BRANCH`         | Branch to read/write (e.g. `main`)   |
+| `TARGET_GITHUB_ORG`     | Target org for login gating and repo access |
+| `TARGET_GITHUB_REPO`    | Target repo (e.g. `Brain`)           |
+| `TARGET_GITHUB_BRANCH`  | Branch to read/write (e.g. `main`)   |
 
 Optional:
 
@@ -76,7 +76,16 @@ Optional:
 | `SESSION_COOKIE_SECURE`   | `0`                    | Set to `1` in HTTPS prod                         |
 | `RUST_LOG`                | `brain_ui=info,warn`   | tracing-subscriber env filter                    |
 
+Branding is also required at runtime:
+
+| Var                       | Purpose                                          |
+| ------------------------- | ------------------------------------------------ |
+| `BRAND_NAME`              | UI brand shown in the header and page title      |
+| `BRAND_ORG_LABEL`         | Org label used in access-denied copy             |
+
 The OAuth app's callback URL must be `{host}/auth/callback`.
+
+Legacy aliases `GITHUB_ORG`, `GITHUB_REPO`, and `GITHUB_BRANCH` are still accepted at runtime for backward compatibility, but new deploys should use the explicit `TARGET_GITHUB_*` names.
 
 ## Local development
 
@@ -100,9 +109,11 @@ docker build -t brain_ui .
 docker run -p 3000:3000 \
   -e GITHUB_CLIENT_ID=... \
   -e GITHUB_CLIENT_SECRET=... \
-  -e GITHUB_ORG=Dritara-Digital \
-  -e GITHUB_REPO=Brain \
-  -e GITHUB_BRANCH=main \
+  -e TARGET_GITHUB_ORG=Dritara-Digital \
+  -e TARGET_GITHUB_REPO=Brain \
+  -e TARGET_GITHUB_BRANCH=main \
+  -e BRAND_NAME="Dritara Brain" \
+  -e BRAND_ORG_LABEL=Dritara-Digital \
   -v brain_ui_data:/app/data \
   brain_ui
 ```

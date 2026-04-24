@@ -227,31 +227,6 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     let target = session::target_cfg().map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
 
-    let related_section = if payload.related.is_empty() {
-        String::new()
-    } else {
-        let links: Vec<String> = payload
-            .related
-            .iter()
-            .map(|path| {
-                let label = path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(path)
-                    .trim_end_matches(".md");
-                format!("- [{}](../{})", label, path)
-            })
-            .collect();
-        format!("\n## Related / See also\n\n{}\n", links.join("\n"))
-    };
-
-    let markdown = format!(
-        "{}\n{}{}",
-        merge_frontmatter(&payload, &user, &config),
-        payload.body,
-        related_section,
-    );
-
     let file_path = match &payload.path {
         Some(p) if !p.is_empty() => p.clone(),
         _ => {
@@ -279,6 +254,15 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
             }
         }
     };
+
+    let related_section = build_related_section(&file_path, &payload.related);
+
+    let markdown = format!(
+        "{}\n{}{}",
+        merge_frontmatter(&payload, &user, &config),
+        payload.body,
+        related_section,
+    );
 
     let auto_msg = if payload.sha.is_some() {
         format!("Update {} via Brain UI", file_path)
@@ -632,6 +616,30 @@ fn relativize(from_dir: &std::path::Path, target: &str) -> String {
     out
 }
 
+#[cfg(feature = "ssr")]
+fn build_related_section(file_path: &str, related: &[String]) -> String {
+    use std::path::Path;
+
+    if related.is_empty() {
+        return String::new();
+    }
+
+    let from_dir = Path::new(file_path).parent().unwrap_or(Path::new(""));
+    let links: Vec<String> = related
+        .iter()
+        .map(|path| {
+            let label = path
+                .rsplit('/')
+                .next()
+                .unwrap_or(path)
+                .trim_end_matches(".md");
+            let relative = relativize(from_dir, path);
+            format!("- [{}]({})", label, relative)
+        })
+        .collect();
+    format!("\n## Related / See also\n\n{}\n", links.join("\n"))
+}
+
 /// Max size for a single asset upload. GitHub Contents API accepts larger, but
 /// we keep it modest to stay responsive and avoid ballooning the repo.
 #[cfg(feature = "ssr")]
@@ -956,5 +964,29 @@ mod merge_frontmatter_tests {
         assert!(out.contains("- new"));
         assert!(!out.contains("old"));
         assert!(!out.contains("stale"));
+    }
+
+    #[test]
+    fn related_section_uses_relative_links_from_nested_destination() {
+        let out = build_related_section(
+            "concepts/sub_folder_test_brain_UI/README.md",
+            &[
+                "runbooks/uso-brain-ui.md".to_string(),
+                "concepts/TestbrainUI.md".to_string(),
+            ],
+        );
+
+        assert!(out.contains("- [uso-brain-ui](../../runbooks/uso-brain-ui.md)"));
+        assert!(out.contains("- [TestbrainUI](../TestbrainUI.md)"));
+    }
+
+    #[test]
+    fn related_section_uses_same_directory_relative_links() {
+        let out = build_related_section(
+            "runbooks/uso-brain-ui.md",
+            &["runbooks/another-runbook.md".to_string()],
+        );
+
+        assert!(out.contains("- [another-runbook](./another-runbook.md)"));
     }
 }

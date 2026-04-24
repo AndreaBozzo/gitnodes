@@ -1,6 +1,13 @@
 #![recursion_limit = "512"]
 
 #[cfg(feature = "ssr")]
+fn required_env_with_legacy(primary: &str, legacy: &str) -> String {
+    std::env::var(primary)
+        .or_else(|_| std::env::var(legacy))
+        .unwrap_or_else(|_| panic!("{primary} or legacy {legacy} must be set"))
+}
+
+#[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
     use axum::{
@@ -30,9 +37,9 @@ async fn main() {
     // Runtime config from env — fail fast if any are missing so a misconfigured
     // deploy can't silently write to the wrong repo.
     let target_cfg = TargetConfig {
-        org: std::env::var("TARGET_GITHUB_ORG").expect("TARGET_GITHUB_ORG must be set"),
-        repo: std::env::var("TARGET_GITHUB_REPO").expect("TARGET_GITHUB_REPO must be set"),
-        branch: std::env::var("TARGET_GITHUB_BRANCH").expect("TARGET_GITHUB_BRANCH must be set"),
+        org: required_env_with_legacy("TARGET_GITHUB_ORG", "GITHUB_ORG"),
+        repo: required_env_with_legacy("TARGET_GITHUB_REPO", "GITHUB_REPO"),
+        branch: required_env_with_legacy("TARGET_GITHUB_BRANCH", "GITHUB_BRANCH"),
     };
     let brand_cfg = BrandConfig {
         name: std::env::var("BRAND_NAME").expect("BRAND_NAME must be set"),

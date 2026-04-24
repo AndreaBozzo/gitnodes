@@ -23,8 +23,14 @@ fn client_secret() -> String {
     std::env::var("GITHUB_CLIENT_SECRET").expect("GITHUB_CLIENT_SECRET must be set")
 }
 
+fn required_env_with_legacy(primary: &str, legacy: &str) -> String {
+    std::env::var(primary)
+        .or_else(|_| std::env::var(legacy))
+        .unwrap_or_else(|_| panic!("{primary} or legacy {legacy} must be set"))
+}
+
 fn required_org() -> String {
-    std::env::var("TARGET_GITHUB_ORG").expect("TARGET_GITHUB_ORG must be set")
+    required_env_with_legacy("TARGET_GITHUB_ORG", "GITHUB_ORG")
 }
 
 /// Handler for `GET /auth/login`.
