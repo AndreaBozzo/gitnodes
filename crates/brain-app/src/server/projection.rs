@@ -5,9 +5,10 @@ use std::sync::OnceLock;
 use brain_domain::{BrainConfig, BrainError, Edge, Node, TargetConfig, TargetKey};
 use brain_graph::{RawFile, build_graph, parse_file};
 use brain_storage::GithubStorage;
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 static POOL: OnceLock<SqlitePool> = OnceLock::new();
+const SQLITE_MAX_VARIABLES: usize = 900;
 
 pub fn init(pool: SqlitePool) {
     let _ = POOL.set(pool);
@@ -439,63 +440,10 @@ async fn persist_snapshot(
         .await
         .map_err(sqlx_error)?;
 
-    for file in &snapshot.files {
-        sqlx::query(
-            "INSERT INTO files (target_id, path, sha, size_bytes, updated_at)
-             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-        )
-        .bind(target_id)
-        .bind(&file.path)
-        .bind(&file.sha)
-        .bind(file.size_bytes)
-        .execute(&mut *tx)
-        .await
-        .map_err(sqlx_error)?;
-    }
-
-    for node in &snapshot.nodes {
-        let tags_json = serde_json::to_string(&node.tags)
-            .map_err(|error| BrainError::parse(format!("projection tags json: {error}")))?;
-        sqlx::query(
-            "INSERT INTO nodes (
-                target_id, node_id, title, summary, node_type, tags_json, x, y, path, sha, is_virtual
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(target_id)
-        .bind(i64::from(node.id))
-        .bind(&node.title)
-        .bind(&node.summary)
-        .bind(&node.node_type)
-        .bind(tags_json)
-        .bind(node.x as f64)
-        .bind(node.y as f64)
-        .bind(&node.path)
-        .bind(&node.sha)
-        .bind(node.path.is_empty())
-        .execute(&mut *tx)
-        .await
-        .map_err(sqlx_error)?;
-    }
-
-    for edge in &snapshot.edges {
-        sqlx::query("INSERT INTO edges (target_id, from_id, to_id) VALUES (?, ?, ?)")
-            .bind(target_id)
-            .bind(i64::from(edge.from))
-            .bind(i64::from(edge.to))
-            .execute(&mut *tx)
-            .await
-            .map_err(sqlx_error)?;
-    }
-
-    for backlink in &snapshot.backlinks {
-        sqlx::query("INSERT INTO backlinks (target_id, source_path, target_path) VALUES (?, ?, ?)")
-            .bind(target_id)
-            .bind(&backlink.source_path)
-            .bind(&backlink.target_path)
-            .execute(&mut *tx)
-            .await
-            .map_err(sqlx_error)?;
-    }
+    bulk_insert_files(&mut tx, target_id, &snapshot.files).await?;
+    bulk_insert_nodes(&mut tx, target_id, &snapshot.nodes).await?;
+    bulk_insert_edges(&mut tx, target_id, &snapshot.edges).await?;
+    bulk_insert_backlinks(&mut tx, target_id, &snapshot.backlinks).await?;
 
     sqlx::query(
         "INSERT INTO projection_sync_state (
@@ -523,6 +471,150 @@ async fn persist_snapshot(
 
     tx.commit().await.map_err(sqlx_error)?;
     Ok(())
+}
+
+async fn bulk_insert_files(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    files: &[ProjectionFile],
+) -> Result<(), BrainError> {
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in files.chunks(max_rows_per_insert(4)) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO files (target_id, path, sha, size_bytes, updated_at) ",
+        );
+        query.push_values(chunk, |mut row, file| {
+            row.push_bind(target_id)
+                .push_bind(&file.path)
+                .push_bind(&file.sha)
+                .push_bind(file.size_bytes)
+                .push("CURRENT_TIMESTAMP");
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
+async fn bulk_insert_nodes(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    nodes: &[Node],
+) -> Result<(), BrainError> {
+    if nodes.is_empty() {
+        return Ok(());
+    }
+
+    let rows = nodes
+        .iter()
+        .map(|node| {
+            Ok(NodeInsertRow {
+                node_id: i64::from(node.id),
+                title: node.title.clone(),
+                summary: node.summary.clone(),
+                node_type: node.node_type.clone(),
+                tags_json: serde_json::to_string(&node.tags)
+                    .map_err(|error| BrainError::parse(format!("projection tags json: {error}")))?,
+                x: node.x as f64,
+                y: node.y as f64,
+                path: node.path.clone(),
+                sha: node.sha.clone(),
+                is_virtual: node.path.is_empty(),
+            })
+        })
+        .collect::<Result<Vec<_>, BrainError>>()?;
+
+    for chunk in rows.chunks(max_rows_per_insert(11)) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO nodes (
+                target_id, node_id, title, summary, node_type, tags_json, x, y, path, sha, is_virtual
+            ) ",
+        );
+        query.push_values(chunk, |mut row, node| {
+            row.push_bind(target_id)
+                .push_bind(node.node_id)
+                .push_bind(&node.title)
+                .push_bind(&node.summary)
+                .push_bind(&node.node_type)
+                .push_bind(&node.tags_json)
+                .push_bind(node.x)
+                .push_bind(node.y)
+                .push_bind(&node.path)
+                .push_bind(&node.sha)
+                .push_bind(node.is_virtual);
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
+async fn bulk_insert_edges(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    edges: &[Edge],
+) -> Result<(), BrainError> {
+    if edges.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in edges.chunks(max_rows_per_insert(3)) {
+        let mut query =
+            QueryBuilder::<Sqlite>::new("INSERT INTO edges (target_id, from_id, to_id) ");
+        query.push_values(chunk, |mut row, edge| {
+            row.push_bind(target_id)
+                .push_bind(i64::from(edge.from))
+                .push_bind(i64::from(edge.to));
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
+async fn bulk_insert_backlinks(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    backlinks: &[Backlink],
+) -> Result<(), BrainError> {
+    if backlinks.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in backlinks.chunks(max_rows_per_insert(3)) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO backlinks (target_id, source_path, target_path) ",
+        );
+        query.push_values(chunk, |mut row, backlink| {
+            row.push_bind(target_id)
+                .push_bind(&backlink.source_path)
+                .push_bind(&backlink.target_path);
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
+fn max_rows_per_insert(bind_count_per_row: usize) -> usize {
+    (SQLITE_MAX_VARIABLES / bind_count_per_row).max(1)
+}
+
+#[derive(Clone, Debug)]
+struct NodeInsertRow {
+    node_id: i64,
+    title: String,
+    summary: String,
+    node_type: String,
+    tags_json: String,
+    x: f64,
+    y: f64,
+    path: String,
+    sha: String,
+    is_virtual: bool,
 }
 
 async fn load_cached_graph(

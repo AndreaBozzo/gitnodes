@@ -99,6 +99,10 @@ async fn main() {
         .execute(&pool)
         .await
         .expect("enable sqlite foreign keys");
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .execute(&pool)
+        .await
+        .expect("enable sqlite WAL mode");
     let session_store = SqliteStore::new(pool.clone());
     session_store
         .migrate()
