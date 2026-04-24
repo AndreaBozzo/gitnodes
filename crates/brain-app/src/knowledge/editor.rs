@@ -1,8 +1,9 @@
 use leptos::prelude::*;
+use std::collections::BTreeMap;
 
 use super::components::RemovableBadge;
 use super::draft::{self, Draft};
-use super::types::{EditMode, NodeType};
+use super::types::EditMode;
 use crate::api::{AppConfig, get_current_user, load_brain_template};
 
 /// Smart editor form that enforces Brain templates programmatically.
@@ -16,8 +17,10 @@ pub fn EditorPanel(
     edit_mode: RwSignal<EditMode>,
     /// Bump to trigger a graph refetch after save (replaces full-page reload).
     graph_version: RwSignal<u64>,
+    config: brain_domain::BrainConfig,
 ) -> impl IntoView {
-    let node_type = RwSignal::new(NodeType::Concept);
+    let config = StoredValue::new(config);
+    let node_type = RwSignal::new(config.with_value(|c| c.default_spec().name.clone()));
     let title = RwSignal::new(String::new());
     let author = RwSignal::new(String::new());
     let tags = RwSignal::new(Vec::<String>::new());
@@ -32,6 +35,8 @@ pub fn EditorPanel(
     let saving = RwSignal::new(false);
     let edit_path = RwSignal::new(Option::<String>::None);
     let edit_sha = RwSignal::new(Option::<String>::None);
+    let preserved_frontmatter = RwSignal::new(Option::<BTreeMap<String, serde_yaml::Value>>::None);
+    let frontmatter_malformed = RwSignal::new(false);
     let custom_msg_open = RwSignal::new(read_custom_msg_pref());
     let custom_msg = RwSignal::new(String::new());
     Effect::new(move |_| {
@@ -58,12 +63,20 @@ pub fn EditorPanel(
             selected_related.set(p.related);
             edit_path.set(Some(p.path));
             edit_sha.set(Some(p.sha));
+            preserved_frontmatter.set(if p.frontmatter.is_empty() {
+                None
+            } else {
+                Some(p.frontmatter)
+            });
+            frontmatter_malformed.set(p.frontmatter_malformed);
             folder.set(String::new());
         } else {
             prefilled_for.set(None);
             if matches!(edit_mode.get(), EditMode::New) {
                 edit_path.set(None);
                 edit_sha.set(None);
+                preserved_frontmatter.set(None);
+                frontmatter_malformed.set(false);
                 folder.set(String::new());
             }
         }
@@ -72,7 +85,7 @@ pub fn EditorPanel(
     let is_edit = Memo::new(move |_| edit_sha.with(|s| s.is_some()));
 
     // Fetch the Brain template and prefill the body textarea when in New mode.
-    let template_applied_for = RwSignal::new(Option::<NodeType>::None);
+    let template_applied_for = RwSignal::new(Option::<String>::None);
     Effect::new(move |_| {
         if is_edit.get() {
             return;
@@ -82,7 +95,7 @@ pub fn EditorPanel(
             return;
         }
         let nt = node_type.get();
-        if template_applied_for.get_untracked() == Some(nt) {
+        if template_applied_for.get_untracked() == Some(nt.clone()) {
             return;
         }
         let current_body = body.get_untracked();
@@ -91,7 +104,7 @@ pub fn EditorPanel(
         if !safe_to_replace {
             return;
         }
-        template_applied_for.set(Some(nt));
+        template_applied_for.set(Some(nt.clone()));
         #[cfg(not(feature = "ssr"))]
         {
             leptos::task::spawn_local(async move {
@@ -198,6 +211,7 @@ pub fn EditorPanel(
             return;
         }
         let base_sha = edit_sha.get_untracked();
+        let preserved = preserved_frontmatter.get_untracked();
 
         #[cfg(feature = "hydrate")]
         {
@@ -211,6 +225,8 @@ pub fn EditorPanel(
                 folder: Some(f),
                 saved_at: draft::now_secs(),
                 base_sha,
+                preserved_frontmatter: preserved,
+                frontmatter_malformed: frontmatter_malformed.get_untracked(),
             };
             let key_for_timeout = key.clone();
             let new_handle = gloo_timers::callback::Timeout::new(2_000, move || {
@@ -220,7 +236,7 @@ pub fn EditorPanel(
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (nt, a, base_sha, key);
+            let _ = (nt, a, base_sha, key, preserved);
         }
     });
 
@@ -239,6 +255,8 @@ pub fn EditorPanel(
         if let Some(f) = d.folder {
             folder.set(f);
         }
+        preserved_frontmatter.set(d.preserved_frontmatter);
+        frontmatter_malformed.set(d.frontmatter_malformed);
         restore_banner.set(None);
     };
     let discard_draft = move || {
@@ -274,6 +292,8 @@ pub fn EditorPanel(
             } else {
                 None
             },
+            preserved_frontmatter: preserved_frontmatter.get_untracked(),
+            frontmatter_malformed: frontmatter_malformed.get_untracked(),
         };
 
         saving.set(true);
@@ -325,9 +345,15 @@ pub fn EditorPanel(
         }
         let path = edit_path.get()?;
         let (dir, _file) = path.rsplit_once('/')?;
-        let current_type = NodeType::from_directory(dir)?;
+        let current_type = config.with_value(|c| c.by_directory(dir).map(|s| s.name.clone()))?;
         let target = node_type.get();
-        if current_type == target || target.directory().is_empty() {
+        if current_type == target
+            || config.with_value(|c| {
+                c.lookup(&target)
+                    .map(|s| s.directory.is_empty())
+                    .unwrap_or(true)
+            })
+        {
             return None;
         }
         Some((path, current_type, target))
@@ -344,7 +370,12 @@ pub fn EditorPanel(
             return;
         };
         let filename = old_path.rsplit('/').next().unwrap_or(&old_path).to_string();
-        let new_path = format!("{}/{}", to.directory(), filename);
+        let target_dir = config.with_value(|c| {
+            c.lookup(&to)
+                .map(|s| s.directory.clone())
+                .unwrap_or_default()
+        });
+        let new_path = format!("{}/{}", target_dir, filename);
 
         moving.set(true);
         move_error.set(String::new());
@@ -428,22 +459,32 @@ pub fn EditorPanel(
                 }
             </Show>
 
-            <FrontmatterFields node_type=node_type title=title author=author />
+            <Show when=move || frontmatter_malformed.get()>
+                <div class="px-3 py-2 rounded-md bg-rose-500/10 border border-rose-400/40 text-rose-100 text-xs">
+                    "This file's YAML frontmatter failed to parse. Saves are disabled to avoid overwriting custom fields. Fix the file on GitHub and reload."
+                </div>
+            </Show>
+
+            <FrontmatterFields node_type=node_type title=title author=author config=config.get_value() />
 
             <Show when=move || mismatch.with(|m| m.is_some())>
                 {
                     let do_move = do_move;
                     view! {
                         <div class="px-3 py-2 rounded-md bg-amber-500/10 border border-amber-400/40 text-amber-100 text-xs space-y-2">
-                            <div>
-                                {move || mismatch.with(|m| m.as_ref().map(|(path, from, to)| {
-                                    let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-                                    format!(
-                                        "This {} lives in `{}/` (the {} folder). Move to `{}/`?",
-                                        to.label(), dir, from.label(), to.directory(),
-                                    )
-                                }).unwrap_or_default())}
-                            </div>
+                                {
+                                    let config = config.get_value();
+                                    move || mismatch.with(|m| m.as_ref().map(|(path, from, to)| {
+                                        let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                                        let from_label = config.lookup(from).map(|s| s.label.clone()).unwrap_or_default();
+                                        let to_label = config.lookup(to).map(|s| s.label.clone()).unwrap_or_default();
+                                        let to_dir = config.lookup(to).map(|s| s.directory.clone()).unwrap_or_default();
+                                        format!(
+                                            "This {} lives in `{}/` (the {} folder). Move to `{}/`?",
+                                            to_label, dir, from_label, to_dir,
+                                        )
+                                    }).unwrap_or_default())
+                                }
                             <div class="flex gap-2 items-center">
                                 <button
                                     class="px-3 py-1 rounded bg-amber-400/30 border border-amber-300/50 text-amber-50 hover:bg-amber-400/50 transition-colors focus:outline-none focus:ring-1 focus:ring-amber-500 disabled:opacity-50"
@@ -461,9 +502,9 @@ pub fn EditorPanel(
                 }
             </Show>
 
-            <LocationPicker folder=folder node_type=node_type all_folders=all_folders is_edit=is_edit />
+            <LocationPicker folder=folder node_type=node_type all_folders=all_folders is_edit=is_edit config=config.get_value() />
             <TagInput tags=tags all_tags=all_tags_stored />
-            <MarkdownPreview node_type=node_type.into() body=body />
+            <MarkdownPreview node_type=node_type.into() body=body config=config.get_value() />
             <RelatedLinksPicker selected_related=selected_related node_titles=node_titles_stored />
 
             <div class="pt-2 border-t border-slate-800 space-y-2">
@@ -498,7 +539,7 @@ pub fn EditorPanel(
                 </div>
                 <button
                     class="w-full px-4 py-2 rounded-md bg-teal-500 text-slate-950 text-sm font-semibold hover:bg-teal-400 transition-colors focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50"
-                    disabled=move || saving.get() || title.with(|t| t.is_empty())
+                    disabled=move || saving.get() || title.with(|t| t.is_empty()) || frontmatter_malformed.get()
                     on:click=on_submit
                 >
                     {move || match (saving.get(), is_edit.get()) {
@@ -526,17 +567,21 @@ pub fn EditorPanel(
 /// Type selector + title + author fields.
 #[component]
 fn FrontmatterFields(
-    node_type: RwSignal<NodeType>,
+    node_type: RwSignal<String>,
     title: RwSignal<String>,
     author: RwSignal<String>,
+    config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     view! {
         <div>
             <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"Type"</label>
             <div class="flex flex-wrap gap-2">
-                {NodeType::CREATABLE.iter().map(|t| {
-                    let t = *t;
-                    let is_active = Memo::new(move |_| node_type.get() == t);
+                {config.creatable().map(|spec| {
+                    let t = spec.name.clone();
+                    let is_active = Memo::new({
+                        let t = t.clone();
+                        move |_| node_type.get() == t
+                    });
                     view! {
                         <button
                             class="px-3 py-1 rounded-full text-xs border transition-colors flex items-center gap-2 focus:outline-none focus:ring-1 focus:ring-slate-500"
@@ -545,10 +590,13 @@ fn FrontmatterFields(
                             class=("border-slate-100", move || is_active.get())
                             class=("text-slate-300", move || !is_active.get())
                             class=("border-slate-700", move || !is_active.get())
-                            on:click=move |_| node_type.set(t)
+                            on:click={
+                                let t = t.clone();
+                                move |_| node_type.set(t.clone())
+                            }
                         >
-                            <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", t.accent_var())></span>
-                            {t.label()}
+                            <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", spec.accent_var())></span>
+                            {spec.label.clone()}
                         </button>
                     }
                 }).collect_view()}
@@ -666,7 +714,11 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
 
 /// Edit / preview toggle for the markdown body.
 #[component]
-fn MarkdownPreview(node_type: Signal<NodeType>, body: RwSignal<String>) -> impl IntoView {
+fn MarkdownPreview(
+    node_type: Signal<String>,
+    body: RwSignal<String>,
+    config: brain_domain::BrainConfig,
+) -> impl IntoView {
     let show_preview = RwSignal::new(false);
     let preview_html = Memo::new(move |_| crate::markdown::render(&body.get()));
     let upload_status = RwSignal::new(String::new());
@@ -676,14 +728,12 @@ fn MarkdownPreview(node_type: Signal<NodeType>, body: RwSignal<String>) -> impl 
         <div>
             <div class="flex items-center justify-between mb-1">
                 <label class="text-[10px] uppercase tracking-widest text-slate-500">
-                    {move || match node_type.get() {
-                        NodeType::Concept => "Summary",
-                        NodeType::Decision => "Context",
-                        NodeType::Meeting => "Summary / Notes",
-                        NodeType::PostMortem => "Incident Summary",
-                        NodeType::Preventivo => "Riepilogo",
-                        NodeType::Runbook => "Description",
-                        NodeType::Tag => "Body",
+                    {move || {
+                        let t = node_type.get();
+                        config
+                            .lookup(&t)
+                            .and_then(|s| s.body_label.clone())
+                            .unwrap_or_else(|| "Description".to_string())
                     }}
                 </label>
                 <button
@@ -924,9 +974,10 @@ fn RelatedLinksPicker(
 #[component]
 fn LocationPicker(
     folder: RwSignal<String>,
-    node_type: RwSignal<NodeType>,
+    node_type: RwSignal<String>,
     all_folders: Resource<Vec<String>>,
     is_edit: Memo<bool>,
+    config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     view! {
         <Show when=move || !is_edit.get()>
@@ -937,7 +988,10 @@ fn LocationPicker(
                         type="text"
                         list="brain-folders"
                         class="w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-sm focus:border-teal-400 focus:outline-none"
-                        placeholder=move || node_type.get().directory()
+                        placeholder={
+                            let config = config.clone();
+                            move || config.lookup(&node_type.get()).map(|s| s.directory.clone()).unwrap_or_default()
+                        }
                         prop:value=move || folder.get()
                         on:input=move |ev| folder.set(event_target_value(&ev))
                     />

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 
-use super::types::{Edge, Node, NodeType};
+use super::types::{Edge, Node};
 
 #[component]
 pub fn GraphCanvas(
@@ -11,6 +11,7 @@ pub fn GraphCanvas(
     visible_ids: Signal<HashSet<u32>>,
     hovered: RwSignal<Option<u32>>,
     selected: RwSignal<Option<u32>>,
+    config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     let adjacency: StoredValue<HashMap<u32, HashSet<u32>>> = StoredValue::new({
         let mut m: HashMap<u32, HashSet<u32>> = HashMap::new();
@@ -88,6 +89,7 @@ pub fn GraphCanvas(
         })
     };
 
+    let config_for_nodes = config.clone();
     let nodes_view = move || {
         let vis = visible_ids.get();
         nodes.with_value(|ns| {
@@ -95,8 +97,12 @@ pub fn GraphCanvas(
                 .filter(|n| vis.contains(&n.id))
                 .map(|n| {
                     let id = n.id;
-                    let accent = n.node_type.accent();
-                    let is_tag = matches!(n.node_type, NodeType::Tag);
+                    let spec = config_for_nodes.lookup(&n.node_type).unwrap_or_else(|| config_for_nodes.default_spec());
+                    let accent = spec.accent_var();
+                    let is_tag = config_for_nodes
+                        .synthetic_tag_spec()
+                        .map(|s| s.name.as_str())
+                        == Some(n.node_type.as_str());
                     let title = n.title.clone();
                     let x = n.x;
                     let y = n.y;
@@ -137,17 +143,23 @@ pub fn GraphCanvas(
                                         else { 0.0 };
                                     format!("{:.3}", base_r + bump)
                                 }
-                                fill=accent
+                                fill=accent.clone()
                                 fill-opacity=if is_tag { "0.55" } else { "0.92" }
-                                stroke=move || if is_selected.get() { "#f8fafc" } else { accent }
+                                stroke={
+                                    let accent = accent.clone();
+                                    move || if is_selected.get() { "#f8fafc".to_string() } else { accent.clone() }
+                                }
                                 stroke-width=move || if is_selected.get() { "0.5" } else { "0.18" }
-                                style=move || {
-                                    if is_selected.get() {
-                                        format!("filter: drop-shadow(0 0 2.4px {}); animation: brain-pulse 2.4s ease-in-out infinite;", accent)
-                                    } else if is_hovered.get() {
-                                        format!("filter: drop-shadow(0 0 1.8px {});", accent)
-                                    } else {
-                                        String::new()
+                                style={
+                                    let accent = accent.clone();
+                                    move || {
+                                        if is_selected.get() {
+                                            format!("filter: drop-shadow(0 0 2.4px {}); animation: brain-pulse 2.4s ease-in-out infinite;", accent)
+                                        } else if is_hovered.get() {
+                                            format!("filter: drop-shadow(0 0 1.8px {});", accent)
+                                        } else {
+                                            String::new()
+                                        }
                                     }
                                 }
                             />
@@ -190,12 +202,11 @@ pub fn GraphCanvas(
             </svg>
 
             <div class="pointer-events-none absolute top-3 right-4 flex items-center gap-3 text-[10px] uppercase tracking-widest text-slate-500 bg-slate-900/60 border border-slate-800 rounded-md px-3 py-1.5 backdrop-blur">
-                {NodeType::ALL.iter().map(|t| {
-                    let t = *t;
+                {config.node_types.iter().map(|spec| {
                     view! {
                         <span class="flex items-center gap-1.5">
-                            <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", t.accent_var())></span>
-                            <span>{t.label()}</span>
+                            <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", spec.accent_var())></span>
+                            <span>{spec.label.clone()}</span>
                         </span>
                     }
                 }).collect_view()}

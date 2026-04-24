@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use brain_domain::{Edge, Node, NodeType};
+use brain_domain::{BrainConfig, Edge, Node};
 
 mod layout;
 mod parse;
@@ -28,7 +28,7 @@ pub struct RawFile {
 /// Files that don't pass `is_included_md` or don't parse as a typed Brain doc
 /// are silently skipped (caller has already filtered the tree, but we re-check
 /// defensively).
-pub fn build_graph(files: &[RawFile]) -> (Vec<Node>, Vec<Edge>) {
+pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<Edge>) {
     // 1. Parse each file; skip anything without a valid Brain `type:` frontmatter.
     let mut parsed: Vec<Parsed> = files
         .iter()
@@ -36,8 +36,17 @@ pub fn build_graph(files: &[RawFile]) -> (Vec<Node>, Vec<Edge>) {
         .filter_map(|f| parse_file(&f.content, &f.path, &f.sha))
         .collect();
     parsed.sort_by(|a, b| {
-        (a.node_type.as_node_type().label(), &a.rel)
-            .cmp(&(b.node_type.as_node_type().label(), &b.rel))
+        let label_a = config
+            .lookup(&a.node_type)
+            .unwrap_or_else(|| config.default_spec())
+            .label
+            .as_str();
+        let label_b = config
+            .lookup(&b.node_type)
+            .unwrap_or_else(|| config.default_spec())
+            .label
+            .as_str();
+        (label_a, &a.rel).cmp(&(label_b, &b.rel))
     });
 
     // 2. Assign doc IDs in sorted order (stable for a given input set).
@@ -105,7 +114,7 @@ pub fn build_graph(files: &[RawFile]) -> (Vec<Node>, Vec<Edge>) {
             id,
             title: p.title.clone(),
             summary: p.summary.clone(),
-            node_type: p.node_type.as_node_type(),
+            node_type: p.node_type.clone(),
             tags: p.tags.clone(),
             x,
             y,
@@ -113,19 +122,21 @@ pub fn build_graph(files: &[RawFile]) -> (Vec<Node>, Vec<Edge>) {
             sha: p.sha.clone(),
         });
     }
-    for (tag, id, docs) in &tag_nodes {
-        let (x, y) = positions[id];
-        nodes.push(Node {
-            id: *id,
-            title: format!("#{tag}"),
-            summary: format!("Tag connecting {} docs.", docs.len()),
-            node_type: NodeType::Tag,
-            tags: vec![tag.clone()],
-            x,
-            y,
-            path: String::new(),
-            sha: String::new(),
-        });
+    if let Some(tag_spec) = config.synthetic_tag_spec() {
+        for (tag, id, docs) in &tag_nodes {
+            let (x, y) = positions[id];
+            nodes.push(Node {
+                id: *id,
+                title: format!("#{tag}"),
+                summary: format!("Tag connecting {} docs.", docs.len()),
+                node_type: tag_spec.name.clone(),
+                tags: vec![tag.clone()],
+                x,
+                y,
+                path: String::new(),
+                sha: String::new(),
+            });
+        }
     }
 
     let edges: Vec<Edge> = edge_pairs
@@ -166,67 +177,95 @@ mod tests {
 
     #[test]
     fn empty_input_empty_graph() {
-        let (n, e) = build_graph(&[]);
+        let config = BrainConfig::default();
+        let (n, e) = build_graph(&[], &config);
         assert!(n.is_empty());
         assert!(e.is_empty());
     }
 
     #[test]
     fn single_concept_no_edges() {
+        let config = BrainConfig::default();
         let raw = "---\ntype: concept\ntopic: Alpha\ntags: [x]\n---\nbody\n";
-        let (n, e) = build_graph(&[f("concepts/Alpha.md", raw)]);
+        let (n, e) = build_graph(&[f("concepts/Alpha.md", raw)], &config);
         assert_eq!(n.len(), 1);
         assert!(e.is_empty());
         assert_eq!(n[0].title, "Alpha");
-        assert_eq!(n[0].node_type, NodeType::Concept);
+        assert_eq!(n[0].node_type, "concept");
     }
 
     #[test]
     fn two_docs_linked_produces_edge() {
+        let config = BrainConfig::default();
         let a = "---\ntype: concept\ntopic: A\n---\nsee [B](../concepts/B.md)\n";
         let b = "---\ntype: concept\ntopic: B\n---\nhi\n";
-        let (nodes, edges) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)]);
+        let (nodes, edges) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)], &config);
         assert_eq!(nodes.len(), 2);
         assert_eq!(edges.len(), 1);
     }
 
     #[test]
     fn shared_tag_creates_virtual_tag_node() {
+        let config = BrainConfig::default();
         let a = "---\ntype: concept\ntopic: A\ntags: [shared]\n---\n";
         let b = "---\ntype: concept\ntopic: B\ntags: [shared]\n---\n";
-        let (nodes, edges) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)]);
+        let (nodes, edges) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)], &config);
         // 2 docs + 1 tag node
         assert_eq!(nodes.len(), 3);
-        assert!(nodes.iter().any(|n| n.node_type == NodeType::Tag));
+        assert!(nodes.iter().any(|n| n.node_type == "tag"));
         // 2 doc↔tag edges
         assert_eq!(edges.len(), 2);
     }
 
     #[test]
     fn singleton_tag_has_no_virtual_node() {
+        let config = BrainConfig::default();
         let a = "---\ntype: concept\ntopic: A\ntags: [only]\n---\n";
-        let (nodes, _) = build_graph(&[f("concepts/A.md", a)]);
+        let (nodes, _) = build_graph(&[f("concepts/A.md", a)], &config);
         assert_eq!(nodes.len(), 1);
-        assert!(!nodes.iter().any(|n| n.node_type == NodeType::Tag));
+        assert!(!nodes.iter().any(|n| n.node_type == "tag"));
+    }
+
+    #[test]
+    fn shared_tag_uses_custom_synthetic_tag_spec_name() {
+        let mut config = BrainConfig::default();
+        let tag_spec = config
+            .node_types
+            .iter_mut()
+            .find(|spec| spec.name == "tag")
+            .expect("default tag spec exists");
+        tag_spec.name = "keyword".to_string();
+        tag_spec.label = "Keyword".to_string();
+
+        let a = "---\ntype: concept\ntopic: A\ntags: [shared]\n---\n";
+        let b = "---\ntype: concept\ntopic: B\ntags: [shared]\n---\n";
+        let (nodes, _) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)], &config);
+
+        assert!(nodes.iter().any(|n| n.node_type == "keyword"));
     }
 
     #[test]
     fn readme_and_templates_are_skipped() {
+        let config = BrainConfig::default();
         let readme = "---\ntype: concept\ntopic: X\n---\n";
         let tmpl = "---\ntype: concept\ntopic: Y\n---\n";
         let hidden = "---\ntype: concept\ntopic: Z\n---\n";
-        let (nodes, _) = build_graph(&[
-            f("README.md", readme),
-            f("templates/Foo.md", tmpl),
-            f(".hidden/Bar.md", hidden),
-        ]);
+        let (nodes, _) = build_graph(
+            &[
+                f("README.md", readme),
+                f("templates/Foo.md", tmpl),
+                f(".hidden/Bar.md", hidden),
+            ],
+            &config,
+        );
         assert!(nodes.is_empty());
     }
 
     #[test]
     fn untyped_doc_is_skipped() {
+        let config = BrainConfig::default();
         let raw = "---\ntopic: NoType\n---\nhi\n";
-        let (n, _) = build_graph(&[f("concepts/NoType.md", raw)]);
+        let (n, _) = build_graph(&[f("concepts/NoType.md", raw)], &config);
         assert!(n.is_empty());
     }
 }

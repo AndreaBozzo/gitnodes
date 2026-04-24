@@ -8,8 +8,9 @@ use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
-use super::types::{Edge, EditMode, Node, NodeType};
-use crate::api::load_brain_graph;
+use super::orphan_banner::OrphanBanner;
+use super::types::{Edge, EditMode, Node};
+use crate::api::{load_brain_config, load_brain_graph};
 
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
@@ -19,20 +20,29 @@ pub fn KnowledgePage() -> impl IntoView {
         |_| async { load_brain_graph().await },
     );
 
+    let config = Resource::new_blocking(|| (), |_| async { load_brain_config().await });
+
     view! {
         <Suspense fallback=|| view! {
             <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
                 "Loading knowledge graph…"
             </div>
         }>
-            {move || graph.get().map(|res| match res {
-                Ok((nodes, edges)) => KnowledgeView(KnowledgeViewProps { nodes, edges, graph_version }).into_any(),
-                Err(e) => view! {
-                    <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
-                        {format!("Failed to load graph: {e}")}
-                    </div>
-                }.into_any(),
-            })}
+            {move || {
+                let g = graph.get();
+                let c = config.get();
+                match (g, c) {
+                    (Some(Ok((nodes, edges))), Some(Ok(cfg))) => {
+                        KnowledgeView(KnowledgeViewProps { nodes, edges, config: cfg, graph_version }).into_any()
+                    }
+                    (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
+                        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
+                            {format!("Failed to load graph/config: {e}")}
+                        </div>
+                    }.into_any(),
+                    _ => view! { <div></div> }.into_any(),
+                }
+            }}
         </Suspense>
     }
 }
@@ -41,10 +51,12 @@ pub fn KnowledgePage() -> impl IntoView {
 fn KnowledgeView(
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    config: brain_domain::BrainConfig,
     graph_version: RwSignal<u64>,
 ) -> impl IntoView {
     let query = use_query_map();
     let nodes = StoredValue::new(nodes);
+    let config = StoredValue::new(config);
     let edges = StoredValue::new(edges);
     let path_to_id: StoredValue<HashMap<String, u32>> = StoredValue::new(
         nodes.with_value(|ns| ns.iter().map(|n| (n.path.clone(), n.id)).collect()),
@@ -67,16 +79,18 @@ fn KnowledgeView(
         v
     };
 
-    let stats: Vec<(NodeType, usize)> = NodeType::ALL
+    let stats: Vec<(String, usize)> = config
+        .with_value(|c| c.node_types.clone())
         .iter()
-        .map(|t| {
-            let count = nodes.with_value(|ns| ns.iter().filter(|n| n.node_type == *t).count());
-            (*t, count)
+        .map(|spec| {
+            let count =
+                nodes.with_value(|ns| ns.iter().filter(|n| n.node_type == spec.name).count());
+            (spec.name.clone(), count)
         })
         .collect();
 
     let active_tags = RwSignal::new(HashSet::<String>::new());
-    let active_types = RwSignal::new(HashSet::<NodeType>::new());
+    let active_types = RwSignal::new(HashSet::<String>::new());
     let hovered = RwSignal::new(None::<u32>);
     let selected = RwSignal::new(None::<u32>);
     let edit_mode = RwSignal::new(EditMode::Closed);
@@ -129,13 +143,20 @@ fn KnowledgeView(
                     "· /admin"
                 </a>
                 <div class="ml-auto flex items-center gap-2">
-                    {stats.into_iter().map(|(t, count)| view! {
-                        <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400">
-                            <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", t.accent_var())></span>
-                            <span class="text-slate-200 font-semibold">{count}</span>
-                            <span>{t.label()}</span>
-                        </span>
-                    }).collect_view()}
+                    {
+                        let config = config.get_value();
+                        let stats_views = stats.into_iter().map(move |(t_name, count)| {
+                            let spec = config.lookup(&t_name).unwrap_or(config.default_spec());
+                            view! {
+                            <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400">
+                                <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", spec.accent_var())></span>
+                                <span class="text-slate-200 font-semibold">{count}</span>
+                                <span>{spec.label.clone()}</span>
+                            </span>
+                            }
+                        }).collect::<Vec<_>>();
+                        stats_views.into_view()
+                    }
                     <button
                         class="ml-4 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
                         on:click=move |_| {
@@ -152,11 +173,13 @@ fn KnowledgeView(
                     </button>
                 </div>
             </header>
+            <OrphanBanner nodes=nodes config=config />
             <div class="flex-1 flex min-h-0">
                 <FilterPanel
                     all_tags=all_tags.clone()
                     active_tags=active_tags
                     active_types=active_types
+                    config=config.get_value()
                 />
                 <Show when=move || editing.get()>
                     <EditorPanel
@@ -164,6 +187,7 @@ fn KnowledgeView(
                         all_tags=all_tags.clone()
                         edit_mode=edit_mode
                         graph_version=graph_version
+                        config=config.get_value()
                     />
                 </Show>
                 <GraphCanvas
@@ -172,6 +196,7 @@ fn KnowledgeView(
                     visible_ids=visible_ids.into()
                     hovered=hovered
                     selected=selected
+                    config=config.get_value()
                 />
                 <DetailPanel
                     nodes=nodes
@@ -179,6 +204,7 @@ fn KnowledgeView(
                     selected=selected
                     edit_mode=edit_mode
                     graph_version=graph_version
+                    config=config.get_value()
                 />
             </div>
             <DetailBar
@@ -186,6 +212,7 @@ fn KnowledgeView(
                 edges=edges
                 hovered=hovered.into()
                 selected=selected.into()
+                config=config.get_value()
             />
         </div>
     }

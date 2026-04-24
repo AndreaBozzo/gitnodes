@@ -1,6 +1,6 @@
 //! Parsing helpers: markdown file → internal `Parsed` intermediate.
 
-use brain_domain::{NodeType, split_frontmatter};
+use brain_domain::split_frontmatter;
 
 /// A typed Brain doc parsed out of raw markdown. Internal to the graph build;
 /// not exposed as a public API surface.
@@ -9,34 +9,9 @@ pub struct Parsed {
     pub sha: String,
     pub title: String,
     pub summary: String,
-    pub node_type: NodeTypeTag,
+    pub node_type: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
-}
-
-/// Internal tag for parsed node types — narrower than `NodeType` because
-/// `Tag` is a graph-build artifact, not a parseable frontmatter value.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum NodeTypeTag {
-    Concept,
-    Decision,
-    Meeting,
-    PostMortem,
-    Preventivo,
-    Runbook,
-}
-
-impl NodeTypeTag {
-    pub fn as_node_type(self) -> NodeType {
-        match self {
-            NodeTypeTag::Concept => NodeType::Concept,
-            NodeTypeTag::Decision => NodeType::Decision,
-            NodeTypeTag::Meeting => NodeType::Meeting,
-            NodeTypeTag::PostMortem => NodeType::PostMortem,
-            NodeTypeTag::Preventivo => NodeType::Preventivo,
-            NodeTypeTag::Runbook => NodeType::Runbook,
-        }
-    }
 }
 
 /// True if a path should be included in the Brain graph.
@@ -63,7 +38,7 @@ pub fn parse_file(raw: &str, rel: &str, sha: &str) -> Option<Parsed> {
         return None;
     }
 
-    let mut node_type: Option<NodeTypeTag> = None;
+    let mut node_type: Option<String> = None;
     let mut topic = String::new();
     let mut tags: Vec<String> = Vec::new();
 
@@ -71,15 +46,7 @@ pub fn parse_file(raw: &str, rel: &str, sha: &str) -> Option<Parsed> {
         let line = line.trim_end();
         if let Some(rest) = line.strip_prefix("type:") {
             let v = rest.trim().trim_matches('"');
-            node_type = match v {
-                "concept" => Some(NodeTypeTag::Concept),
-                "adr" => Some(NodeTypeTag::Decision),
-                "meeting" => Some(NodeTypeTag::Meeting),
-                "post-mortem" => Some(NodeTypeTag::PostMortem),
-                "preventivo" => Some(NodeTypeTag::Preventivo),
-                "runbook" => Some(NodeTypeTag::Runbook),
-                _ => None,
-            };
+            node_type = Some(v.to_string());
         } else if let Some(rest) = line.strip_prefix("topic:") {
             topic = rest.trim().trim_matches('"').to_string();
         } else if let Some(rest) = line.strip_prefix("tags:") {
@@ -288,7 +255,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.title, "Alpha Beta");
-        assert_eq!(p.node_type, NodeTypeTag::Concept);
+        assert_eq!(p.node_type, "concept".to_string());
     }
 
     #[test]
@@ -304,9 +271,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_unknown_type() {
+    fn parse_preserves_unknown_type() {
         let raw = "---\ntype: unknown\n---\n";
-        assert!(parse_file(raw, "x.md", "s").is_none());
+        let parsed = parse_file(raw, "x.md", "s").expect("unknown types now round-trip");
+        assert_eq!(parsed.node_type, "unknown");
     }
 
     #[test]

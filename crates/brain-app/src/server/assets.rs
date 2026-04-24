@@ -47,10 +47,11 @@ pub async fn serve_asset(
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
 
+    let gh = brain_domain::GithubClient::new(state.target.clone());
     let url = format!(
         "{}?ref={}",
-        state.target.contents_url(&repo_path),
-        state.target.branch,
+        gh.contents_url(&repo_path),
+        state.target.branch
     );
     let Ok(client) = http_client() else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "http client").into_response();

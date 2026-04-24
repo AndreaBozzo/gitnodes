@@ -9,8 +9,13 @@ mod config;
 mod error;
 mod frontmatter;
 mod types;
+mod work_items;
 
-pub use config::{BrandConfig, TargetConfig};
+pub use config::{BrainConfig, BrandConfig, ConfigError, GithubClient, NodeTypeSpec, TargetConfig};
 pub use error::BrainError;
 pub use frontmatter::split_frontmatter;
-pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node, NodeType};
+pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node};
+pub use work_items::{
+    ExternalWorkItemBinding, ExternalWorkItemSystem, WorkItem, WorkItemKind, WorkItemState,
+    WorkItemSystemOfRecord,
+};

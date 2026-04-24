@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::parse::{NodeTypeTag, Parsed};
+use crate::parse::Parsed;
 
 pub fn layout(
     parsed: &[Parsed],
@@ -14,17 +14,17 @@ pub fn layout(
     let mut by_type: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
     for (i, p) in parsed.iter().enumerate() {
         by_type
-            .entry(type_cluster_key(p.node_type))
+            .entry(p.node_type.as_str())
             .or_default()
             .push((i as u32) + 1);
     }
     let clusters: &[(&str, f32, f32, f32)] = &[
-        ("Concept", 22.0, 38.0, 14.0),
-        ("Decision", 52.0, 20.0, 10.0),
-        ("Meeting", 80.0, 74.0, 9.0),
-        ("PostMortem", 78.0, 28.0, 9.0),
-        ("Preventivo", 25.0, 78.0, 9.0),
-        ("Runbook", 50.0, 80.0, 9.0),
+        ("concept", 22.0, 38.0, 14.0),
+        ("adr", 52.0, 20.0, 10.0),
+        ("meeting", 80.0, 74.0, 9.0),
+        ("post-mortem", 78.0, 28.0, 9.0),
+        ("preventivo", 25.0, 78.0, 9.0),
+        ("runbook", 50.0, 80.0, 9.0),
     ];
     for (name, cx, cy, r) in clusters {
         if let Some(ids) = by_type.get(name) {
@@ -34,6 +34,24 @@ pub fn layout(
                 let theta = (k as f32) / n * std::f32::consts::TAU + 0.7;
                 pos.insert(*id, (cx + radius * theta.cos(), cy + radius * theta.sin()));
             }
+        }
+    }
+
+    let mut unseen: Vec<u32> = Vec::new();
+    for (name, ids) in &by_type {
+        if !clusters.iter().any(|c| c.0 == *name) {
+            unseen.extend(ids.iter().copied());
+        }
+    }
+    if !unseen.is_empty() {
+        let n = unseen.len().max(1) as f32;
+        let cx = 50.0;
+        let cy = 50.0;
+        let r = 12.0;
+        let radius = if unseen.len() <= 1 { 0.0 } else { r };
+        for (k, id) in unseen.iter().enumerate() {
+            let theta = (k as f32) / n * std::f32::consts::TAU;
+            pos.insert(*id, (cx + radius * theta.cos(), cy + radius * theta.sin()));
         }
     }
 
@@ -116,17 +134,6 @@ pub fn layout(
     }
 
     pos
-}
-
-fn type_cluster_key(t: NodeTypeTag) -> &'static str {
-    match t {
-        NodeTypeTag::Concept => "Concept",
-        NodeTypeTag::Decision => "Decision",
-        NodeTypeTag::Meeting => "Meeting",
-        NodeTypeTag::PostMortem => "PostMortem",
-        NodeTypeTag::Preventivo => "Preventivo",
-        NodeTypeTag::Runbook => "Runbook",
-    }
 }
 
 fn small_hash(s: &str) -> u32 {

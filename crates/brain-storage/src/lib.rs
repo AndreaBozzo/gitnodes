@@ -14,13 +14,17 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use brain_domain::{BrainError, Edge, Node, TargetConfig};
+use brain_domain::{BrainError, Edge, GithubClient, Node, TargetConfig};
 use brain_graph::{RawFile, build_graph, is_included_md};
 use serde::Deserialize;
 
 pub trait Storage: Send + Sync {
     async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError>;
-    async fn load_graph(&self, token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError>;
+    async fn load_graph(
+        &self,
+        token: &str,
+        config: &brain_domain::BrainConfig,
+    ) -> Result<(Vec<Node>, Vec<Edge>), BrainError>;
     async fn read_file(&self, token: &str, path: &str) -> Result<(String, String), BrainError>;
     #[allow(clippy::too_many_arguments)]
     async fn save_file(
@@ -65,20 +69,22 @@ pub trait Storage: Send + Sync {
 }
 
 pub struct GithubStorage {
-    cfg: TargetConfig,
+    gh: GithubClient,
 }
 
 impl GithubStorage {
     pub fn new(cfg: TargetConfig) -> Self {
-        Self { cfg }
+        Self {
+            gh: GithubClient::new(cfg),
+        }
     }
 
     fn contents_url(&self, path: &str) -> String {
-        self.cfg.contents_url(path)
+        self.gh.contents_url(path)
     }
 
     fn branch(&self) -> &str {
-        &self.cfg.branch
+        &self.gh.target().branch
     }
 }
 
@@ -220,12 +226,16 @@ impl Storage for GithubStorage {
         Ok(text)
     }
 
-    async fn load_graph(&self, token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
+    async fn load_graph(
+        &self,
+        token: &str,
+        config: &brain_domain::BrainConfig,
+    ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
         if let Some(hit) = cache_get() {
             return Ok(hit);
         }
         let client = http_client()?;
-        let tree_url = self.cfg.tree_url();
+        let tree_url = self.gh.tree_url();
         let tree: TreeResponse = client
             .get(&tree_url)
             .bearer_auth(token)
@@ -294,7 +304,7 @@ impl Storage for GithubStorage {
                 content: text,
             });
         }
-        let (nodes, edges) = build_graph(&files);
+        let (nodes, edges) = build_graph(&files, config);
         cache_store(&nodes, &edges);
         Ok((nodes, edges))
     }
@@ -536,7 +546,11 @@ impl Storage for InMemoryStorage {
         Ok("".to_string())
     }
 
-    async fn load_graph(&self, _token: &str) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
+    async fn load_graph(
+        &self,
+        _token: &str,
+        _config: &brain_domain::BrainConfig,
+    ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
         Ok((Vec::new(), Vec::new()))
     }
 

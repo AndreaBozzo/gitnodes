@@ -1,7 +1,7 @@
 //! Shared markdown helpers used by both SSR (rendering persisted files) and
 //! the client-side hydrate build (live preview in the editor).
 
-use brain_domain::TargetConfig;
+use brain_domain::{GithubClient, TargetConfig};
 use std::path::{Component, Path};
 
 /// Split a YAML frontmatter block off the top of a markdown file.
@@ -133,10 +133,11 @@ fn rewrite_link_destination(
     let Some(cfg) = cfg else {
         return dest.to_string();
     };
+    let gh = GithubClient::new(cfg.clone());
     let base = if is_image {
-        cfg.raw_base()
+        gh.raw_base()
     } else {
-        cfg.blob_base()
+        gh.blob_base()
     };
     let mut url = format!("{}/{}", base, resolved);
     if let Some(fragment) = fragment {

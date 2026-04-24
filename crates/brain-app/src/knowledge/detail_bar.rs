@@ -9,6 +9,7 @@ pub fn DetailBar(
     edges: StoredValue<Vec<Edge>>,
     hovered: Signal<Option<u32>>,
     selected: Signal<Option<u32>>,
+    config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     let current_id = Memo::new(move |_| selected.get().or_else(|| hovered.get()));
 
@@ -48,8 +49,9 @@ pub fn DetailBar(
                     links.join(" · ")
                 )
             };
-            let accent = n.node_type.accent_var().to_string();
-            let label = n.node_type.label();
+            let spec = config.lookup(&n.node_type).unwrap_or_else(|| config.default_spec());
+            let accent = spec.accent_var();
+            let label = spec.label.clone();
             let title = n.title.clone();
             let summary = n.summary.clone();
             let tags = n.tags.clone();
