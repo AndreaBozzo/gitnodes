@@ -2,15 +2,17 @@ use leptos::prelude::*;
 
 use super::components::TagBadge;
 use super::types::{Edge, EditMode, EditPrefill, Node};
-use crate::api::{AppConfig, BrainFile, read_brain_file};
+use crate::api::{AppConfig, BrainFile, load_work_item_by_path, read_brain_file};
 #[cfg(not(feature = "ssr"))]
 use crate::api::{delete_brain_file, rename_brain_file};
+use brain_domain::{ExternalWorkItemSystem, WorkItem, WorkItemState, WorkItemSystemOfRecord};
 
 #[component]
 pub fn DetailPanel(
     nodes: StoredValue<Vec<Node>>,
     edges: StoredValue<Vec<Edge>>,
     selected: RwSignal<Option<u32>>,
+    selected_path: RwSignal<Option<String>>,
     edit_mode: RwSignal<EditMode>,
     graph_version: RwSignal<u64>,
     config: brain_domain::BrainConfig,
@@ -31,7 +33,7 @@ pub fn DetailPanel(
             .unwrap_or_default()
     });
 
-    let current_path = Memo::new(move |_| current().map(|n| n.path).unwrap_or_default());
+    let current_path = Memo::new(move |_| selected_path.get().unwrap_or_default());
 
     let file = Resource::new(
         move || current_path.get(),
@@ -40,6 +42,15 @@ pub fn DetailPanel(
                 return Ok::<Option<BrainFile>, ServerFnError>(None);
             }
             read_brain_file(path).await.map(Some)
+        },
+    );
+    let work_item = Resource::new(
+        move || current_path.get(),
+        |path| async move {
+            if path.is_empty() {
+                return Ok::<Option<WorkItem>, ServerFnError>(None);
+            }
+            load_work_item_by_path(path).await
         },
     );
 
@@ -123,6 +134,7 @@ pub fn DetailPanel(
             leptos::task::spawn_local(async move {
                 match delete_brain_file(path_for_task, sha, msg).await {
                     Ok(()) => {
+                        selected_path.set(None);
                         graph_version.update(|v| *v += 1);
                     }
                     Err(e) => {
@@ -322,6 +334,7 @@ pub fn DetailPanel(
                                                                                 r.updated_referrers.len(),
                                                                                 if r.updated_referrers.len() == 1 { "" } else { "s" },
                                                                             ));
+                                                                            selected_path.set(Some(r.new_path.clone()));
                                                                             rename_input.set(None);
                                                                             rename_msg.set(String::new());
                                                                             renaming.set(false);
@@ -356,7 +369,7 @@ pub fn DetailPanel(
                                             </button>
                                         </div>
                                         <p class="text-[10px] text-slate-500">
-                                            "Each referring file gets its own commit — expect N+2 commits."
+                                            "Rename uses one atomic Git Data API commit and rewrites links before the projection refetch."
                                         </p>
                                     </div>
                                 }
@@ -461,10 +474,20 @@ pub fn DetailPanel(
                                         </div>
                                     }.into_any(),
                                     Some(Ok(Some(bf))) => view! {
-                                        <article
-                                            class="prose prose-invert max-w-prose"
-                                            inner_html=bf.rendered_html
-                                        ></article>
+                                        <>
+                                            <Show when=move || matches!(work_item.get(), Some(Ok(Some(_))))>
+                                                {move || match work_item.get() {
+                                                    Some(Ok(Some(item))) => view! {
+                                                        <WorkItemCard item=item />
+                                                    }.into_any(),
+                                                    _ => ().into_any(),
+                                                }}
+                                            </Show>
+                                            <article
+                                                class="prose prose-invert max-w-prose"
+                                                inner_html=bf.rendered_html
+                                            ></article>
+                                        </>
                                     }.into_any(),
                                 }}
                             </Suspense>
@@ -473,5 +496,147 @@ pub fn DetailPanel(
                 }
             }}
         </Show>
+    }
+}
+
+#[component]
+fn WorkItemCard(item: WorkItem) -> impl IntoView {
+    let state = work_item_state_label(&item.state);
+    let state_class = work_item_state_class(&item.state);
+    let system = work_item_system_label(&item.system_of_record);
+    let binding = item.external_binding.clone();
+    let assignees_view = if item.assignees.is_empty() {
+        ().into_any()
+    } else {
+        let assignees = item.assignees.clone();
+        view! {
+            <>
+                <dt class="text-slate-500 uppercase tracking-widest">"Assignees"</dt>
+                <dd class="flex flex-wrap gap-1.5">
+                    {assignees.iter().map(|assignee| view! {
+                        <span class="rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 text-[11px] text-slate-200">
+                            {assignee.clone()}
+                        </span>
+                    }).collect_view()}
+                </dd>
+            </>
+        }
+        .into_any()
+    };
+    let labels_view = if item.labels.is_empty() {
+        ().into_any()
+    } else {
+        let labels = item.labels.clone();
+        view! {
+            <>
+                <dt class="text-slate-500 uppercase tracking-widest">"Labels"</dt>
+                <dd class="flex flex-wrap gap-1.5">
+                    {labels.iter().map(|label| view! {
+                        <span class="rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">
+                            {label.clone()}
+                        </span>
+                    }).collect_view()}
+                </dd>
+            </>
+        }
+        .into_any()
+    };
+    let binding_view = binding
+        .as_ref()
+        .map(|binding| {
+            let system = external_system_label(&binding.system).to_string();
+            let label = format!("{} · {}#{}", system, binding.project, binding.item_key);
+            let url = binding.url.clone();
+            view! {
+                <>
+                    <dt class="text-slate-500 uppercase tracking-widest">"Binding"</dt>
+                    <dd>
+                        {match url {
+                            Some(url) => view! {
+                                <a
+                                    href=url
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    class="text-teal-300 hover:text-teal-200 underline underline-offset-2"
+                                >
+                                    {label.clone()}
+                                </a>
+                            }.into_any(),
+                            None => view! {
+                                <span class="text-slate-200">{label.clone()}</span>
+                            }.into_any(),
+                        }}
+                    </dd>
+                </>
+            }
+            .into_any()
+        })
+        .unwrap_or_else(|| ().into_any());
+
+    view! {
+        <section class="mb-5 rounded-lg border border-slate-800 bg-slate-900/70 p-4 text-sm">
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="rounded-full border border-fuchsia-400/30 bg-fuchsia-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-fuchsia-200">
+                    "Work Item"
+                </span>
+                <span class=state_class>{state}</span>
+                <span class="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[10px] uppercase tracking-widest text-slate-300">
+                    {system}
+                </span>
+            </div>
+            <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-xs text-slate-300">
+                <dt class="text-slate-500 uppercase tracking-widest">"Brain ID"</dt>
+                <dd class="font-mono text-slate-200 break-all">{item.brain_id.clone()}</dd>
+                {assignees_view}
+                {labels_view}
+                {binding_view}
+            </dl>
+        </section>
+    }
+}
+
+fn work_item_state_label(state: &WorkItemState) -> &'static str {
+    match state {
+        WorkItemState::Backlog => "Backlog",
+        WorkItemState::Todo => "Todo",
+        WorkItemState::InProgress => "In Progress",
+        WorkItemState::Blocked => "Blocked",
+        WorkItemState::Done => "Done",
+        WorkItemState::Cancelled => "Cancelled",
+    }
+}
+
+fn work_item_state_class(state: &WorkItemState) -> &'static str {
+    match state {
+        WorkItemState::Done => {
+            "rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-emerald-200"
+        }
+        WorkItemState::Blocked => {
+            "rounded-full border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-rose-200"
+        }
+        WorkItemState::InProgress => {
+            "rounded-full border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-amber-100"
+        }
+        _ => {
+            "rounded-full border border-sky-400/30 bg-sky-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-sky-200"
+        }
+    }
+}
+
+fn work_item_system_label(system: &WorkItemSystemOfRecord) -> &'static str {
+    match system {
+        WorkItemSystemOfRecord::Brain => "Brain source",
+        WorkItemSystemOfRecord::External => "External source",
+        WorkItemSystemOfRecord::Split => "Split source",
+    }
+}
+
+fn external_system_label(system: &ExternalWorkItemSystem) -> &'static str {
+    match system {
+        ExternalWorkItemSystem::Github => "GitHub",
+        ExternalWorkItemSystem::Gitlab => "GitLab",
+        ExternalWorkItemSystem::Gitea => "Gitea",
+        ExternalWorkItemSystem::Forgejo => "Forgejo",
+        ExternalWorkItemSystem::Custom => "Custom",
     }
 }

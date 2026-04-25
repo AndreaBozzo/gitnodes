@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
-use brain_domain::{BrainConfig, BrandConfig, TargetConfig};
+use brain_domain::{BrainConfig, BrandConfig, TargetConfig, WorkItem};
 
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
@@ -49,6 +49,7 @@ const SERVER_FNS: &[&str] = &[
     "GetCurrentUser",
     "LoadBrainTemplate",
     "LoadBrainGraph",
+    "LoadWorkItemByPath",
     "ReadBrainFile",
     "SaveBrainFile",
     "DeleteBrainFile",
@@ -73,6 +74,7 @@ pub fn register_server_functions() {
     register_explicit::<GetCurrentUser>();
     register_explicit::<LoadBrainTemplate>();
     register_explicit::<LoadBrainGraph>();
+    register_explicit::<LoadWorkItemByPath>();
     register_explicit::<ReadBrainFile>();
     register_explicit::<SaveBrainFile>();
     register_explicit::<DeleteBrainFile>();
@@ -215,6 +217,17 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError>
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     let storage = session::storage().map_err(sfe)?;
     crate::server::projection::load_graph(&storage, &token, &config)
+        .await
+        .map_err(sfe)
+}
+
+#[server(LoadWorkItemByPath, "/api", endpoint = "load_work_item_by_path")]
+pub async fn load_work_item_by_path(path: String) -> Result<Option<WorkItem>, ServerFnError> {
+    use crate::server::session;
+
+    let _ = session::require_authenticated().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    crate::server::projection::load_work_item_by_path(&target, &path)
         .await
         .map_err(sfe)
 }
@@ -878,6 +891,7 @@ fn today_iso() -> String {
 /// etc.) that the form doesn't manage, per the fix for caveat #5.
 #[cfg(feature = "ssr")]
 fn merge_frontmatter(payload: &BrainFilePayload, author: &str, config: &BrainConfig) -> String {
+    use rand::{Rng, distributions::Alphanumeric};
     use serde_yaml::Value;
 
     if config.synthetic_tag_spec().map(|s| s.name.as_str()) == Some(payload.node_type.as_str()) {
@@ -919,6 +933,26 @@ fn merge_frontmatter(payload: &BrainFilePayload, author: &str, config: &BrainCon
         }
     } else if let Some(field) = spec.date_update_field.as_deref() {
         map.insert(field.into(), Value::String(date));
+    }
+
+    if spec.is_work_item() {
+        let needs_brain_id = map
+            .get("brain_id")
+            .and_then(|value| value.as_str())
+            .is_none_or(|value| value.trim().is_empty());
+        if needs_brain_id {
+            let suffix = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(6)
+                .map(char::from)
+                .collect::<String>()
+                .to_ascii_lowercase();
+            let timestamp = time::OffsetDateTime::now_utc().unix_timestamp();
+            map.insert(
+                "brain_id".into(),
+                Value::String(format!("{}-{timestamp}-{suffix}", spec.name)),
+            );
+        }
     }
 
     match serde_yaml::to_string(&map) {
@@ -1049,6 +1083,73 @@ mod merge_frontmatter_tests {
         assert!(out.contains("- new"));
         assert!(!out.contains("old"));
         assert!(!out.contains("stale"));
+    }
+
+    #[test]
+    fn work_item_create_injects_brain_id_once() {
+        use brain_domain::{NodeTypeSpec, WorkItemKind};
+
+        let mut cfg = BrainConfig::default();
+        cfg.node_types.push(NodeTypeSpec {
+            name: "task".into(),
+            label: "Task".into(),
+            directory: "tasks".into(),
+            accent: "#fb7185".into(),
+            template_filename: Some("Task.md".into()),
+            creatable: true,
+            frontmatter_seed: BTreeMap::new(),
+            title_key: Some("topic".into()),
+            date_create_field: Some("date_created".into()),
+            date_update_field: Some("last_updated".into()),
+            body_label: Some("Description".into()),
+            work_item_kind: Some(WorkItemKind::Task),
+        });
+
+        let mut payload = base_payload("task".to_string());
+        payload.path = None;
+        payload.sha = None;
+        let out = merge_frontmatter(&payload, "alice", &cfg);
+        assert!(out.contains("type: task"), "out was: {out}");
+        assert!(out.contains("brain_id: task-"), "out was: {out}");
+        assert!(out.contains("date_created:"), "out was: {out}");
+    }
+
+    #[test]
+    fn work_item_update_preserves_existing_brain_id() {
+        use brain_domain::{NodeTypeSpec, WorkItemKind};
+
+        let mut cfg = BrainConfig::default();
+        cfg.node_types.push(NodeTypeSpec {
+            name: "task".into(),
+            label: "Task".into(),
+            directory: "tasks".into(),
+            accent: "#fb7185".into(),
+            template_filename: Some("Task.md".into()),
+            creatable: true,
+            frontmatter_seed: BTreeMap::new(),
+            title_key: Some("topic".into()),
+            date_create_field: Some("date_created".into()),
+            date_update_field: Some("last_updated".into()),
+            body_label: Some("Description".into()),
+            work_item_kind: Some(WorkItemKind::Task),
+        });
+
+        let mut payload = base_payload("task".to_string());
+        let mut preserved = BTreeMap::new();
+        preserved.insert(
+            "brain_id".into(),
+            serde_yaml::Value::String("task-existing-123".into()),
+        );
+        payload.preserved_frontmatter = Some(preserved);
+        let out = merge_frontmatter(&payload, "alice", &cfg);
+        assert!(
+            out.contains("brain_id: task-existing-123"),
+            "out was: {out}"
+        );
+        assert!(
+            !out.contains("brain_id: task-task-existing-123"),
+            "out was: {out}"
+        );
     }
 
     #[test]

@@ -27,54 +27,150 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             message: Option<String>,
         }
 
+        use gloo_timers::callback::Timeout;
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
         use wasm_bindgen::JsCast;
         use wasm_bindgen::closure::Closure;
-        use web_sys::{EventSource, MessageEvent};
+        use web_sys::{Event, EventSource, MessageEvent};
 
-        let Ok(source) = EventSource::new("/sse/events") else {
-            return;
+        #[derive(Default)]
+        struct LiveSyncRuntime {
+            source: Option<EventSource>,
+            reconnect_timer: Option<Timeout>,
+            on_open: Option<Closure<dyn FnMut(Event)>>,
+            on_updated: Option<Closure<dyn FnMut(MessageEvent)>>,
+            on_failed: Option<Closure<dyn FnMut(MessageEvent)>>,
+            on_error: Option<Closure<dyn FnMut(Event)>>,
+        }
+
+        type ConnectHandle = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
+        fn reconnect_delay_ms(attempt: u32) -> u32 {
+            match attempt {
+                0 | 1 => 1_000,
+                2 => 2_500,
+                3 => 5_000,
+                _ => 10_000,
+            }
+        }
+
+        fn stale_message_for_disconnect(delay_ms: u32) -> String {
+            format!(
+                "Live sync connection lost. Retrying in {:.1}s while showing the last known snapshot.",
+                delay_ms as f32 / 1_000.0
+            )
+        }
+
+        let runtime = Rc::new(RefCell::new(LiveSyncRuntime::default()));
+        let attempts = Rc::new(Cell::new(0u32));
+        let connect: ConnectHandle = Rc::new(RefCell::new(None));
+
+        let schedule_reconnect = {
+            let runtime = runtime.clone();
+            let attempts = attempts.clone();
+            let connect = connect.clone();
+            move || {
+                let attempt = attempts.get().saturating_add(1);
+                attempts.set(attempt);
+                let delay_ms = reconnect_delay_ms(attempt);
+                sync_status.set(SyncStatus::Stale {
+                    message: Some(stale_message_for_disconnect(delay_ms)),
+                });
+
+                let mut state = runtime.borrow_mut();
+                if state.reconnect_timer.is_some() {
+                    return;
+                }
+                if let Some(source) = state.source.take() {
+                    source.close();
+                }
+                state.on_open = None;
+                state.on_updated = None;
+                state.on_failed = None;
+                state.on_error = None;
+
+                let runtime = runtime.clone();
+                let connect = connect.clone();
+                state.reconnect_timer = Some(Timeout::new(delay_ms, move || {
+                    runtime.borrow_mut().reconnect_timer = None;
+                    if let Some(connect) = connect.borrow().as_ref() {
+                        connect();
+                    }
+                }));
+            }
         };
 
-        let bump_updated: Closure<dyn FnMut(MessageEvent)> =
-            Closure::new(move |_event: MessageEvent| {
-                graph_version.update(|v| *v += 1);
-                sync_status.set(SyncStatus::Fresh);
-            });
-        let bump_stale: Closure<dyn FnMut(MessageEvent)> =
-            Closure::new(move |_event: MessageEvent| {
-                graph_version.update(|v| *v += 1);
-                sync_status.set(SyncStatus::Stale { message: None });
-            });
-        let bump_failed: Closure<dyn FnMut(MessageEvent)> =
-            Closure::new(move |event: MessageEvent| {
-                let message = event
-                    .data()
-                    .as_string()
-                    .and_then(|raw| serde_json::from_str::<SyncFailedPayload>(&raw).ok())
-                    .and_then(|payload| payload.message);
-                graph_version.update(|v| *v += 1);
-                sync_status.set(SyncStatus::Stale { message });
-            });
+        {
+            let runtime = runtime.clone();
+            let attempts = attempts.clone();
+            let schedule_reconnect = schedule_reconnect.clone();
+            *connect.borrow_mut() = Some(Box::new(move || {
+                let Ok(source) = EventSource::new("/sse/events") else {
+                    schedule_reconnect();
+                    return;
+                };
 
-        let _ = source.add_event_listener_with_callback(
-            "graph_updated",
-            bump_updated.as_ref().unchecked_ref(),
-        );
-        let _ = source
-            .add_event_listener_with_callback("graph_stale", bump_stale.as_ref().unchecked_ref());
-        let _ = source
-            .add_event_listener_with_callback("sync_failed", bump_failed.as_ref().unchecked_ref());
+                let attempts_for_open = attempts.clone();
+                let on_open: Closure<dyn FnMut(Event)> = Closure::new(move |_event: Event| {
+                    attempts_for_open.set(0);
+                    sync_status.set(SyncStatus::Fresh);
+                });
+                let on_updated: Closure<dyn FnMut(MessageEvent)> =
+                    Closure::new(move |_event: MessageEvent| {
+                        graph_version.update(|v| *v += 1);
+                        sync_status.set(SyncStatus::Fresh);
+                    });
+                let on_failed: Closure<dyn FnMut(MessageEvent)> =
+                    Closure::new(move |event: MessageEvent| {
+                        let message = event
+                            .data()
+                            .as_string()
+                            .and_then(|raw| serde_json::from_str::<SyncFailedPayload>(&raw).ok())
+                            .and_then(|payload| payload.message);
+                        graph_version.update(|v| *v += 1);
+                        sync_status.set(SyncStatus::Stale { message });
+                    });
+                let on_error: Closure<dyn FnMut(Event)> = {
+                    let schedule_reconnect = schedule_reconnect.clone();
+                    Closure::new(move |_event: Event| {
+                        schedule_reconnect();
+                    })
+                };
 
-        // Hand the closures to the JS side; they must outlive the component.
-        // The EventSource itself is closed on cleanup so the callbacks can be
-        // dropped safely with the component.
-        bump_updated.forget();
-        bump_stale.forget();
-        bump_failed.forget();
+                let _ = source
+                    .add_event_listener_with_callback("open", on_open.as_ref().unchecked_ref());
+                let _ = source.add_event_listener_with_callback(
+                    "graph_updated",
+                    on_updated.as_ref().unchecked_ref(),
+                );
+                let _ = source.add_event_listener_with_callback(
+                    "sync_failed",
+                    on_failed.as_ref().unchecked_ref(),
+                );
+                let _ = source
+                    .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref());
 
-        on_cleanup(move || {
-            source.close();
-        });
+                let mut state = runtime.borrow_mut();
+                state.source = Some(source);
+                state.on_open = Some(on_open);
+                state.on_updated = Some(on_updated);
+                state.on_failed = Some(on_failed);
+                state.on_error = Some(on_error);
+            }));
+        }
+
+        if let Some(connect) = connect.borrow().as_ref() {
+            connect();
+        }
+
+        // The browser tears down EventSource and pending timers when the page
+        // unloads. Keeping the runtime owned by the mounted component avoids
+        // reconnect churn during normal rerenders without requiring a
+        // Send+Sync cleanup closure.
+        let _keep_runtime_alive = runtime;
     }
 
     #[cfg(not(feature = "hydrate"))]

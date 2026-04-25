@@ -94,21 +94,23 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
     - In caso di reconcile fallito con snapshot già valida, il backend serve l'ultima projection buona e registra l'errore, riducendo il rischio di UI vuota per drift o sync parziali.
 - [x] **Sincronizzazione inbound: Webhooks + SSE (baseline)** — _2026-04-25_
     - `POST /webhook/github` accetta payload GitHub, valida `X-Hub-Signature-256` con HMAC-SHA256 a tempo costante (`WEBHOOK_SECRET` env). Eventi non-`push` ricevono `202 Accepted` silenzioso per non sporcare il delivery log.
-    - Su `push`: rebuild della projection per il target corrente via `GITHUB_TOKEN` server-side; pubblica `BrainEvent::GraphUpdated` (o `GraphStale` su rebuild fallito) sul `tokio::sync::broadcast` bus.
-    - `GET /sse/events` espone lo stream typed (`graph_updated`, `graph_stale`) con keep-alive di default; ogni client Leptos connesso bumpa `graph_version` via `EventSource` (componente `LiveSync`, hydrate-only).
-    - Refinement 2026-04-25: il worker può emettere `BrainEvent::SyncFailed { message }`; la Knowledge UI mantiene `SyncStatus` esplicito e mostra un banner operativo `Stale Data` con messaggio umano, oltre a resettare lo stato stale su sync riuscita o refresh manuale riuscito.
-    - Prossimi passi stretti su questo asse: chiudere `/sse/events` dietro auth, decidere se deprecare o riassorbire `GraphStale` nel solo `SyncFailed`, aggiungere reconnect/backoff esplicito lato client invece di affidarsi solo al retry del browser, preservare meglio stato UI durante refetch (selezione, editor aperto).
+    - Su `push`: rebuild della projection per il target corrente via `GITHUB_TOKEN` server-side; pubblica `BrainEvent::GraphUpdated` su sync riuscita o `BrainEvent::SyncFailed { message }` su rebuild fallito sul `tokio::sync::broadcast` bus.
+    - `GET /sse/events` espone lo stream typed (`graph_updated`, `sync_failed`) con keep-alive di default; la route è auth-gated e ogni client Leptos connesso bumpa `graph_version` via `EventSource` (componente `LiveSync`, hydrate-only).
+    - Refinement 2026-04-25: `LiveSync` implementa reconnect/backoff esplicito lato client e la Knowledge UI mantiene `SyncStatus` esplicito con banner operativo `Stale Data`. Il refetch preserva meglio lo stato locale usando `selected_path` come ancora della selezione invece del solo node id volatile.
+    - Da questo punto in poi il lavoro residuo su questo asse non blocca più la Fase 2: rimane soprattutto il desiderio di una vista admin/status condivisa oltre al banner page-local.
     - Rimane fuori da questa baseline: eventi più granulari (`FileUpdated { path }`) e sync incrementale di `work_item`/`work_item_bindings` da eventi operativi del forge.
 - [x] **Rename atomici via Git Data API** — _2026-04-25_
     - `GithubStorage::atomic_rename` orchestra `POST /git/blobs` → `/git/trees` (delete via `sha: null` su `base_tree`) → `/git/commits` → `PATCH /git/refs/heads/{branch}` con `force=false`. Helper isolato in `brain-storage::atomic_rename`.
     - Retry su `422 Update is not a fast forward` con backoff esponenziale (default 100/400/1600 ms, max 3 tentativi); altri 4xx propagano subito. Le blob già caricate vengono riusate fra tentativi (sono content-addressed).
     - `rename_brain_file` ora produce **un solo commit** con tutti i referrer + creazione + delete; il messaggio commit dell'utente vale per l'unico commit. La projection locale resta riallineata via `rebuild_projection_after_write` (post-write, sequenziale): nessun dual-write nel write-path.
     - Test wiremock-based su happy path, header auth/UA, payload tree con `sha: null`, retry su fast-forward (verifica blob non ricaricate), 422 non-fast-forward non ritentato, cap massimo tentativi.
-- [ ] **Fondazione operativa Work Item**
-    - Introdurre `task` come primo `work_item_kind` via config/template reali, non via hardcode.
-    - Decidere se il binding 1:1 `task ↔ issue` è policy iniziale o regola rigida; coprire le eccezioni (`draft task`, `local-only item`, `provider item senza doc`).
-    - Mantenere il principio `No Dual-Write`: GitHub resta source of truth per le scritture, SQLite solo read model aggiornato da webhook/rebuild. Evitare write-path che cerchino di tenere in sync sia GitHub sia projection nello stesso handler.
-    - Il primo scope UI parte solo dopo che projection e sync inbound esistono almeno in forma minima; commenti, review branch e PR restano fuori fino alla Fase 3.
+- [x] **Fondazione operativa Work Item** — _2026-04-25_
+    - `task` introdotto come primo `work_item_kind` via config/template reali nel repo Brain (`.brain-config.yml` + `templates/Task.md`), senza reintrodurre hardcode nel create flow.
+    - `merge_frontmatter` assegna `brain_id` al primo save per i tipi work item e lo preserva negli update successivi, così rename e rebuild non cambiano identità quando il documento nasce dalla UI.
+    - La rebuild della projection materializza i documenti work item in SQLite (`work_items`, `work_item_bindings`) leggendo `work_item_kind`, `state`, `system_of_record`, `assignees` ed eventuale `external_binding` dal frontmatter; i label provider vengono derivati dalla `label_taxonomy` del config.
+    - `LoadWorkItemByPath` espone il read model SQLite come API read-only dedicata; il detail panel mostra il primo scope UI minimale e read-only (`state`, `system_of_record`, `assignees`, binding esterno) senza introdurre scritture sul forge.
+    - Policy iniziale: `task ↔ issue` è opt-in, non rigido. `system_of_record: brain|split|external` e `external_binding` opzionale coprono `draft task`, item local-only e item provider-bound senza introdurre dual-write nel write path.
+    - Il primo scope UI resta volutamente minimo: commenti, review branch, mutazioni issue/PR e board UX rimangono rinviati alla Fase 3.
 
 ---
 
@@ -185,6 +187,6 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 9. ~~`register_explicit` boilerplate is LTO-coupled~~ — **DONE 2026-04-24**. `SERVER_FNS: &[&str]` const + `include_str!`-based test in `api.rs` catches any `#[server]` fn not listed in the const before it reaches CI.
 
-10. **Sync visibility is still baseline-only** — The UI now exposes a `Stale Data` banner for background sync failures, but the SSE stream is not yet auth-gated, reconnect/backoff is still browser-default, and operational visibility remains page-local rather than a shared admin/status surface.
+10. **Sync visibility is still page-local** — SSE è auth-gated e il client ha reconnect/backoff esplicito, ma la visibilità operativa resta confinata al banner della Knowledge page invece di vivere anche in una superficie admin/status condivisa.
 
 11. **UI limitations** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100.

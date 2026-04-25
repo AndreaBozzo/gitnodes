@@ -1,10 +1,14 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use brain_domain::{BrainConfig, BrainError, Edge, Node, TargetConfig, TargetKey};
+use brain_domain::{
+    BrainConfig, BrainError, Edge, ExternalWorkItemBinding, Node, TargetConfig, TargetKey,
+    WorkItem, WorkItemKind, WorkItemState, WorkItemSystemOfRecord,
+};
 use brain_graph::{RawFile, build_graph, parse_file};
 use brain_storage::GithubStorage;
+use serde_yaml::Value;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 static POOL: OnceLock<SqlitePool> = OnceLock::new();
@@ -155,7 +159,20 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_edges_target_from ON edges(target_id, from_id)")
         .execute(pool)
         .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_work_items_target_content_path ON work_items(target_id, content_path)",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
+}
+
+pub async fn load_work_item_by_path(
+    target: &TargetConfig,
+    path: &str,
+) -> Result<Option<WorkItem>, BrainError> {
+    let pool = pool()?;
+    load_work_item_by_path_from_pool(pool, target, path).await
 }
 
 pub async fn load_graph(
@@ -247,6 +264,8 @@ struct ProjectionSnapshot {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     backlinks: Vec<Backlink>,
+    work_items: Vec<ProjectedWorkItem>,
+    work_item_bindings: Vec<ProjectedWorkItemBinding>,
 }
 
 impl ProjectionSnapshot {
@@ -265,7 +284,32 @@ impl ProjectionSnapshot {
             .iter()
             .filter_map(|file| parse_file(&file.content, &file.path, &file.sha))
             .collect();
+        let parsed_by_path: HashMap<&str, _> =
+            parsed.iter().map(|doc| (doc.rel.as_str(), doc)).collect();
         let known_paths: HashSet<String> = parsed.iter().map(|doc| doc.rel.clone()).collect();
+        let mut work_items = Vec::new();
+        let mut work_item_bindings = Vec::new();
+
+        for file in raw_files {
+            let Some(doc) = parsed_by_path.get(file.path.as_str()) else {
+                continue;
+            };
+            let Some(spec) = config.lookup(&doc.node_type) else {
+                continue;
+            };
+            let Some(kind) = spec.work_item_kind.clone() else {
+                continue;
+            };
+
+            let Some((item, binding)) = project_work_item(file, doc.title.as_str(), kind, config)
+            else {
+                continue;
+            };
+            work_items.push(item);
+            if let Some(binding) = binding {
+                work_item_bindings.push(binding);
+            }
+        }
 
         let mut seen = HashSet::<(String, String)>::new();
         let mut backlinks = Vec::new();
@@ -293,6 +337,8 @@ impl ProjectionSnapshot {
             nodes,
             edges,
             backlinks,
+            work_items,
+            work_item_bindings,
         }
     }
 }
@@ -308,6 +354,24 @@ struct ProjectionFile {
 struct Backlink {
     source_path: String,
     target_path: String,
+}
+
+#[derive(Clone, Debug)]
+struct ProjectedWorkItem {
+    brain_id: String,
+    kind: WorkItemKind,
+    title: String,
+    state: WorkItemState,
+    labels_json: String,
+    assignees_json: String,
+    content_path: Option<String>,
+    system_of_record: WorkItemSystemOfRecord,
+}
+
+#[derive(Clone, Debug)]
+struct ProjectedWorkItemBinding {
+    brain_id: String,
+    binding: ExternalWorkItemBinding,
 }
 
 #[derive(Clone, Debug)]
@@ -444,6 +508,8 @@ async fn persist_snapshot(
     bulk_insert_nodes(&mut tx, target_id, &snapshot.nodes).await?;
     bulk_insert_edges(&mut tx, target_id, &snapshot.edges).await?;
     bulk_insert_backlinks(&mut tx, target_id, &snapshot.backlinks).await?;
+    bulk_insert_work_items(&mut tx, target_id, &snapshot.work_items).await?;
+    bulk_insert_work_item_bindings(&mut tx, target_id, &snapshot.work_item_bindings).await?;
 
     sqlx::query(
         "INSERT INTO projection_sync_state (
@@ -599,8 +665,247 @@ async fn bulk_insert_backlinks(
     Ok(())
 }
 
+async fn bulk_insert_work_items(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    work_items: &[ProjectedWorkItem],
+) -> Result<(), BrainError> {
+    if work_items.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in work_items.chunks(max_rows_per_insert(8)) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO work_items (
+                target_id, brain_id, kind, title, state, labels_json, assignees_json, content_path, system_of_record
+            ) ",
+        );
+        query.push_values(chunk, |mut row, item| {
+            row.push_bind(target_id)
+                .push_bind(&item.brain_id)
+                .push_bind(enum_str(&item.kind))
+                .push_bind(&item.title)
+                .push_bind(enum_str(&item.state))
+                .push_bind(&item.labels_json)
+                .push_bind(&item.assignees_json)
+                .push_bind(&item.content_path)
+                .push_bind(enum_str(&item.system_of_record));
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
+async fn bulk_insert_work_item_bindings(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    bindings: &[ProjectedWorkItemBinding],
+) -> Result<(), BrainError> {
+    if bindings.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in bindings.chunks(max_rows_per_insert(7)) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO work_item_bindings (
+                target_id, brain_id, system, project, item_key, provider_id, url
+            ) ",
+        );
+        query.push_values(chunk, |mut row, item| {
+            row.push_bind(target_id)
+                .push_bind(&item.brain_id)
+                .push_bind(enum_str(&item.binding.system))
+                .push_bind(&item.binding.project)
+                .push_bind(&item.binding.item_key)
+                .push_bind(&item.binding.provider_id)
+                .push_bind(&item.binding.url);
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
 fn max_rows_per_insert(bind_count_per_row: usize) -> usize {
     (SQLITE_MAX_VARIABLES / bind_count_per_row).max(1)
+}
+
+fn enum_str<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| "\"\"".to_string())
+        .trim_matches('"')
+        .to_string()
+}
+
+fn parse_enum_str<T>(raw: &str) -> Result<T, BrainError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_str::<T>(&format!("\"{raw}\""))
+        .map_err(|error| BrainError::parse(format!("projection enum parse: {error}")))
+}
+
+async fn load_work_item_by_path_from_pool(
+    pool: &SqlitePool,
+    target: &TargetConfig,
+    path: &str,
+) -> Result<Option<WorkItem>, BrainError> {
+    let target_id = ensure_target_id(pool, target).await?;
+    let row = sqlx::query(
+        "SELECT
+            wi.brain_id,
+            wi.kind,
+            wi.title,
+            wi.state,
+            wi.labels_json,
+            wi.assignees_json,
+            wi.content_path,
+            wi.system_of_record,
+            wb.system AS binding_system,
+            wb.project AS binding_project,
+            wb.item_key AS binding_item_key,
+            wb.provider_id AS binding_provider_id,
+            wb.url AS binding_url
+        FROM work_items wi
+        LEFT JOIN work_item_bindings wb
+            ON wb.target_id = wi.target_id
+           AND wb.brain_id = wi.brain_id
+        WHERE wi.target_id = ? AND wi.content_path = ?
+        LIMIT 1",
+    )
+    .bind(target_id)
+    .bind(path)
+    .fetch_optional(pool)
+    .await
+    .map_err(sqlx_error)?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let labels = serde_json::from_str(&row.get::<String, _>("labels_json"))
+        .map_err(|error| BrainError::parse(format!("projection labels parse: {error}")))?;
+    let assignees = serde_json::from_str(&row.get::<String, _>("assignees_json"))
+        .map_err(|error| BrainError::parse(format!("projection assignees parse: {error}")))?;
+    let external_binding = match row.get::<Option<String>, _>("binding_system") {
+        Some(system) => Some(ExternalWorkItemBinding {
+            system: parse_enum_str(&system)?,
+            project: row.get::<String, _>("binding_project"),
+            item_key: row.get::<String, _>("binding_item_key"),
+            provider_id: row.get::<Option<String>, _>("binding_provider_id"),
+            url: row.get::<Option<String>, _>("binding_url"),
+        }),
+        None => None,
+    };
+
+    Ok(Some(WorkItem {
+        brain_id: row.get::<String, _>("brain_id"),
+        kind: parse_enum_str(&row.get::<String, _>("kind"))?,
+        title: row.get::<String, _>("title"),
+        state: parse_enum_str(&row.get::<String, _>("state"))?,
+        labels,
+        assignees,
+        content_path: row.get::<Option<String>, _>("content_path"),
+        external_binding,
+        system_of_record: parse_enum_str(&row.get::<String, _>("system_of_record"))?,
+    }))
+}
+
+fn project_work_item(
+    file: &RawFile,
+    title: &str,
+    kind: WorkItemKind,
+    config: &BrainConfig,
+) -> Option<(ProjectedWorkItem, Option<ProjectedWorkItemBinding>)> {
+    let (frontmatter, _body) = brain_domain::split_frontmatter(&file.content);
+    if frontmatter.trim().is_empty() {
+        return None;
+    }
+    let map = serde_yaml::from_str::<BTreeMap<String, Value>>(frontmatter)
+        .unwrap_or_else(|_| BTreeMap::new());
+
+    let brain_id = string_field(&map, "brain_id").unwrap_or_else(|| file.path.clone());
+    let state = enum_field::<WorkItemState>(&map, "state").unwrap_or(WorkItemState::Todo);
+    let assignees = string_list_field(&map, "assignees");
+    let binding = enum_object_field::<ExternalWorkItemBinding>(&map, "external_binding");
+    let system_of_record = enum_field::<WorkItemSystemOfRecord>(&map, "system_of_record")
+        .unwrap_or_else(|| {
+            if binding.is_some() {
+                WorkItemSystemOfRecord::Split
+            } else {
+                WorkItemSystemOfRecord::Brain
+            }
+        });
+
+    let mut labels = Vec::new();
+    if let Some(label_spec) = config.labels_for_kind(&kind) {
+        labels.push(label_spec.kind_label.clone());
+        if let Some(label) = label_spec.state_labels.get(&state) {
+            labels.push(label.clone());
+        }
+    }
+
+    let labels_json = serde_json::to_string(&labels)
+        .map_err(|error| BrainError::parse(format!("projection labels json: {error}")))
+        .ok()?;
+    let assignees_json = serde_json::to_string(&assignees)
+        .map_err(|error| BrainError::parse(format!("projection assignees json: {error}")))
+        .ok()?;
+
+    Some((
+        ProjectedWorkItem {
+            brain_id: brain_id.clone(),
+            kind,
+            title: title.to_string(),
+            state,
+            labels_json,
+            assignees_json,
+            content_path: Some(file.path.clone()),
+            system_of_record,
+        },
+        binding.map(|binding| ProjectedWorkItemBinding { brain_id, binding }),
+    ))
+}
+
+fn string_field(map: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+    map.get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn string_list_field(map: &BTreeMap<String, Value>, key: &str) -> Vec<String> {
+    map.get(key)
+        .and_then(|value| value.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn enum_field<T>(map: &BTreeMap<String, Value>, key: &str) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    map.get(key)
+        .cloned()
+        .and_then(|value| serde_yaml::from_value(value).ok())
+}
+
+fn enum_object_field<T>(map: &BTreeMap<String, Value>, key: &str) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    map.get(key)
+        .cloned()
+        .and_then(|value| serde_yaml::from_value(value).ok())
 }
 
 #[derive(Clone, Debug)]
@@ -763,6 +1068,129 @@ mod tests {
         assert_eq!(nodes_b.len(), 1);
         assert_eq!(nodes_a[0].title, "A");
         assert_eq!(nodes_b[0].title, "B");
+    }
+
+    #[tokio::test]
+    async fn snapshot_materializes_work_items_and_bindings() {
+        let pool = test_pool().await;
+        let config = BrainConfig::parse(
+            r##"
+default_type: task
+node_types:
+  - name: task
+    label: Task
+    directory: tasks
+    accent: "#fb7185"
+    title_key: topic
+    work_item_kind: task
+"##,
+        )
+        .unwrap();
+
+        let snapshot = ProjectionSnapshot::from_raw_files(
+            &[raw(
+                "tasks/stabilize-sync.md",
+                "sha-task",
+                "---\ntype: task\ntopic: Stabilize sync\nbrain_id: task-sync-1\nstate: in-progress\nassignees: [alice, bob]\nexternal_binding:\n  system: github\n  project: AndreaBozzo/Brain_UI\n  item_key: \"42\"\n  url: https://github.com/AndreaBozzo/Brain_UI/issues/42\n---\n# Task: Stabilize sync\n\n## Description\nBody\n",
+            )],
+            &config,
+        );
+
+        let target_id = ensure_target_id(&pool, &target("org", "repo-workitems", "main"))
+            .await
+            .unwrap();
+        persist_snapshot(&pool, target_id, &snapshot, "test-work-items")
+            .await
+            .unwrap();
+
+        let item = sqlx::query(
+                "SELECT brain_id, kind, title, state, labels_json, assignees_json, content_path, system_of_record FROM work_items WHERE target_id = ?",
+            )
+            .bind(target_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(item.get::<String, _>("brain_id"), "task-sync-1");
+        assert_eq!(item.get::<String, _>("kind"), "task");
+        assert_eq!(item.get::<String, _>("title"), "Stabilize Sync");
+        assert_eq!(item.get::<String, _>("state"), "in-progress");
+        assert_eq!(
+            item.get::<String, _>("content_path"),
+            "tasks/stabilize-sync.md"
+        );
+        assert_eq!(item.get::<String, _>("system_of_record"), "split");
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&item.get::<String, _>("labels_json")).unwrap(),
+            vec!["brain:task".to_string(), "brain:in-progress".to_string()]
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&item.get::<String, _>("assignees_json")).unwrap(),
+            vec!["alice".to_string(), "bob".to_string()]
+        );
+
+        let binding = sqlx::query(
+                "SELECT system, project, item_key, url FROM work_item_bindings WHERE target_id = ? AND brain_id = ?",
+            )
+            .bind(target_id)
+            .bind("task-sync-1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(binding.get::<String, _>("system"), "github");
+        assert_eq!(binding.get::<String, _>("project"), "AndreaBozzo/Brain_UI");
+        assert_eq!(binding.get::<String, _>("item_key"), "42");
+        assert_eq!(
+            binding.get::<String, _>("url"),
+            "https://github.com/AndreaBozzo/Brain_UI/issues/42"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_work_item_by_path_reads_projected_binding() {
+        let pool = test_pool().await;
+        let config = BrainConfig::parse(
+            r##"
+    default_type: task
+    node_types:
+      - name: task
+        label: Task
+        directory: tasks
+        accent: "#fb7185"
+        title_key: topic
+        work_item_kind: task
+    "##,
+        )
+        .unwrap();
+
+        let snapshot = ProjectionSnapshot::from_raw_files(
+            &[raw(
+                "tasks/api-read.md",
+                "sha-task",
+                "---\ntype: task\ntopic: API read\nbrain_id: task-api-1\nstate: done\nassignees: [andrea]\nexternal_binding:\n  system: github\n  project: AndreaBozzo/Brain_UI\n  item_key: \"77\"\n  provider_id: I_kwDO123\n  url: https://github.com/AndreaBozzo/Brain_UI/issues/77\nsystem_of_record: split\n---\n# Task: API read\n",
+            )],
+            &config,
+        );
+        let target = target("org", "repo-workitems-read", "main");
+        let target_id = ensure_target_id(&pool, &target).await.unwrap();
+        persist_snapshot(&pool, target_id, &snapshot, "test-work-item-read")
+            .await
+            .unwrap();
+
+        let item = load_work_item_by_path_from_pool(&pool, &target, "tasks/api-read.md")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(item.brain_id, "task-api-1");
+        assert_eq!(item.state, WorkItemState::Done);
+        assert_eq!(item.assignees, vec!["andrea".to_string()]);
+        assert_eq!(item.system_of_record, WorkItemSystemOfRecord::Split);
+        assert!(item.labels.contains(&"brain:task".to_string()));
+        let binding = item.external_binding.expect("binding must exist");
+        assert_eq!(binding.item_key, "77");
+        assert_eq!(binding.project, "AndreaBozzo/Brain_UI");
     }
 
     #[tokio::test]

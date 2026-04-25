@@ -104,6 +104,7 @@ fn KnowledgeView(
     let active_types = RwSignal::new(HashSet::<String>::new());
     let hovered = RwSignal::new(None::<u32>);
     let selected = RwSignal::new(None::<u32>);
+    let selected_path = RwSignal::new(None::<String>);
     let edit_mode = RwSignal::new(EditMode::Closed);
     let editing = Memo::new(move |_| !matches!(edit_mode.get(), EditMode::Closed));
 
@@ -112,7 +113,13 @@ fn KnowledgeView(
         let Some(path) = params.get_str("path") else {
             return;
         };
-        let next = path_to_id.with_value(|map| map.get(path).copied());
+        selected_path.set(Some(path.to_string()));
+    });
+
+    Effect::new(move |_| {
+        let next = selected_path
+            .get()
+            .and_then(|path| path_to_id.with_value(|map| map.get(&path).copied()));
         if next != selected.get_untracked() {
             selected.set(next);
         }
@@ -212,12 +219,14 @@ fn KnowledgeView(
                     visible_ids=visible_ids.into()
                     hovered=hovered
                     selected=selected
+                    selected_path=selected_path
                     config=config.get_value()
                 />
                 <DetailPanel
                     nodes=nodes
                     edges=edges
                     selected=selected
+                    selected_path=selected_path
                     edit_mode=edit_mode
                     graph_version=graph_version
                     config=config.get_value()

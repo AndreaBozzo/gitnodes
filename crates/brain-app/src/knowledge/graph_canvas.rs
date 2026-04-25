@@ -11,6 +11,7 @@ pub fn GraphCanvas(
     visible_ids: Signal<HashSet<u32>>,
     hovered: RwSignal<Option<u32>>,
     selected: RwSignal<Option<u32>>,
+    selected_path: RwSignal<Option<String>>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     let adjacency: StoredValue<HashMap<u32, HashSet<u32>>> = StoredValue::new({
@@ -132,7 +133,18 @@ pub fn GraphCanvas(
                             style=move || format!("opacity:{}; transition: opacity 200ms ease;", if bright.get() { 1.0 } else { 0.15 })
                             on:mouseenter=move |_| hovered.set(Some(id))
                             on:mouseleave=move |_| hovered.update(|h| if *h == Some(id) { *h = None; })
-                            on:click=move |_| selected.update(|s| { *s = if *s == Some(id) { None } else { Some(id) }; })
+                            on:click={
+                                let path = n.path.clone();
+                                move |_| {
+                                    selected_path.update(|current| {
+                                        *current = if current.as_deref() == Some(path.as_str()) {
+                                            None
+                                        } else {
+                                            Some(path.clone())
+                                        };
+                                    });
+                                }
+                            }
                         >
                             <circle
                                 cx=format!("{:.3}", x)

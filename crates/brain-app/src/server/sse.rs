@@ -14,8 +14,6 @@ use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 pub enum BrainEvent {
     /// A push to the target repo was processed and the projection was rebuilt.
     GraphUpdated,
-    /// The projection rebuild failed; the frontend should show a stale banner.
-    GraphStale,
     /// The background sync worker failed and can provide an operator-facing reason.
     SyncFailed { message: String },
 }
@@ -24,7 +22,6 @@ impl BrainEvent {
     fn as_event_name(&self) -> &'static str {
         match self {
             BrainEvent::GraphUpdated => "graph_updated",
-            BrainEvent::GraphStale => "graph_stale",
             BrainEvent::SyncFailed { .. } => "sync_failed",
         }
     }
@@ -32,7 +29,6 @@ impl BrainEvent {
     fn as_event_data(&self) -> String {
         match self {
             BrainEvent::GraphUpdated => "{}".to_string(),
-            BrainEvent::GraphStale => "{}".to_string(),
             BrainEvent::SyncFailed { message } => {
                 serde_json::json!({ "message": message }).to_string()
             }
