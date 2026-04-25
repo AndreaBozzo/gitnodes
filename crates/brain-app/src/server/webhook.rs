@@ -47,6 +47,18 @@ pub async fn handle(
     tracing::debug!(event_type, "webhook received");
 
     if event_type == "push" {
+        let Some(payload) = parse_push_payload(&body) else {
+            tracing::debug!("webhook push: payload missing repository/ref — ignored");
+            return StatusCode::ACCEPTED;
+        };
+        if !push_matches_target(&payload, &state.target) {
+            tracing::debug!(
+                payload_repo = %payload.repository.full_name,
+                payload_ref = %payload.r#ref,
+                "webhook push: target mismatch — ignored"
+            );
+            return StatusCode::ACCEPTED;
+        }
         let state_clone = state.clone();
         tokio::spawn(async move {
             handle_push(state_clone).await;
@@ -54,6 +66,30 @@ pub async fn handle(
     }
 
     StatusCode::ACCEPTED
+}
+
+#[derive(serde::Deserialize)]
+struct PushPayload {
+    r#ref: String,
+    repository: PushRepository,
+}
+
+#[derive(serde::Deserialize)]
+struct PushRepository {
+    full_name: String,
+}
+
+fn parse_push_payload(body: &[u8]) -> Option<PushPayload> {
+    serde_json::from_slice(body).ok()
+}
+
+/// True iff the push's `ref` and `repository.full_name` line up with the
+/// configured target. Rejects pushes for sibling branches or unrelated repos
+/// that happen to share the endpoint and secret.
+fn push_matches_target(payload: &PushPayload, target: &brain_domain::TargetConfig) -> bool {
+    let expected_ref = format!("refs/heads/{}", target.branch);
+    let expected_repo = format!("{}/{}", target.org, target.repo);
+    payload.r#ref == expected_ref && payload.repository.full_name == expected_repo
 }
 
 async fn handle_push(state: WebhookState) {
@@ -76,8 +112,17 @@ async fn handle_push(state: WebhookState) {
             }
         };
 
-    let config = crate::knowledge::config_loader::load(storage.target(), &token).await;
     let key = TargetKey::from(storage.target());
+
+    // Mirror the manual-refresh contract: a push can change `.brain-config.yml`
+    // and template files, so we must drop the per-target caches before reading
+    // them. Without this, the projection rebuild can run against stale node-type
+    // metadata for up to the config TTL and still broadcast `graph_updated`.
+    brain_storage::invalidate(&key);
+    brain_storage::invalidate_template(&key);
+    crate::knowledge::config_loader::invalidate(&key);
+
+    let config = crate::knowledge::config_loader::load(storage.target(), &token).await;
 
     match crate::server::projection::rebuild(&storage, &token, &config, "webhook_push").await {
         Ok(()) => {
@@ -160,6 +205,50 @@ mod tests {
     fn missing_signature_header_is_rejected() {
         let headers = HeaderMap::new();
         assert!(!verify_signature(b"secret", &headers, b"body"));
+    }
+
+    fn target(org: &str, repo: &str, branch: &str) -> brain_domain::TargetConfig {
+        brain_domain::TargetConfig {
+            org: org.to_string(),
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+        }
+    }
+
+    #[test]
+    fn push_matching_target_branch_and_repo_is_accepted() {
+        let body = br#"{"ref":"refs/heads/main","repository":{"full_name":"acme/brain"}}"#;
+        let payload = parse_push_payload(body).unwrap();
+        assert!(push_matches_target(
+            &payload,
+            &target("acme", "brain", "main")
+        ));
+    }
+
+    #[test]
+    fn push_to_other_branch_is_rejected() {
+        let body = br#"{"ref":"refs/heads/feature","repository":{"full_name":"acme/brain"}}"#;
+        let payload = parse_push_payload(body).unwrap();
+        assert!(!push_matches_target(
+            &payload,
+            &target("acme", "brain", "main")
+        ));
+    }
+
+    #[test]
+    fn push_from_sibling_repo_sharing_secret_is_rejected() {
+        let body = br#"{"ref":"refs/heads/main","repository":{"full_name":"acme/other"}}"#;
+        let payload = parse_push_payload(body).unwrap();
+        assert!(!push_matches_target(
+            &payload,
+            &target("acme", "brain", "main")
+        ));
+    }
+
+    #[test]
+    fn payload_without_ref_is_ignored() {
+        let body = br#"{"repository":{"full_name":"acme/brain"}}"#;
+        assert!(parse_push_payload(body).is_none());
     }
 
     #[test]

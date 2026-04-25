@@ -157,15 +157,25 @@ async fn main() {
     let routes = generate_route_list(App);
 
     // Path-aware auth gate: blocks anything under `/knowledge` for anonymous users.
+    // SSE is also gated — without it, anyone can subscribe to `/sse/events` and
+    // infer private repo activity (push timing, rebuild failures) from the
+    // typed event names. SSE gets `401` instead of a redirect because
+    // `EventSource` would otherwise treat the redirect as success and
+    // reconnect-loop forever.
     async fn protect_knowledge(session: Session, request: Request<Body>, next: Next) -> Response {
         let path = request.uri().path();
         let needs_auth = path == "/knowledge"
             || path.starts_with("/knowledge/")
             || path == "/admin"
             || path.starts_with("/admin/")
-            || path.starts_with("/assets/");
+            || path.starts_with("/assets/")
+            || path.starts_with("/sse/");
         if needs_auth && !auth::is_authenticated(&session).await {
-            Redirect::to("/").into_response()
+            if path.starts_with("/sse/") {
+                axum::http::StatusCode::UNAUTHORIZED.into_response()
+            } else {
+                Redirect::to("/").into_response()
+            }
         } else {
             next.run(request).await
         }
