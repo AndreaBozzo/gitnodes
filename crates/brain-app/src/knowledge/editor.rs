@@ -26,6 +26,9 @@ pub fn EditorPanel(
     let tags = RwSignal::new(Vec::<String>::new());
     let body = RwSignal::new(String::new());
     let selected_related = RwSignal::new(Vec::<String>::new());
+    let wi_state = RwSignal::new(String::new());
+    let wi_system_of_record = RwSignal::new(String::from("brain"));
+    let wi_assignees = RwSignal::new(String::new());
     let folder = RwSignal::new(String::new());
     let all_folders = Resource::new(
         || (),
@@ -61,6 +64,32 @@ pub fn EditorPanel(
             tags.set(p.tags);
             body.set(p.body);
             selected_related.set(p.related);
+            wi_state.set(
+                p.frontmatter
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("todo")
+                    .to_string(),
+            );
+            wi_system_of_record.set(
+                p.frontmatter
+                    .get("system_of_record")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("brain")
+                    .to_string(),
+            );
+            wi_assignees.set(
+                p.frontmatter
+                    .get("assignees")
+                    .and_then(|v| v.as_sequence())
+                    .map(|seq| {
+                        seq.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default(),
+            );
             edit_path.set(Some(p.path));
             edit_sha.set(Some(p.sha));
             preserved_frontmatter.set(if p.frontmatter.is_empty() {
@@ -78,6 +107,9 @@ pub fn EditorPanel(
                 preserved_frontmatter.set(None);
                 frontmatter_malformed.set(false);
                 folder.set(String::new());
+                wi_state.set(String::from("todo"));
+                wi_system_of_record.set(String::from("brain"));
+                wi_assignees.set(String::new());
             }
         }
     });
@@ -271,8 +303,37 @@ pub fn EditorPanel(
 
     let on_submit = move |_| {
         let updating = is_edit.get_untracked();
+        let nt = node_type.get_untracked();
+        let is_work_item =
+            config.with_value(|c| c.lookup(&nt).map(|s| s.is_work_item()).unwrap_or(false));
+
+        // For work item types, bake the form-controlled operational fields
+        // into preserved_frontmatter so merge_frontmatter emits them.
+        let mut frontmatter = preserved_frontmatter.get_untracked().unwrap_or_default();
+        if is_work_item {
+            use serde_yaml::Value;
+            let state_val = wi_state.get_untracked();
+            frontmatter.insert("state".into(), Value::String(state_val));
+            let sor_val = wi_system_of_record.get_untracked();
+            frontmatter.insert("system_of_record".into(), Value::String(sor_val));
+            let assignees: Vec<Value> = wi_assignees
+                .get_untracked()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(Value::String)
+                .collect();
+            frontmatter.insert("assignees".into(), Value::Sequence(assignees));
+        }
+        let merged_frontmatter =
+            if is_work_item || preserved_frontmatter.with_untracked(|p| p.is_some()) {
+                Some(frontmatter)
+            } else {
+                None
+            };
+
         let _payload = crate::knowledge::types::BrainFilePayload {
-            node_type: node_type.get_untracked(),
+            node_type: nt,
             title: title.get_untracked(),
             author: author.get_untracked(),
             tags: tags.get_untracked(),
@@ -292,7 +353,7 @@ pub fn EditorPanel(
             } else {
                 None
             },
-            preserved_frontmatter: preserved_frontmatter.get_untracked(),
+            preserved_frontmatter: merged_frontmatter,
             frontmatter_malformed: frontmatter_malformed.get_untracked(),
         };
 
@@ -467,6 +528,16 @@ pub fn EditorPanel(
 
             <FrontmatterFields node_type=node_type title=title author=author config=config.get_value() />
 
+            <Show when=move || config.with_value(|c| {
+                c.lookup(&node_type.get()).map(|s| s.is_work_item()).unwrap_or(false)
+            })>
+                <WorkItemFields
+                    wi_state=wi_state
+                    wi_system_of_record=wi_system_of_record
+                    wi_assignees=wi_assignees
+                />
+            </Show>
+
             <Show when=move || mismatch.with(|m| m.is_some())>
                 {
                     let do_move = do_move;
@@ -623,6 +694,61 @@ fn FrontmatterFields(
                 prop:value=move || author.get()
                 on:input=move |ev| author.set(event_target_value(&ev))
             />
+        </div>
+    }
+}
+
+/// Operational fields for work item types: state, system of record, assignees.
+/// Visible only when the selected node type has `work_item_kind` set.
+#[component]
+fn WorkItemFields(
+    wi_state: RwSignal<String>,
+    wi_system_of_record: RwSignal<String>,
+    wi_assignees: RwSignal<String>,
+) -> impl IntoView {
+    let select_class = "w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-sm focus:border-teal-400 focus:outline-none";
+    view! {
+        <div class="space-y-3 pt-2 border-t border-slate-800">
+            <div>
+                <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"State"</label>
+                <select
+                    class=select_class
+                    prop:value=move || wi_state.get()
+                    on:change=move |ev| wi_state.set(event_target_value(&ev))
+                >
+                    <option value="backlog">"Backlog"</option>
+                    <option value="todo">"Todo"</option>
+                    <option value="in-progress">"In Progress"</option>
+                    <option value="blocked">"Blocked"</option>
+                    <option value="done">"Done"</option>
+                    <option value="cancelled">"Cancelled"</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"System of Record"</label>
+                <select
+                    class=select_class
+                    prop:value=move || wi_system_of_record.get()
+                    on:change=move |ev| wi_system_of_record.set(event_target_value(&ev))
+                >
+                    <option value="brain">"Brain (local only)"</option>
+                    <option value="split">"Split (brain + forge)"</option>
+                    <option value="external">"External (forge only)"</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">"Assignees"</label>
+                <input
+                    type="text"
+                    class="w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-sm focus:border-teal-400 focus:outline-none"
+                    placeholder="user1, user2"
+                    prop:value=move || wi_assignees.get()
+                    on:input=move |ev| wi_assignees.set(event_target_value(&ev))
+                />
+                <p class="text-[10px] text-slate-600 mt-1">"Comma-separated GitHub usernames."</p>
+            </div>
         </div>
     }
 }
