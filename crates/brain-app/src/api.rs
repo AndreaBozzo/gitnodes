@@ -298,11 +298,12 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     };
 
     let related_section = build_related_section(&file_path, &payload.related);
+    let body_without_related = strip_related_section(&payload.body);
 
     let markdown = format!(
         "{}\n{}{}",
         merge_frontmatter(&payload, &user, &config),
-        payload.body,
+        body_without_related,
         related_section,
     );
 
@@ -660,6 +661,33 @@ fn relativize(from_dir: &std::path::Path, target: &str) -> String {
     }
     out.push_str(&target_parts[common..].join("/"));
     out
+}
+
+/// Remove any trailing "## Related / See also" section from the body so the
+/// rebuilt section (from the picker) doesn't duplicate links already present.
+#[cfg(feature = "ssr")]
+fn strip_related_section(body: &str) -> &str {
+    let mut last_related_start: Option<usize> = None;
+    let mut search_start = 0;
+    while let Some(pos) = body[search_start..].find("## ") {
+        let abs = search_start + pos;
+        let line_end = body[abs..]
+            .find('\n')
+            .map(|n| abs + n)
+            .unwrap_or(body.len());
+        let heading = body[abs..line_end].to_lowercase();
+        if heading.contains("related") || heading.contains("see also") {
+            last_related_start = Some(abs);
+        }
+        search_start = line_end + 1;
+        if search_start >= body.len() {
+            break;
+        }
+    }
+    match last_related_start {
+        Some(pos) => body[..pos].trim_end_matches('\n'),
+        None => body,
+    }
 }
 
 #[cfg(feature = "ssr")]
@@ -1179,6 +1207,26 @@ mod merge_frontmatter_tests {
         );
 
         assert!(out.contains("- [another-runbook](./another-runbook.md)"));
+    }
+
+    #[test]
+    fn strip_related_section_removes_trailing_related_block() {
+        let body = "## Description\nSome content.\n\n## Related / See also\n\n- [Foo](../concepts/Foo.md)\n";
+        assert_eq!(strip_related_section(body), "## Description\nSome content.");
+    }
+
+    #[test]
+    fn strip_related_section_leaves_body_without_related() {
+        let body = "## Description\nSome content.\n";
+        assert_eq!(strip_related_section(body), body);
+    }
+
+    #[test]
+    fn strip_related_section_removes_last_of_multiple_related_blocks() {
+        let body = "## Related / See also\n\n- [A](../a.md)\n\n## Other\n\n## Related / See also\n\n- [B](../b.md)\n";
+        let stripped = strip_related_section(body);
+        assert!(!stripped.contains("- [B]"), "second block must be stripped");
+        assert!(stripped.contains("## Other"), "other sections must be kept");
     }
 }
 
