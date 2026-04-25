@@ -8,7 +8,7 @@ use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
-use super::live_sync::LiveSync;
+use super::live_sync::{LiveSync, SyncStatus};
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
 use crate::api::{load_brain_config, load_brain_graph, refresh_brain_graph};
@@ -16,6 +16,7 @@ use crate::api::{load_brain_config, load_brain_graph, refresh_brain_graph};
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
     let graph_version = RwSignal::new(0u64);
+    let sync_status = RwSignal::new(SyncStatus::Fresh);
     let graph = Resource::new_blocking(
         move || graph_version.get(),
         |_| async { load_brain_graph().await },
@@ -42,7 +43,7 @@ pub fn KnowledgePage() -> impl IntoView {
                 let c = config.get();
                 match (g, c) {
                     (Some(Ok((nodes, edges))), Some(Ok(cfg))) => {
-                        KnowledgeView(KnowledgeViewProps { nodes, edges, config: cfg, graph_version }).into_any()
+                        KnowledgeView(KnowledgeViewProps { nodes, edges, config: cfg, graph_version, sync_status }).into_any()
                     }
                     (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
                         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
@@ -62,6 +63,7 @@ fn KnowledgeView(
     edges: Vec<Edge>,
     config: brain_domain::BrainConfig,
     graph_version: RwSignal<u64>,
+    sync_status: RwSignal<SyncStatus>,
 ) -> impl IntoView {
     let query = use_query_map();
     let nodes = StoredValue::new(nodes);
@@ -166,8 +168,8 @@ fn KnowledgeView(
                         }).collect::<Vec<_>>();
                         stats_views.into_view()
                     }
-                    <LiveSync graph_version=graph_version />
-                    <RefreshButton graph_version=graph_version />
+                    <LiveSync graph_version=graph_version sync_status=sync_status />
+                    <RefreshButton graph_version=graph_version sync_status=sync_status />
                     <button
                         class="ml-2 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
                         on:click=move |_| {
@@ -184,6 +186,9 @@ fn KnowledgeView(
                     </button>
                 </div>
             </header>
+            <Show when=move || sync_status.get().is_stale()>
+                <SyncStatusBanner sync_status=sync_status />
+            </Show>
             <OrphanBanner nodes=nodes config=config />
             <div class="flex-1 flex min-h-0">
                 <FilterPanel
@@ -232,7 +237,7 @@ fn KnowledgeView(
 /// Rebuilds the server-side per-target SQLite projection and bumps
 /// `graph_version` so the `Resource` re-reads the refreshed snapshot.
 #[component]
-fn RefreshButton(graph_version: RwSignal<u64>) -> impl IntoView {
+fn RefreshButton(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>) -> impl IntoView {
     let busy = RwSignal::new(false);
     view! {
         <button
@@ -245,13 +250,49 @@ fn RefreshButton(graph_version: RwSignal<u64>) -> impl IntoView {
                 }
                 busy.set(true);
                 leptos::task::spawn_local(async move {
-                    let _ = refresh_brain_graph().await;
-                    graph_version.update(|v| *v += 1);
+                    match refresh_brain_graph().await {
+                        Ok(()) => {
+                            graph_version.update(|v| *v += 1);
+                            sync_status.set(SyncStatus::Fresh);
+                        }
+                        Err(error) => {
+                            sync_status.set(SyncStatus::Stale {
+                                message: Some(format!(
+                                    "Manual refresh failed: {error}. Showing the last successful snapshot."
+                                )),
+                            });
+                        }
+                    }
                     busy.set(false);
                 });
             }
         >
             {move || if busy.get() { "Refreshing…" } else { "Refresh" }}
         </button>
+    }
+}
+
+#[component]
+fn SyncStatusBanner(sync_status: RwSignal<SyncStatus>) -> impl IntoView {
+    view! {
+        <div class="mx-6 mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+            <div class="flex items-start gap-3">
+                <div class="mt-1 h-2 w-2 rounded-full bg-amber-300"></div>
+                <div class="flex flex-col gap-1">
+                    <span class="font-semibold uppercase tracking-[0.2em] text-amber-200">
+                        "Stale Data"
+                    </span>
+                    <span class="text-amber-100/80">
+                        {move || match sync_status.get() {
+                            SyncStatus::Fresh => String::new(),
+                            SyncStatus::Stale { message: Some(message) } => message,
+                            SyncStatus::Stale { message: None } => {
+                                "A background sync reported stale data. The UI is showing the last successful snapshot until the next successful refresh.".to_string()
+                            }
+                        }}
+                    </span>
+                </div>
+            </div>
+        </div>
     }
 }

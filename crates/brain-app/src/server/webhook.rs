@@ -102,15 +102,18 @@ async fn handle_push(state: WebhookState) {
     // session, so we use the server-side bot token (GITHUB_TOKEN env var).
     // If it is absent we skip the rebuild — the client's next manual refresh or
     // page load will reconcile.
-    let token =
-        match std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("TARGET_GITHUB_TOKEN")) {
-            Ok(t) => t,
-            Err(_) => {
-                tracing::warn!("webhook push: no GITHUB_TOKEN — skipping projection rebuild");
-                state.bus.send(BrainEvent::GraphStale);
-                return;
-            }
-        };
+    let token = match std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("TARGET_GITHUB_TOKEN"))
+    {
+        Ok(t) => t,
+        Err(_) => {
+            tracing::warn!("webhook push: no GITHUB_TOKEN — skipping projection rebuild");
+            state.bus.send(BrainEvent::SyncFailed {
+                    message: "Background sync skipped: GITHUB_TOKEN is not configured on the server. Showing the last known snapshot until a manual refresh succeeds.".to_string(),
+                });
+            return;
+        }
+    };
 
     let key = TargetKey::from(storage.target());
 
@@ -131,7 +134,11 @@ async fn handle_push(state: WebhookState) {
         }
         Err(error) => {
             tracing::warn!(target = %key, error = %error, "webhook push: projection rebuild failed");
-            state.bus.send(BrainEvent::GraphStale);
+            state.bus.send(BrainEvent::SyncFailed {
+                message: format!(
+                    "Background sync failed after the latest GitHub push: {error}. Showing the last successful snapshot."
+                ),
+            });
         }
     }
 }

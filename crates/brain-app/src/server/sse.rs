@@ -16,6 +16,8 @@ pub enum BrainEvent {
     GraphUpdated,
     /// The projection rebuild failed; the frontend should show a stale banner.
     GraphStale,
+    /// The background sync worker failed and can provide an operator-facing reason.
+    SyncFailed { message: String },
 }
 
 impl BrainEvent {
@@ -23,6 +25,17 @@ impl BrainEvent {
         match self {
             BrainEvent::GraphUpdated => "graph_updated",
             BrainEvent::GraphStale => "graph_stale",
+            BrainEvent::SyncFailed { .. } => "sync_failed",
+        }
+    }
+
+    fn as_event_data(&self) -> String {
+        match self {
+            BrainEvent::GraphUpdated => "{}".to_string(),
+            BrainEvent::GraphStale => "{}".to_string(),
+            BrainEvent::SyncFailed { message } => {
+                serde_json::json!({ "message": message }).to_string()
+            }
         }
     }
 }
@@ -63,7 +76,9 @@ pub async fn handle(
     let rx = bus.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| {
         let event = result.ok()?;
-        let sse_event = Event::default().event(event.as_event_name()).data("{}");
+        let sse_event = Event::default()
+            .event(event.as_event_name())
+            .data(event.as_event_data());
         Some(Ok::<Event, Infallible>(sse_event))
     });
 

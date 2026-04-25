@@ -96,14 +96,18 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
     - `POST /webhook/github` accetta payload GitHub, valida `X-Hub-Signature-256` con HMAC-SHA256 a tempo costante (`WEBHOOK_SECRET` env). Eventi non-`push` ricevono `202 Accepted` silenzioso per non sporcare il delivery log.
     - Su `push`: rebuild della projection per il target corrente via `GITHUB_TOKEN` server-side; pubblica `BrainEvent::GraphUpdated` (o `GraphStale` su rebuild fallito) sul `tokio::sync::broadcast` bus.
     - `GET /sse/events` espone lo stream typed (`graph_updated`, `graph_stale`) con keep-alive di default; ogni client Leptos connesso bumpa `graph_version` via `EventSource` (componente `LiveSync`, hydrate-only).
-    - Resta aperto per fasi successive: eventi più granulari (`FileUpdated { path }`), `work_item`/`work_item_bindings` aggiornati da eventi operativi del forge, reconnect/backoff esplicito lato client (oggi affidato al retry default del browser), preservazione stato UI durante refetch (selezione, editor aperto).
+    - Refinement 2026-04-25: il worker può emettere `BrainEvent::SyncFailed { message }`; la Knowledge UI mantiene `SyncStatus` esplicito e mostra un banner operativo `Stale Data` con messaggio umano, oltre a resettare lo stato stale su sync riuscita o refresh manuale riuscito.
+    - Prossimi passi stretti su questo asse: chiudere `/sse/events` dietro auth, decidere se deprecare o riassorbire `GraphStale` nel solo `SyncFailed`, aggiungere reconnect/backoff esplicito lato client invece di affidarsi solo al retry del browser, preservare meglio stato UI durante refetch (selezione, editor aperto).
+    - Rimane fuori da questa baseline: eventi più granulari (`FileUpdated { path }`) e sync incrementale di `work_item`/`work_item_bindings` da eventi operativi del forge.
 - [ ] **Rename atomici via Git Data API**
     - Oggi `rename_brain_file` esegue N+2 commit via Contents API.
     - Migrare a un'unica operazione: `POST /git/blobs` → `/git/trees` → `/git/commits` → `PATCH /git/refs/heads/{branch}`.
-    - Aggiornare la proiezione locale nella stessa transazione per evitare drift Git/SQLite.
+    - Gestire in modo esplicito il rifiuto fast-forward (`422`) con retry a backoff esponenziale limitato oppure conflitto ottimistico riportato chiaramente in UI.
+    - Finché la sync resta unidirezionale GitHub → webhook → SQLite, evitare dual-write sulla projection locale nel write-path di rename: la projection deve riallinearsi tramite rebuild/sync, non tramite mutazioni parallele lato app.
 - [ ] **Fondazione operativa Work Item**
     - Introdurre `task` come primo `work_item_kind` via config/template reali, non via hardcode.
     - Decidere se il binding 1:1 `task ↔ issue` è policy iniziale o regola rigida; coprire le eccezioni (`draft task`, `local-only item`, `provider item senza doc`).
+    - Mantenere il principio `No Dual-Write`: GitHub resta source of truth per le scritture, SQLite solo read model aggiornato da webhook/rebuild. Evitare write-path che cerchino di tenere in sync sia GitHub sia projection nello stesso handler.
     - Il primo scope UI parte solo dopo che projection e sync inbound esistono almeno in forma minima; commenti, review branch e PR restano fuori fino alla Fase 3.
 
 ---
@@ -181,4 +185,6 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 9. ~~`register_explicit` boilerplate is LTO-coupled~~ — **DONE 2026-04-24**. `SERVER_FNS: &[&str]` const + `include_str!`-based test in `api.rs` catches any `#[server]` fn not listed in the const before it reaches CI.
 
-10. **UI limitations** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100.
+10. **Sync visibility is still baseline-only** — The UI now exposes a `Stale Data` banner for background sync failures, but the SSE stream is not yet auth-gated, reconnect/backoff is still browser-default, and operational visibility remains page-local rather than a shared admin/status surface.
+
+11. **UI limitations** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100.
