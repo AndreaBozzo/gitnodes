@@ -192,7 +192,12 @@ pub async fn load_graph(
         .as_ref()
         .map(|sync| sync.status.as_str())
         .unwrap_or("missing");
-    let should_rebuild = !matches!(status, "ready") || !has_success;
+    let should_rebuild = match (status, has_success) {
+        ("ready", true) => false,
+        // A rebuild is already in progress and there's a good snapshot to serve.
+        ("running", true) => false,
+        _ => true,
+    };
     if should_rebuild {
         let reason = if has_success {
             "reconcile"

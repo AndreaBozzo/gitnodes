@@ -166,11 +166,10 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             connect();
         }
 
-        // The browser tears down EventSource and pending timers when the page
-        // unloads. Keeping the runtime owned by the mounted component avoids
-        // reconnect churn during normal rerenders without requiring a
-        // Send+Sync cleanup closure.
-        let _keep_runtime_alive = runtime;
+        // Anchor the runtime in the Leptos reactive tree so it lives for the
+        // full lifetime of the component rather than being dropped at the end
+        // of this function call. `Rc` is not Send+Sync so we use `new_local`.
+        let _keep_alive = StoredValue::new_local(runtime);
     }
 
     #[cfg(not(feature = "hydrate"))]

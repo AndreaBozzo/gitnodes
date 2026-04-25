@@ -820,6 +820,11 @@ async fn rebuild_projection_after_write(
     user: &str,
     reason: &str,
 ) {
+    use brain_domain::TargetKey;
+    let key = TargetKey::from(target);
+    brain_storage::invalidate(&key);
+    brain_storage::invalidate_template(&key);
+    crate::knowledge::config_loader::invalidate(&key);
     let config = crate::knowledge::config_loader::load(target, token).await;
     if let Err(error) = crate::server::projection::rebuild(storage, token, &config, reason).await {
         crate::server::audit::log(

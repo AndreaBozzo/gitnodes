@@ -136,6 +136,9 @@ pub fn GraphCanvas(
                             on:click={
                                 let path = n.path.clone();
                                 move |_| {
+                                    if path.is_empty() {
+                                        return;
+                                    }
                                     selected_path.update(|current| {
                                         *current = if current.as_deref() == Some(path.as_str()) {
                                             None

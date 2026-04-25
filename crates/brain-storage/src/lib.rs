@@ -231,14 +231,10 @@ impl GithubStorage {
         let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
         for path in &candidates {
             let url = format!("{}?ref={}", self.contents_url(path), self.branch());
+            // Propagate fetch errors so the caller never commits a partial
+            // snapshot as "ready" when a transient GitHub error is the cause.
             let body: ContentResponse =
-                match GithubHttp::send_json(self.http.get(&url, token), "content").await {
-                    Ok(body) => body,
-                    Err(error) => {
-                        tracing::warn!(path, error = %error, "content fetch failed");
-                        continue;
-                    }
-                };
+                GithubHttp::send_json(self.http.get(&url, token), "content").await?;
             let cleaned: String = body
                 .content
                 .chars()
@@ -247,14 +243,14 @@ impl GithubStorage {
             let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    tracing::warn!(path, error = %error, "base64 decode failed");
+                    tracing::warn!(path, error = %error, "base64 decode failed; skipping");
                     continue;
                 }
             };
             let text = match String::from_utf8(bytes) {
                 Ok(text) => text,
                 Err(_) => {
-                    tracing::warn!(path, "non-utf8 content, skipping");
+                    tracing::warn!(path, "non-utf8 content; skipping");
                     continue;
                 }
             };
@@ -312,12 +308,26 @@ fn template_cache() -> &'static Mutex<HashMap<TargetKey, HashMap<String, Templat
 }
 
 fn template_cache_get(key: &TargetKey, filename: &str) -> Option<String> {
-    let guard = template_cache().lock().ok()?;
-    let entry = guard.get(key)?.get(filename)?;
-    if entry.stored_at.elapsed() > TEMPLATE_TTL {
-        return None;
+    let mut guard = template_cache().lock().ok()?;
+    let mut remove_target = false;
+    let result = {
+        let map = guard.get_mut(key)?;
+        let expired = match map.get(filename) {
+            Some(entry) => entry.stored_at.elapsed() > TEMPLATE_TTL,
+            None => return None,
+        };
+        if expired {
+            map.remove(filename);
+            remove_target = map.is_empty();
+            None
+        } else {
+            map.get(filename).map(|entry| entry.body.clone())
+        }
+    };
+    if remove_target {
+        guard.remove(key);
     }
-    Some(entry.body.clone())
+    result
 }
 
 fn template_cache_store(key: &TargetKey, filename: &str, body: &str) {
@@ -351,12 +361,16 @@ pub fn invalidate_template(key: &TargetKey) {
 }
 
 fn cache_get(key: &TargetKey) -> Option<(Vec<Node>, Vec<Edge>)> {
-    let guard = graph_cache().lock().ok()?;
-    let entry = guard.get(key)?;
-    if entry.stored_at.elapsed() > CACHE_TTL {
+    let mut guard = graph_cache().lock().ok()?;
+    let expired = guard
+        .get(key)
+        .map(|e| e.stored_at.elapsed() > CACHE_TTL)
+        .unwrap_or(true);
+    if expired {
+        guard.remove(key);
         return None;
     }
-    Some((entry.nodes.clone(), entry.edges.clone()))
+    guard.get(key).map(|e| (e.nodes.clone(), e.edges.clone()))
 }
 
 fn cache_store(key: &TargetKey, nodes: &[Node], edges: &[Edge]) {
