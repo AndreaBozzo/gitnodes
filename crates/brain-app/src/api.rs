@@ -439,65 +439,48 @@ pub async fn rename_brain_file(
     let (_nodes, _edges) = storage.load_graph(&token, &config).await.map_err(sfe)?;
     let all_paths = collect_repo_md_paths(&token, &storage).await.map_err(sfe)?;
 
+    // Collect every referrer that needs a link rewrite together with the
+    // renamed file's new path. They will be committed together via the Git
+    // Data API instead of one Contents API commit per file.
+    let mut upserts: Vec<(String, String)> = Vec::new();
     let mut updated_referrers = Vec::<String>::new();
     for candidate in &all_paths {
         if candidate == &old_path {
             continue;
         }
-        let (content, sha) = match storage.read_file(&token, candidate).await {
+        let (content, _sha) = match storage.read_file(&token, candidate).await {
             Ok(v) => v,
             Err(_) => continue,
         };
         let Some(rewritten) = rewrite_links(&content, candidate, &old_path, &new_path) else {
             continue;
         };
-        let msg = format!("Update links in {candidate} after rename via Brain UI");
-        storage
-            .save_file(
-                &token,
-                candidate,
-                &rewritten,
-                Some(&sha),
-                &msg,
-                &user,
-                &author_email,
-            )
-            .await
-            .map_err(sfe)?;
+        upserts.push((candidate.clone(), rewritten));
         updated_referrers.push(candidate.clone());
     }
+    upserts.push((new_path.clone(), old_content));
 
-    // Create the file at the new path, then delete the old one. A user-
-    // supplied message only applies to these two "main" commits — the
-    // "Update links in X" referrer commits keep their auto-generated msg
-    // since they're side-effects of the move, not the user's stated intent.
     let user_msg = sanitize_commit_message(commit_message.as_deref());
-    let create_msg = user_msg
-        .clone()
-        .unwrap_or_else(|| format!("Rename {old_path} → {new_path} via Brain UI"));
-    storage
-        .save_file(
-            &token,
-            &new_path,
-            &old_content,
-            None,
-            &create_msg,
-            &user,
-            &author_email,
-        )
-        .await
-        .map_err(sfe)?;
+    let referrer_count = updated_referrers.len();
+    let message = user_msg.unwrap_or_else(|| {
+        if referrer_count == 0 {
+            format!("Rename {old_path} → {new_path} via Brain UI")
+        } else {
+            format!("Rename {old_path} → {new_path} via Brain UI ({referrer_count} referrers)")
+        }
+    });
 
-    let delete_msg = user_msg
-        .unwrap_or_else(|| format!("Delete {old_path} (renamed to {new_path}) via Brain UI"));
     storage
-        .delete_file(
+        .atomic_rename(
             &token,
-            &old_path,
-            &old_sha,
-            &delete_msg,
-            &user,
-            &author_email,
+            brain_storage::RenameMutation {
+                upserts,
+                deletes: vec![old_path.clone()],
+                message,
+                author_name: user.clone(),
+                author_email: author_email.clone(),
+            },
+            brain_storage::BackoffPolicy::default(),
         )
         .await
         .map_err(sfe)?;

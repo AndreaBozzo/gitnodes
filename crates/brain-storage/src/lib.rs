@@ -20,6 +20,9 @@ use brain_graph::{RawFile, build_graph, is_included_md};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+pub mod atomic_rename;
+pub use atomic_rename::{BackoffPolicy, RenameMutation, RenameOutcome};
+
 pub trait Storage: Send + Sync {
     async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError>;
     async fn load_graph(
@@ -126,6 +129,10 @@ impl GithubHttp {
 
     pub fn post(&self, url: &str, token: &str) -> reqwest::RequestBuilder {
         Self::auth_headers(self.inner.post(url), token)
+    }
+
+    pub fn patch(&self, url: &str, token: &str) -> reqwest::RequestBuilder {
+        Self::auth_headers(self.inner.patch(url), token)
     }
 
     /// Send a request and decode JSON. Centralises the
@@ -259,6 +266,21 @@ impl GithubStorage {
         }
 
         Ok(files)
+    }
+
+    /// Apply a rename as a single Git Data API commit. See
+    /// [`crate::atomic_rename`] for the pipeline; this wrapper invalidates the
+    /// per-target graph cache on success so the next read reflects the new
+    /// tree.
+    pub async fn atomic_rename(
+        &self,
+        token: &str,
+        mutation: RenameMutation,
+        policy: BackoffPolicy,
+    ) -> Result<RenameOutcome, BrainError> {
+        let outcome = atomic_rename::run(&self.http, &self.gh, token, mutation, policy).await?;
+        invalidate(&self.target_key());
+        Ok(outcome)
     }
 }
 

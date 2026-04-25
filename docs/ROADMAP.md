@@ -99,11 +99,11 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
     - Refinement 2026-04-25: il worker può emettere `BrainEvent::SyncFailed { message }`; la Knowledge UI mantiene `SyncStatus` esplicito e mostra un banner operativo `Stale Data` con messaggio umano, oltre a resettare lo stato stale su sync riuscita o refresh manuale riuscito.
     - Prossimi passi stretti su questo asse: chiudere `/sse/events` dietro auth, decidere se deprecare o riassorbire `GraphStale` nel solo `SyncFailed`, aggiungere reconnect/backoff esplicito lato client invece di affidarsi solo al retry del browser, preservare meglio stato UI durante refetch (selezione, editor aperto).
     - Rimane fuori da questa baseline: eventi più granulari (`FileUpdated { path }`) e sync incrementale di `work_item`/`work_item_bindings` da eventi operativi del forge.
-- [ ] **Rename atomici via Git Data API**
-    - Oggi `rename_brain_file` esegue N+2 commit via Contents API.
-    - Migrare a un'unica operazione: `POST /git/blobs` → `/git/trees` → `/git/commits` → `PATCH /git/refs/heads/{branch}`.
-    - Gestire in modo esplicito il rifiuto fast-forward (`422`) con retry a backoff esponenziale limitato oppure conflitto ottimistico riportato chiaramente in UI.
-    - Finché la sync resta unidirezionale GitHub → webhook → SQLite, evitare dual-write sulla projection locale nel write-path di rename: la projection deve riallinearsi tramite rebuild/sync, non tramite mutazioni parallele lato app.
+- [x] **Rename atomici via Git Data API** — _2026-04-25_
+    - `GithubStorage::atomic_rename` orchestra `POST /git/blobs` → `/git/trees` (delete via `sha: null` su `base_tree`) → `/git/commits` → `PATCH /git/refs/heads/{branch}` con `force=false`. Helper isolato in `brain-storage::atomic_rename`.
+    - Retry su `422 Update is not a fast forward` con backoff esponenziale (default 100/400/1600 ms, max 3 tentativi); altri 4xx propagano subito. Le blob già caricate vengono riusate fra tentativi (sono content-addressed).
+    - `rename_brain_file` ora produce **un solo commit** con tutti i referrer + creazione + delete; il messaggio commit dell'utente vale per l'unico commit. La projection locale resta riallineata via `rebuild_projection_after_write` (post-write, sequenziale): nessun dual-write nel write-path.
+    - Test wiremock-based su happy path, header auth/UA, payload tree con `sha: null`, retry su fast-forward (verifica blob non ricaricate), 422 non-fast-forward non ritentato, cap massimo tentativi.
 - [ ] **Fondazione operativa Work Item**
     - Introdurre `task` come primo `work_item_kind` via config/template reali, non via hardcode.
     - Decidere se il binding 1:1 `task ↔ issue` è policy iniziale o regola rigida; coprire le eccezioni (`draft task`, `local-only item`, `provider item senza doc`).
@@ -179,7 +179,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 6. ~~No auto-refresh after out-of-band commits~~ — **DONE 2026-04-24**. `RefreshBrainGraph` server fn + `RefreshButton` component in the knowledge header now trigger a full rebuild of the local SQLite projection after invalidating graph, template, and config caches. The button closes the "commit esterno → reload manuale" gap and doubles as manual reindex/drift recovery until webhook/SSE sync lands.
 
-7. **Rename issues N+2 Contents API commits** — `rename_brain_file` commits once per backlinked file plus a create and a delete. Chosen for simplicity; migrate to Git Data API if commit churn becomes a complaint.
+7. ~~Rename issues N+2 Contents API commits~~ — **DONE 2026-04-25**. `rename_brain_file` now produces a single commit via `GithubStorage::atomic_rename` (Git Data API: blobs → tree → commit → ref update with `force=false`). Fast-forward conflicts (422) are retried with capped exponential backoff; uploaded blobs are reused across retries since they're content-addressed.
 
 8. ~~Graph cache is process-global, not user- or target-scoped~~ — **DONE 2026-04-24**. All caches in `brain-storage` (graph, template) and `config_loader` are now keyed by `TargetKey({org}/{repo}/{branch})` via `OnceLock<Mutex<HashMap<TargetKey, _>>>`. `GithubHttp` is target-agnostic (plain `Arc<reqwest::Client>`); each `GithubStorage` / call-site supplies its own `GithubClient` built from an explicit `TargetConfig`. Safe for Phase 3 multi-target without re-architecting.
 

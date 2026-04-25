@@ -48,11 +48,29 @@ impl std::fmt::Display for TargetKey {
 #[derive(Clone, Debug)]
 pub struct GithubClient {
     target: TargetConfig,
+    api_base: String,
 }
+
+const DEFAULT_API_BASE: &str = "https://api.github.com";
 
 impl GithubClient {
     pub fn new(target: TargetConfig) -> Self {
-        Self { target }
+        Self {
+            target,
+            api_base: DEFAULT_API_BASE.to_string(),
+        }
+    }
+
+    /// Override the REST API base URL. Intended for tests against a mock
+    /// server; production code should use `new` and accept the default
+    /// `https://api.github.com`.
+    pub fn with_api_base(mut self, base: impl Into<String>) -> Self {
+        let mut base = base.into();
+        while base.ends_with('/') {
+            base.pop();
+        }
+        self.api_base = base;
+        self
     }
 
     pub fn target(&self) -> &TargetConfig {
@@ -61,15 +79,15 @@ impl GithubClient {
 
     pub fn contents_url(&self, path: &str) -> String {
         format!(
-            "https://api.github.com/repos/{}/{}/contents/{}",
-            self.target.org, self.target.repo, path
+            "{}/repos/{}/{}/contents/{}",
+            self.api_base, self.target.org, self.target.repo, path
         )
     }
 
     pub fn tree_url(&self) -> String {
         format!(
-            "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
-            self.target.org, self.target.repo, self.target.branch
+            "{}/repos/{}/{}/git/trees/{}?recursive=1",
+            self.api_base, self.target.org, self.target.repo, self.target.branch
         )
     }
 
@@ -91,6 +109,41 @@ impl GithubClient {
     /// orphan-type banner CTA.
     pub fn config_blob_url(&self) -> String {
         format!("{}/.brain-config.yml", self.blob_base())
+    }
+
+    pub fn git_blobs_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/git/blobs",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn git_trees_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/git/trees",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn git_commits_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/git/commits",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn git_commit_url(&self, sha: &str) -> String {
+        format!(
+            "{}/repos/{}/{}/git/commits/{}",
+            self.api_base, self.target.org, self.target.repo, sha
+        )
+    }
+
+    pub fn git_ref_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/git/refs/heads/{}",
+            self.api_base, self.target.org, self.target.repo, self.target.branch
+        )
     }
 }
 
@@ -724,5 +777,47 @@ node_types:
             Some(WorkItemKind::Task)
         );
         assert!(cfg.lookup("task").is_some_and(|s| s.is_work_item()));
+    }
+
+    fn gh(org: &str, repo: &str, branch: &str) -> GithubClient {
+        GithubClient::new(TargetConfig {
+            org: org.into(),
+            repo: repo.into(),
+            branch: branch.into(),
+        })
+    }
+
+    #[test]
+    fn git_data_api_urls_target_repo() {
+        let c = gh("acme", "kb", "main");
+        assert_eq!(
+            c.git_blobs_url(),
+            "https://api.github.com/repos/acme/kb/git/blobs"
+        );
+        assert_eq!(
+            c.git_trees_url(),
+            "https://api.github.com/repos/acme/kb/git/trees"
+        );
+        assert_eq!(
+            c.git_commits_url(),
+            "https://api.github.com/repos/acme/kb/git/commits"
+        );
+        assert_eq!(
+            c.git_commit_url("abc"),
+            "https://api.github.com/repos/acme/kb/git/commits/abc"
+        );
+        assert_eq!(
+            c.git_ref_url(),
+            "https://api.github.com/repos/acme/kb/git/refs/heads/main"
+        );
+    }
+
+    #[test]
+    fn git_ref_url_uses_branch() {
+        let c = gh("o", "r", "feat/x");
+        assert_eq!(
+            c.git_ref_url(),
+            "https://api.github.com/repos/o/r/git/refs/heads/feat/x"
+        );
     }
 }
