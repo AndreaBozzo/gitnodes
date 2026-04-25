@@ -220,6 +220,7 @@ dependencies = [
  "dotenvy",
  "getrandom 0.2.17",
  "gloo-timers",
+ "hmac",
  "http",
  "js-sys",
  "leptos",
@@ -232,9 +233,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "sqlx",
  "time",
  "tokio",
+ "tokio-stream",
  "tower",
  "tower-http",
  "tower-sessions",
@@ -3353,6 +3356,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

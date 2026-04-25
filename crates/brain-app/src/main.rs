@@ -116,6 +116,19 @@ async fn main() {
         .expect("projection table migration");
     brain_app::server::audit::init(pool.clone());
     brain_app::server::projection::init(pool.clone());
+
+    let event_bus = brain_app::server::sse::EventBus::new();
+
+    let webhook_secret = std::env::var("WEBHOOK_SECRET").ok();
+    if webhook_secret.is_none() {
+        tracing::warn!("WEBHOOK_SECRET not set — webhook endpoint will accept unsigned payloads");
+    }
+    let webhook_state = brain_app::server::webhook::WebhookState {
+        bus: event_bus.clone(),
+        target: target_cfg.clone(),
+        http: gh_http.clone(),
+        secret: webhook_secret,
+    };
     // OAuth callback is a cross-site redirect back from github.com, so the session
     // cookie must be SameSite=Lax (Strict would drop it and kill CSRF state check).
     // Secure=false allows http://127.0.0.1 in dev; set SESSION_COOKIE_SECURE=1 in prod.
@@ -178,6 +191,14 @@ async fn main() {
         .route("/auth/login", axum::routing::get(auth::login))
         .route("/auth/logout", axum::routing::get(auth::logout))
         .route("/auth/callback", axum::routing::get(auth::oauth_callback))
+        .route(
+            "/sse/events",
+            axum::routing::get(brain_app::server::sse::handle).with_state(event_bus),
+        )
+        .route(
+            "/webhook/github",
+            axum::routing::post(brain_app::server::webhook::handle).with_state(webhook_state),
+        )
         // Server functions: extract Session and inject Session + runtime config
         // into Leptos context so use_context::<...>() works inside #[server] fns.
         .route(

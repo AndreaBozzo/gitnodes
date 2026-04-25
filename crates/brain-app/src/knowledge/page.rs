@@ -8,6 +8,7 @@ use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
+use super::live_sync::LiveSync;
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
 use crate::api::{load_brain_config, load_brain_graph, refresh_brain_graph};
@@ -165,6 +166,7 @@ fn KnowledgeView(
                         }).collect::<Vec<_>>();
                         stats_views.into_view()
                     }
+                    <LiveSync graph_version=graph_version />
                     <RefreshButton graph_version=graph_version />
                     <button
                         class="ml-2 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"

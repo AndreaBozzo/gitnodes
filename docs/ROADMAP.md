@@ -92,14 +92,11 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
     - `RefreshBrainGraph` esegue un full rebuild/manual reindex della projection invece di limitarsi al cache busting.
     - `projection_sync_state` conserva `last_attempt_at`, `last_success_at`, `last_error_at`, `last_error`, `last_reason` e i count principali, fornendo watermark e stato osservabile.
     - In caso di reconcile fallito con snapshot già valida, il backend serve l'ultima projection buona e registra l'errore, riducendo il rischio di UI vuota per drift o sync parziali.
-- [ ] **Sincronizzazione inbound: Webhooks + SSE**
-    - Endpoint Axum per `push` e per eventi operativi del forge: validazione firma, idempotenza, fan-out verso invalidazione/selective refresh della proiezione.
-    - Su `push`: invalidare solo il target corretto, aggiornare config/template/graph projection, pubblicare evento SSE al frontend.
-    - Su eventi operativi esterni: aggiornare `work_items` e `work_item_bindings` senza aspettare un commit Git.
-    - Lato Leptos: `EventSource` con reconnect/backoff su segnali dedicati, senza full route reset.
-- [ ] **Resource invalidation unificata sul write-path**
-    - L'infrastruttura base esiste: save/delete/rename bumpano `graph_version`. Resta da unificare il pathway per update inbound da SSE/webhook.
-    - Preservare stato UI durante il refetch (selezione corrente, editor aperto, path rinominato).
+- [x] **Sincronizzazione inbound: Webhooks + SSE (baseline)** — _2026-04-25_
+    - `POST /webhook/github` accetta payload GitHub, valida `X-Hub-Signature-256` con HMAC-SHA256 a tempo costante (`WEBHOOK_SECRET` env). Eventi non-`push` ricevono `202 Accepted` silenzioso per non sporcare il delivery log.
+    - Su `push`: rebuild della projection per il target corrente via `GITHUB_TOKEN` server-side; pubblica `BrainEvent::GraphUpdated` (o `GraphStale` su rebuild fallito) sul `tokio::sync::broadcast` bus.
+    - `GET /sse/events` espone lo stream typed (`graph_updated`, `graph_stale`) con keep-alive di default; ogni client Leptos connesso bumpa `graph_version` via `EventSource` (componente `LiveSync`, hydrate-only).
+    - Resta aperto per fasi successive: eventi più granulari (`FileUpdated { path }`), `work_item`/`work_item_bindings` aggiornati da eventi operativi del forge, reconnect/backoff esplicito lato client (oggi affidato al retry default del browser), preservazione stato UI durante refetch (selezione, editor aperto).
 - [ ] **Rename atomici via Git Data API**
     - Oggi `rename_brain_file` esegue N+2 commit via Contents API.
     - Migrare a un'unica operazione: `POST /git/blobs` → `/git/trees` → `/git/commits` → `PATCH /git/refs/heads/{branch}`.
