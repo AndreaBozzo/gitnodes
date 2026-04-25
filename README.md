@@ -75,6 +75,8 @@ Optional:
 | `LEPTOS_SITE_ROOT`        | `target/site`          | Static asset root (prod)                         |
 | `SESSION_COOKIE_SECURE`   | `0`                    | Set to `1` in HTTPS prod                         |
 | `RUST_LOG`                | `brain_ui=info,warn`   | tracing-subscriber env filter                    |
+| `WEBHOOK_SECRET`          | _(unset)_              | HMAC-SHA256 secret matching the GitHub webhook config; if unset the `/webhook/github` endpoint accepts unsigned payloads (dev only) |
+| `GITHUB_TOKEN`            | _(unset)_              | Server-side token used by the webhook handler to rebuild the projection on `push`. Without it inbound pushes are signalled as stale and reconciled on next manual refresh |
 
 Branding is also required at runtime:
 
@@ -126,4 +128,4 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) and the `Known caveats` section within.
 
 ## License
 
-Internal tool — not published.
+2026@AndreaBozzo -- All rights reserved

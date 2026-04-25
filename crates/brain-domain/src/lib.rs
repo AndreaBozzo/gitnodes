@@ -11,7 +11,9 @@ mod frontmatter;
 mod types;
 mod work_items;
 
-pub use config::{BrainConfig, BrandConfig, ConfigError, GithubClient, NodeTypeSpec, TargetConfig};
+pub use config::{
+    BrainConfig, BrandConfig, ConfigError, GithubClient, NodeTypeSpec, TargetConfig, TargetKey,
+};
 pub use error::BrainError;
 pub use frontmatter::split_frontmatter;
 pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node};

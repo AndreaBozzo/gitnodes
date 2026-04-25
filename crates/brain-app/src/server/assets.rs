@@ -15,16 +15,19 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use brain_storage::{ContentResponse, http_client};
+use brain_domain::{GithubClient, TargetConfig};
+use brain_storage::{ContentResponse, GithubHttp};
 use tower_sessions::Session;
 
 use super::auth;
-use brain_domain::TargetConfig;
 
-/// Axum state for the asset handler — just the target repo. We pull the token
-/// off the session at request time.
+/// Axum state for the asset handler — the shared pooled HTTP transport plus
+/// the explicit target the proxy serves from. Keeping these two fields
+/// distinct (rather than baking the target into a `GithubHttp`) preserves the
+/// transport's target-agnosticism and makes the active repo obvious in code.
 #[derive(Clone)]
 pub struct AssetProxyState {
+    pub http: GithubHttp,
     pub target: TargetConfig,
 }
 
@@ -47,16 +50,13 @@ pub async fn serve_asset(
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
 
-    let gh = brain_domain::GithubClient::new(state.target.clone());
+    let gh = GithubClient::new(state.target.clone());
     let url = format!(
         "{}?ref={}",
         gh.contents_url(&repo_path),
         state.target.branch
     );
-    let Ok(client) = http_client() else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "http client").into_response();
-    };
-    let resp = match client.get(&url).bearer_auth(&token).send().await {
+    let resp = match state.http.get(&url, &token).send().await {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_GATEWAY, "upstream fetch").into_response(),
     };

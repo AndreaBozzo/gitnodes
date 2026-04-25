@@ -2,7 +2,7 @@
 
 Questo documento delinea l'evoluzione di **Brain UI** da un visualizzatore di grafi Markdown a un CMS distribuito, collaborativo, platform-agnostic e potenziato dall'Intelligenza Artificiale.
 
-**Stato architetturale corrente:** Git e il repo target restano la *Single Source of Truth*. SQLite oggi copre sessioni e audit log; la sua evoluzione a *Materialized View* locale per nodi, edge e work item appartiene alla Fase 2 e non va considerata una capability già disponibile.
+**Stato architetturale corrente:** Git e il repo target restano la *Single Source of Truth*. SQLite copre sessioni, audit log e una projection locale target-scoped per `nodes`, `edges`, `files` e `backlinks`, con rebuild esplicito e watermark/error state. La sincronizzazione inbound (webhook/SSE) e la materializzazione operativa dei work item restano capability di Fase 2B ancora aperte.
 
 ---
 
@@ -64,49 +64,53 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
 
 ### 2A. Hardening operativo (prerequisiti)
 
-- [ ] **Scoping delle cache runtime**
+- [x] **Scoping delle cache runtime** — _2026-04-24_
     - Cache process-global in `brain-storage` (graph/template) e `config_loader` (config) hanno chiavi troppo deboli.
     - Rekeying per `target_id` come minimo; dove la visibilità diverge per ruolo, aggiungere `user_id_or_role`.
     - L'invalidazione da webhook o write-path deve colpire solo le entry del target corretto.
-- [ ] **`GithubClient`: pooling + header centralization**
+- [x] **`GithubClient`: pooling + header centralization** — _2026-04-24_
     - `reqwest::Client` pooled condiviso tra storage, config loader, asset proxy e sync jobs.
     - Helper `get/put/delete/post` che centralizzano `Authorization`, `User-Agent`, retry policy e logging.
-- [ ] **Baseline refresh prima di SSE/Webhook**
+- [x] **Baseline refresh prima di SSE/Webhook** — _2026-04-24_
     - Aggiungere un percorso di refresh esplicito e/o polling leggero per ridurre la staleness percepita prima di investire nella pipeline eventi completa.
     - L'obiettivo è chiudere il gap operativo "commit esterno → reload manuale" con la soluzione più economica disponibile.
-- [ ] **Release safety per server functions**
+- [x] **Release safety per server functions** — _2026-04-24_
     - Ridurre il rischio introdotto da `register_server_functions` manuale in release (`lto = true`).
     - Introdurre guardrail di test/build o automazione che intercetti server fn non registrate prima del deploy.
-- [ ] **Hardening link semantics / rename safety**
+- [x] **Hardening link semantics / rename safety** — _2026-04-24_
     - Consolidare il comportamento dei link relativi, dei backlink e delle rewrite su path nested.
     - Estendere i test per i casi `Related / See also`, rename e link markdown con destinazioni relative.
 
 ### 2B. Projection, sync e operatività
 
-- [ ] **Projection Layer SQLite**
-    - Espandere SQLite oltre sessioni/audit: tabelle `nodes`, `edges`, `files`, `backlinks`, `work_items`, `work_item_bindings`, stato ultimo sync.
-    - Schema multi-tenant fin dal giorno zero: ogni tabella ha `target_id` come FK, così il backend è multi-repo capable anche se la UI rimane ancorata a un singolo target per sessione. Risolve il Caveat #8 senza una migrazione successiva.
-    - Bootstrap iniziale dal tree Git + pipeline idempotente di upsert; il frontend legge la proiezione locale invece del tree walk live.
-    - Formalizzare Git come source of truth e SQLite come read model/write-through cache.
-- [ ] **Rebuild, reconciliation e drift recovery**
-    - Full rebuild/manual reindex per ricostruire la projection se un webhook viene perso o fallisce a metà.
-    - Watermark/lag/errori di sync in SQLite o audit log — base osservabile per i background job di Fase 3.
-- [ ] **Sincronizzazione inbound: Webhooks + SSE**
-    - Endpoint Axum per `push` e per eventi operativi del forge: validazione firma, idempotenza, fan-out verso invalidazione/selective refresh della proiezione.
-    - Su `push`: invalidare solo il target corretto, aggiornare config/template/graph projection, pubblicare evento SSE al frontend.
-    - Su eventi operativi esterni: aggiornare `work_items` e `work_item_bindings` senza aspettare un commit Git.
-    - Lato Leptos: `EventSource` con reconnect/backoff su segnali dedicati, senza full route reset.
-- [ ] **Resource invalidation unificata sul write-path**
-    - L'infrastruttura base esiste: save/delete/rename bumpano `graph_version`. Resta da unificare il pathway per update inbound da SSE/webhook.
-    - Preservare stato UI durante il refetch (selezione corrente, editor aperto, path rinominato).
-- [ ] **Rename atomici via Git Data API**
-    - Oggi `rename_brain_file` esegue N+2 commit via Contents API.
-    - Migrare a un'unica operazione: `POST /git/blobs` → `/git/trees` → `/git/commits` → `PATCH /git/refs/heads/{branch}`.
-    - Aggiornare la proiezione locale nella stessa transazione per evitare drift Git/SQLite.
-- [ ] **Fondazione operativa Work Item**
-    - Introdurre `task` come primo `work_item_kind` via config/template reali, non via hardcode.
-    - Decidere se il binding 1:1 `task ↔ issue` è policy iniziale o regola rigida; coprire le eccezioni (`draft task`, `local-only item`, `provider item senza doc`).
-    - Il primo scope UI parte solo dopo che projection e sync inbound esistono almeno in forma minima; commenti, review branch e PR restano fuori fino alla Fase 3.
+- [x] **Projection Layer SQLite** — _2026-04-24_
+    - SQLite esteso oltre sessioni/audit con tabelle `targets`, `projection_sync_state`, `nodes`, `edges`, `files`, `backlinks`, `work_items`, `work_item_bindings`.
+    - Schema multi-tenant fin dal giorno zero: ogni tabella di projection usa `target_id` come FK verso `targets`, così il backend resta multi-repo capable anche con UI single-target per sessione.
+    - Bootstrap iniziale dal tree Git via `GithubStorage::fetch_raw_files()` + `server::projection::rebuild()`, con pipeline idempotente di full upsert per target.
+    - `LoadBrainGraph` legge la projection SQLite locale; Git resta source of truth, SQLite diventa read model locale con riallineamento post-write.
+- [x] **Rebuild, reconciliation e drift recovery** — _2026-04-24_
+    - `RefreshBrainGraph` esegue un full rebuild/manual reindex della projection invece di limitarsi al cache busting.
+    - `projection_sync_state` conserva `last_attempt_at`, `last_success_at`, `last_error_at`, `last_error`, `last_reason` e i count principali, fornendo watermark e stato osservabile.
+    - In caso di reconcile fallito con snapshot già valida, il backend serve l'ultima projection buona e registra l'errore, riducendo il rischio di UI vuota per drift o sync parziali.
+- [x] **Sincronizzazione inbound: Webhooks + SSE (baseline)** — _2026-04-25_
+    - `POST /webhook/github` accetta payload GitHub, valida `X-Hub-Signature-256` con HMAC-SHA256 a tempo costante (`WEBHOOK_SECRET` env). Eventi non-`push` ricevono `202 Accepted` silenzioso per non sporcare il delivery log.
+    - Su `push`: rebuild della projection per il target corrente via `GITHUB_TOKEN` server-side; pubblica `BrainEvent::GraphUpdated` su sync riuscita o `BrainEvent::SyncFailed { message }` su rebuild fallito sul `tokio::sync::broadcast` bus.
+    - `GET /sse/events` espone lo stream typed (`graph_updated`, `sync_failed`) con keep-alive di default; la route è auth-gated e ogni client Leptos connesso bumpa `graph_version` via `EventSource` (componente `LiveSync`, hydrate-only).
+    - Refinement 2026-04-25: `LiveSync` implementa reconnect/backoff esplicito lato client e la Knowledge UI mantiene `SyncStatus` esplicito con banner operativo `Stale Data`. Il refetch preserva meglio lo stato locale usando `selected_path` come ancora della selezione invece del solo node id volatile.
+    - Da questo punto in poi il lavoro residuo su questo asse non blocca più la Fase 2: rimane soprattutto il desiderio di una vista admin/status condivisa oltre al banner page-local.
+    - Rimane fuori da questa baseline: eventi più granulari (`FileUpdated { path }`) e sync incrementale di `work_item`/`work_item_bindings` da eventi operativi del forge.
+- [x] **Rename atomici via Git Data API** — _2026-04-25_
+    - `GithubStorage::atomic_rename` orchestra `POST /git/blobs` → `/git/trees` (delete via `sha: null` su `base_tree`) → `/git/commits` → `PATCH /git/refs/heads/{branch}` con `force=false`. Helper isolato in `brain-storage::atomic_rename`.
+    - Retry su `422 Update is not a fast forward` con backoff esponenziale (default 100/400/1600 ms, max 3 tentativi); altri 4xx propagano subito. Le blob già caricate vengono riusate fra tentativi (sono content-addressed).
+    - `rename_brain_file` ora produce **un solo commit** con tutti i referrer + creazione + delete; il messaggio commit dell'utente vale per l'unico commit. La projection locale resta riallineata via `rebuild_projection_after_write` (post-write, sequenziale): nessun dual-write nel write-path.
+    - Test wiremock-based su happy path, header auth/UA, payload tree con `sha: null`, retry su fast-forward (verifica blob non ricaricate), 422 non-fast-forward non ritentato, cap massimo tentativi.
+- [x] **Fondazione operativa Work Item** — _2026-04-25_
+    - `task` introdotto come primo `work_item_kind` via config/template reali nel repo Brain (`.brain-config.yml` + `templates/Task.md`), senza reintrodurre hardcode nel create flow.
+    - `merge_frontmatter` assegna `brain_id` al primo save per i tipi work item e lo preserva negli update successivi, così rename e rebuild non cambiano identità quando il documento nasce dalla UI.
+    - La rebuild della projection materializza i documenti work item in SQLite (`work_items`, `work_item_bindings`) leggendo `work_item_kind`, `state`, `system_of_record`, `assignees` ed eventuale `external_binding` dal frontmatter; i label provider vengono derivati dalla `label_taxonomy` del config.
+    - `LoadWorkItemByPath` espone il read model SQLite come API read-only dedicata; il detail panel mostra il primo scope UI minimale e read-only (`state`, `system_of_record`, `assignees`, binding esterno) senza introdurre scritture sul forge.
+    - Policy iniziale: `task ↔ issue` è opt-in, non rigido. `system_of_record: brain|split|external` e `external_binding` opzionale coprono `draft task`, item local-only e item provider-bound senza introdurre dual-write nel write path.
+    - Il primo scope UI resta volutamente minimo: commenti, review branch, mutazioni issue/PR e board UX rimangono rinviati alla Fase 3.
 
 ---
 
@@ -175,12 +179,14 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 5. ~~Update path regenerates frontmatter from templates~~ — **DONE 2026-04-22**. `merge_frontmatter` fa overlay dei campi del form sulla mappa preservata invece di rigenerare da template. Tests in `brain-app::api::merge_frontmatter_tests`.
 
-6. **No auto-refresh after out-of-band commits** — the 30s TTL cache bounds staleness for edits made via `git push` directly. Acceptable; documented here so the symptom isn't mistaken for a bug.
+6. ~~No auto-refresh after out-of-band commits~~ — **DONE 2026-04-24**. `RefreshBrainGraph` server fn + `RefreshButton` component in the knowledge header now trigger a full rebuild of the local SQLite projection after invalidating graph, template, and config caches. The button closes the "commit esterno → reload manuale" gap and doubles as manual reindex/drift recovery until webhook/SSE sync lands.
 
-7. **Rename issues N+2 Contents API commits** — `rename_brain_file` commits once per backlinked file plus a create and a delete. Chosen for simplicity; migrate to Git Data API if commit churn becomes a complaint.
+7. ~~Rename issues N+2 Contents API commits~~ — **DONE 2026-04-25**. `rename_brain_file` now produces a single commit via `GithubStorage::atomic_rename` (Git Data API: blobs → tree → commit → ref update with `force=false`). Fast-forward conflicts (422) are retried with capped exponential backoff; uploaded blobs are reused across retries since they're content-addressed.
 
-8. **Graph cache is process-global, not user- or target-scoped** — `static Mutex<Option<CacheEntry>>` in `brain-storage/src/lib.rs`. Safe today. **Becomes a bug in Phase 3** (RBAC) and **Phase 4** (multi-target). Must be rekeyed before either phase lands — partially addressed by the Projection Layer SQLite multi-tenant design in Fase 2.
+8. ~~Graph cache is process-global, not user- or target-scoped~~ — **DONE 2026-04-24**. All caches in `brain-storage` (graph, template) and `config_loader` are now keyed by `TargetKey({org}/{repo}/{branch})` via `OnceLock<Mutex<HashMap<TargetKey, _>>>`. `GithubHttp` is target-agnostic (plain `Arc<reqwest::Client>`); each `GithubStorage` / call-site supplies its own `GithubClient` built from an explicit `TargetConfig`. Safe for Phase 3 multi-target without re-architecting.
 
-9. **`register_explicit` boilerplate is LTO-coupled** — `api.rs::register_server_functions` manually lists every `#[server]` fn because `lto = true` strips the `inventory::submit!` entries. Every new server fn must be added here or it silently 404s in release builds (dev builds still work, making the failure mode worse).
+9. ~~`register_explicit` boilerplate is LTO-coupled~~ — **DONE 2026-04-24**. `SERVER_FNS: &[&str]` const + `include_str!`-based test in `api.rs` catches any `#[server]` fn not listed in the const before it reaches CI.
 
-10. **UI limitations** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100.
+10. **Sync visibility is still page-local** — SSE è auth-gated e il client ha reconnect/backoff esplicito, ma la visibilità operativa resta confinata al banner della Knowledge page invece di vivere anche in una superficie admin/status condivisa.
+
+11. **UI limitations** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100.

@@ -56,7 +56,17 @@ async fn main() {
         )
         .init();
 
-    // Persistent session store backed by SQLite.
+    // Single pooled, **target-agnostic** HTTP client for the whole process.
+    // Threaded through Leptos context so server fns and the asset proxy share
+    // connection state. The transport carries no target binding; each call
+    // site supplies the right `TargetConfig` per request — that's what keeps
+    // a future Brain-Switcher (Phase 3) from silently reading the wrong repo.
+    let gh_http =
+        brain_storage::GithubHttp::new().expect("failed to build pooled GitHub HTTP client");
+    tracing::info!("github http client built (pooled, target-agnostic)");
+
+    // Persistent runtime store backed by SQLite.
+    // Holds sessions, audit events, and the local graph projection.
     // Use a standard URL format. Default to local sqlite.
     let db_url =
         std::env::var("SESSION_DB_URL").unwrap_or_else(|_| "sqlite://data/sessions.db".to_string());
@@ -85,6 +95,14 @@ async fn main() {
         .connect_with(sqlite_opts)
         .await
         .expect("failed to open sessions SQLite pool");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .expect("enable sqlite foreign keys");
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .execute(&pool)
+        .await
+        .expect("enable sqlite WAL mode");
     let session_store = SqliteStore::new(pool.clone());
     session_store
         .migrate()
@@ -93,7 +111,24 @@ async fn main() {
     brain_app::server::audit::migrate(&pool)
         .await
         .expect("audit table migration");
+    brain_app::server::projection::migrate(&pool)
+        .await
+        .expect("projection table migration");
     brain_app::server::audit::init(pool.clone());
+    brain_app::server::projection::init(pool.clone());
+
+    let event_bus = brain_app::server::sse::EventBus::new();
+
+    let webhook_secret = std::env::var("WEBHOOK_SECRET").ok();
+    if webhook_secret.is_none() {
+        tracing::warn!("WEBHOOK_SECRET not set — webhook endpoint will accept unsigned payloads");
+    }
+    let webhook_state = brain_app::server::webhook::WebhookState {
+        bus: event_bus.clone(),
+        target: target_cfg.clone(),
+        http: gh_http.clone(),
+        secret: webhook_secret,
+    };
     // OAuth callback is a cross-site redirect back from github.com, so the session
     // cookie must be SameSite=Lax (Strict would drop it and kill CSRF state check).
     // Secure=false allows http://127.0.0.1 in dev; set SESSION_COOKIE_SECURE=1 in prod.
@@ -122,15 +157,25 @@ async fn main() {
     let routes = generate_route_list(App);
 
     // Path-aware auth gate: blocks anything under `/knowledge` for anonymous users.
+    // SSE is also gated — without it, anyone can subscribe to `/sse/events` and
+    // infer private repo activity (push timing, rebuild failures) from the
+    // typed event names. SSE gets `401` instead of a redirect because
+    // `EventSource` would otherwise treat the redirect as success and
+    // reconnect-loop forever.
     async fn protect_knowledge(session: Session, request: Request<Body>, next: Next) -> Response {
         let path = request.uri().path();
         let needs_auth = path == "/knowledge"
             || path.starts_with("/knowledge/")
             || path == "/admin"
             || path.starts_with("/admin/")
-            || path.starts_with("/assets/");
+            || path.starts_with("/assets/")
+            || path.starts_with("/sse/");
         if needs_auth && !auth::is_authenticated(&session).await {
-            Redirect::to("/").into_response()
+            if path.starts_with("/sse/") {
+                axum::http::StatusCode::UNAUTHORIZED.into_response()
+            } else {
+                Redirect::to("/").into_response()
+            }
         } else {
             next.run(request).await
         }
@@ -147,6 +192,7 @@ async fn main() {
             axum::routing::get(brain_app::server::assets::serve_asset),
         )
         .with_state(brain_app::server::assets::AssetProxyState {
+            http: gh_http.clone(),
             target: target_cfg.clone(),
         });
 
@@ -155,6 +201,14 @@ async fn main() {
         .route("/auth/login", axum::routing::get(auth::login))
         .route("/auth/logout", axum::routing::get(auth::logout))
         .route("/auth/callback", axum::routing::get(auth::oauth_callback))
+        .route(
+            "/sse/events",
+            axum::routing::get(brain_app::server::sse::handle).with_state(event_bus),
+        )
+        .route(
+            "/webhook/github",
+            axum::routing::post(brain_app::server::webhook::handle).with_state(webhook_state),
+        )
         // Server functions: extract Session and inject Session + runtime config
         // into Leptos context so use_context::<...>() works inside #[server] fns.
         .route(
@@ -162,15 +216,18 @@ async fn main() {
             axum::routing::post({
                 let target_for_api = target_cfg.clone();
                 let brand_for_api = brand_cfg.clone();
+                let http_for_api = gh_http.clone();
                 move |session: Session, request: Request<Body>| {
                     let target = target_for_api.clone();
                     let brand = brand_for_api.clone();
+                    let http = http_for_api.clone();
                     async move {
                         leptos_axum::handle_server_fns_with_context(
                             move || {
                                 provide_context(session.clone());
                                 provide_context(target.clone());
                                 provide_context(brand.clone());
+                                provide_context(http.clone());
                             },
                             request,
                         )
@@ -184,16 +241,19 @@ async fn main() {
         .leptos_routes_with_handler(routes, {
             let target_for_ssr = target_cfg.clone();
             let brand_for_ssr = brand_cfg.clone();
+            let http_for_ssr = gh_http.clone();
             move |session: Session, request: Request<Body>| {
                 let options = options_for_ssr.clone();
                 let target = target_for_ssr.clone();
                 let brand = brand_for_ssr.clone();
+                let http = http_for_ssr.clone();
                 async move {
                     let handler = leptos_axum::render_app_to_stream_with_context(
                         move || {
                             provide_context(session.clone());
                             provide_context(target.clone());
                             provide_context(brand.clone());
+                            provide_context(http.clone());
                         },
                         move || shell(options.clone()),
                     );

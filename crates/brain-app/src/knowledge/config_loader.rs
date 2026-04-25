@@ -1,15 +1,20 @@
 //! Loader for `.brain-config.yml` from the target repo.
 //!
-//! Fetches the file via the GitHub Contents API on first access (per-process),
+//! Fetches the file via the GitHub Contents API on first access (per target),
 //! caches the parsed `BrainConfig` for 30s (same TTL pattern as the graph
 //! cache in `brain-storage`), and falls back to `BrainConfig::default()` on
 //! a missing file or parse/validation failure so the app keeps working.
+//!
+//! The cache is keyed by `TargetKey` so a future multi-target deployment
+//! cannot leak one repo's config into another's response.
 
 use base64::Engine;
-use brain_domain::{BrainConfig, BrainError, GithubClient, TargetConfig};
+use brain_domain::{BrainConfig, BrainError, GithubClient, TargetConfig, TargetKey};
+use brain_storage::GithubHttp;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const TTL: Duration = Duration::from_secs(30);
@@ -20,11 +25,14 @@ struct CacheEntry {
     stored_at: Instant,
 }
 
-static CACHE: Mutex<Option<CacheEntry>> = Mutex::new(None);
+fn cache() -> &'static Mutex<HashMap<TargetKey, CacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<TargetKey, CacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-fn cache_get() -> Option<Arc<BrainConfig>> {
-    let guard = CACHE.lock().ok()?;
-    let entry = guard.as_ref()?;
+fn cache_get(key: &TargetKey) -> Option<Arc<BrainConfig>> {
+    let guard = cache().lock().ok()?;
+    let entry = guard.get(key)?;
     if entry.stored_at.elapsed() < TTL {
         Some(entry.cfg.clone())
     } else {
@@ -32,20 +40,23 @@ fn cache_get() -> Option<Arc<BrainConfig>> {
     }
 }
 
-fn cache_store(cfg: Arc<BrainConfig>) {
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = Some(CacheEntry {
-            cfg,
-            stored_at: Instant::now(),
-        });
+fn cache_store(key: &TargetKey, cfg: Arc<BrainConfig>) {
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(
+            key.clone(),
+            CacheEntry {
+                cfg,
+                stored_at: Instant::now(),
+            },
+        );
     }
 }
 
-/// Clear the cache. Called from write paths that might change the config
-/// (Phase 2: webhook push events).
-pub fn invalidate() {
-    if let Ok(mut guard) = CACHE.lock() {
-        *guard = None;
+/// Drop the cached config for a single target. Called from the manual
+/// `RefreshGraph` server fn and from any future webhook push handler.
+pub fn invalidate(key: &TargetKey) {
+    if let Ok(mut guard) = cache().lock() {
+        guard.remove(key);
     }
 }
 
@@ -58,7 +69,8 @@ struct ContentResponse {
 /// failure. Never returns `Err` from the caller's perspective — a malformed
 /// `.brain-config.yml` must not take the whole app down.
 pub async fn load(target: &TargetConfig, token: &str) -> Arc<BrainConfig> {
-    if let Some(hit) = cache_get() {
+    let key = TargetKey::from(target);
+    if let Some(hit) = cache_get(&key) {
         return hit;
     }
     let cfg = match fetch_and_parse(target, token).await {
@@ -70,7 +82,7 @@ pub async fn load(target: &TargetConfig, token: &str) -> Arc<BrainConfig> {
         }
     };
     let arc = Arc::new(cfg);
-    cache_store(arc.clone());
+    cache_store(&key, arc.clone());
     arc
 }
 
@@ -82,15 +94,18 @@ async fn fetch_and_parse(
     target: &TargetConfig,
     token: &str,
 ) -> Result<Option<BrainConfig>, BrainError> {
-    let client = reqwest::Client::builder()
-        .user_agent("brain_ui")
-        .build()
-        .map_err(|e| BrainError::Io(format!("http client: {e}")))?;
+    // The transport is target-agnostic — pull it from context for connection
+    // pooling — but the URL **must** be built from the explicit `target`
+    // argument so a multi-target caller (Phase 3) can load any repo's config
+    // without being silently rerouted to the startup default.
+    let http = match leptos::prelude::use_context::<GithubHttp>() {
+        Some(h) => h,
+        None => GithubHttp::new()?,
+    };
     let gh = GithubClient::new(target.clone());
     let url = format!("{}?ref={}", gh.contents_url(CONFIG_PATH), target.branch);
-    let resp = client
-        .get(&url)
-        .bearer_auth(token)
+    let resp = http
+        .get(&url, token)
         .send()
         .await
         .map_err(|e| BrainError::github(format!("config fetch: {e}")))?;
@@ -119,4 +134,32 @@ async fn fetch_and_parse(
 
     let cfg = BrainConfig::parse(&text).map_err(|e| BrainError::parse(e.to_string()))?;
     Ok(Some(cfg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(org: &str, repo: &str, branch: &str) -> TargetConfig {
+        TargetConfig {
+            org: org.into(),
+            repo: repo.into(),
+            branch: branch.into(),
+        }
+    }
+
+    #[test]
+    fn cache_isolates_targets() {
+        let a = TargetKey::from(&target("o", "cfg_iso_a", "main"));
+        let b = TargetKey::from(&target("o", "cfg_iso_b", "main"));
+        invalidate(&a);
+        invalidate(&b);
+
+        cache_store(&a, Arc::new(BrainConfig::default()));
+        assert!(cache_get(&a).is_some());
+        assert!(cache_get(&b).is_none());
+
+        invalidate(&a);
+        assert!(cache_get(&a).is_none());
+    }
 }
