@@ -6,11 +6,23 @@
 //! endpoints: `POST /git/blobs` → `POST /git/trees` → `POST /git/commits` →
 //! `PATCH /git/refs/heads/{branch}`.
 //!
-//! The only race is the final ref update: a concurrent push between our
-//! `GET /git/refs/...` and our `PATCH` will return `422 Update is not a fast
-//! forward`. We retry that specific failure with exponential backoff up to a
-//! small cap. Blob SHAs are content-addressed, so on retry we reuse the blobs
-//! we already uploaded and only rebuild the tree+commit.
+//! Two race classes are handled distinctly:
+//!
+//! 1. **Fast-forward race on the ref.** A concurrent push between our
+//!    `GET /git/refs/...` and our `PATCH` will return `422 Update is not a
+//!    fast forward`. We retry that specific failure with exponential backoff
+//!    up to a small cap. Blob SHAs are content-addressed, so on retry we
+//!    reuse the blobs we already uploaded and only rebuild the tree+commit.
+//!
+//! 2. **Lost-update on the touched paths.** If a concurrent commit modifies
+//!    one of the files we're rewriting (a referrer, the source path), simply
+//!    rebasing onto the new HEAD would silently overwrite that change. The
+//!    caller declares preconditions via `RenameMutation::expect_absent` and
+//!    `RenameMutation::expected_shas`; before each PATCH we read the
+//!    `base_tree` recursively and reject the attempt with
+//!    [`BrainError::Conflict`] if any precondition no longer holds. This
+//!    surfaces as "reload and retry" to the user — never as a transparent
+//!    retry — because the user's edits may need to be re-derived.
 //!
 //! No projection mutation happens here. The caller (`rename_brain_file`) keeps
 //! its post-write `rebuild_projection_after_write` step exactly as before;
@@ -35,6 +47,16 @@ pub struct RenameMutation {
     pub upserts: Vec<(String, String)>,
     /// Paths to remove from the tree. Typically `[old_path]`.
     pub deletes: Vec<String>,
+    /// Paths the caller asserts are NOT yet present in the target. The most
+    /// common use is the rename's destination path: a rename must not silently
+    /// overwrite a file that already exists at the new location.
+    pub expect_absent: Vec<String>,
+    /// Paths the caller has read at a known blob sha and intends to rewrite or
+    /// delete. The runtime verifies, against the exact `base_tree` we'll
+    /// commit on, that each path still resolves to the expected sha. If a
+    /// concurrent commit changed one of these files, the rename aborts with
+    /// `BrainError::Conflict` rather than overwriting the change.
+    pub expected_shas: Vec<(String, String)>,
     pub message: String,
     pub author_name: String,
     pub author_email: String,
@@ -136,9 +158,13 @@ pub async fn run(
 
 enum AttemptError {
     /// Final ref update was rejected with `422 not a fast forward`. Safe to
-    /// retry: re-read HEAD, rebuild tree+commit, re-push the ref.
+    /// retry: re-read HEAD, re-check preconditions, rebuild tree+commit,
+    /// re-push the ref.
     FastForward(String),
-    /// Anything else: surface immediately, do not retry.
+    /// Anything else (precondition failure, network error, malformed
+    /// response): surface immediately, do not retry. Precondition failures
+    /// in particular must reach the user as a `BrainError::Conflict` so the
+    /// UI can prompt for a reload-and-retry.
     Fatal(BrainError),
 }
 
@@ -155,6 +181,44 @@ async fn attempt_commit(
     let base_tree = get_commit_tree(http, gh, token, &head_before)
         .await
         .map_err(AttemptError::Fatal)?;
+
+    // Precondition check: verify against the *exact* base_tree we are about to
+    // build on top of. This is atomic with respect to the commit because the
+    // commit's `parents` is `head_before` and `base_tree` is its root tree —
+    // anything we observe here is what the new commit will rebase onto.
+    if !mutation.expect_absent.is_empty() || !mutation.expected_shas.is_empty() {
+        let entries = get_tree_recursive(http, gh, token, &base_tree)
+            .await
+            .map_err(AttemptError::Fatal)?;
+        let mut by_path: HashMap<&str, &str> = HashMap::with_capacity(entries.len());
+        for e in &entries {
+            if e.kind == "blob" {
+                by_path.insert(e.path.as_str(), e.sha.as_str());
+            }
+        }
+        for path in &mutation.expect_absent {
+            if by_path.contains_key(path.as_str()) {
+                return Err(AttemptError::Fatal(BrainError::conflict(format!(
+                    "destination already exists: {path}"
+                ))));
+            }
+        }
+        for (path, expected) in &mutation.expected_shas {
+            match by_path.get(path.as_str()) {
+                Some(actual) if *actual == expected.as_str() => {}
+                Some(actual) => {
+                    return Err(AttemptError::Fatal(BrainError::conflict(format!(
+                        "{path} changed since read (expected {expected}, found {actual})"
+                    ))));
+                }
+                None => {
+                    return Err(AttemptError::Fatal(BrainError::conflict(format!(
+                        "{path} no longer exists"
+                    ))));
+                }
+            }
+        }
+    }
 
     let tree_sha = create_tree(http, gh, token, &base_tree, path_to_blob, &mutation.deletes)
         .await
@@ -175,9 +239,9 @@ async fn attempt_commit(
 
     match update_ref(http, gh, token, &commit_sha).await {
         Ok(()) => Ok(RenameOutcome {
-            commit_sha,
             head_before,
-            head_after: tree_sha, // overwritten by caller from response if needed
+            head_after: commit_sha.clone(),
+            commit_sha,
             attempts: 0,
         }),
         Err(e) => match classify_ref_error(&e) {
@@ -252,6 +316,46 @@ async fn get_commit_tree(
     let url = gh.git_commit_url(commit_sha);
     let resp: CommitResponse = GithubHttp::send_json(http.get(&url, token), "git_commit").await?;
     Ok(resp.tree.sha)
+}
+
+#[derive(Deserialize)]
+struct RecursiveTreeResponse {
+    tree: Vec<RecursiveTreeEntry>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Deserialize)]
+struct RecursiveTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+    sha: String,
+}
+
+/// Read every blob entry under a tree SHA, resolved recursively. Used to
+/// verify rename preconditions (`expect_absent`, `expected_shas`) against the
+/// exact tree we're about to commit on top of.
+async fn get_tree_recursive(
+    http: &GithubHttp,
+    gh: &GithubClient,
+    token: &str,
+    tree_sha: &str,
+) -> Result<Vec<RecursiveTreeEntry>, BrainError> {
+    let url = gh.git_tree_by_sha_url(tree_sha);
+    let resp: RecursiveTreeResponse =
+        GithubHttp::send_json(http.get(&url, token), "git_tree_recursive").await?;
+    if resp.truncated {
+        // GitHub truncates recursive tree reads above ~7MB or 100k entries.
+        // Falling back here would mean implementing the paginated walk, which
+        // we don't need until a real Brain repo grows that large. Until then,
+        // refuse loudly so the failure is visible instead of silently
+        // skipping precondition checks.
+        return Err(BrainError::other(
+            "git_tree_recursive: response was truncated; precondition check is unsafe",
+        ));
+    }
+    Ok(resp.tree)
 }
 
 #[derive(Deserialize)]
@@ -394,6 +498,8 @@ mod tests {
         RenameMutation {
             upserts: vec![("notes/new.md".into(), "hello".into())],
             deletes: vec!["notes/old.md".into()],
+            expect_absent: vec![],
+            expected_shas: vec![],
             message: "rename".into(),
             author_name: "alice".into(),
             author_email: "alice@example.com".into(),
@@ -707,6 +813,256 @@ mod tests {
         );
     }
 
+    /// Mounts a recursive-tree response listing the given (path, sha) blobs.
+    /// Use to drive the precondition checks deterministically.
+    async fn mount_tree_recursive(server: &MockServer, tree_sha: &str, blobs: &[(&str, &str)]) {
+        let entries: Vec<serde_json::Value> = blobs
+            .iter()
+            .map(|(p, s)| json!({ "path": p, "type": "blob", "sha": s, "mode": "100644" }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/acme/kb/git/trees/{tree_sha}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "sha": tree_sha,
+                "tree": entries,
+                "truncated": false,
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn outcome_head_after_is_commit_sha_not_tree_sha() {
+        let server = MockServer::start().await;
+        ok_pipeline(&server).await;
+        mount_patch_ok(&server).await;
+
+        let http = GithubHttp::new().unwrap();
+        let gh = GithubClient::new(target()).with_api_base(server.uri());
+        let outcome = run(
+            &http,
+            &gh,
+            "tok",
+            mutation_simple(),
+            BackoffPolicy::instant(),
+        )
+        .await
+        .expect("ok");
+        assert_eq!(
+            outcome.head_after, "COMMIT1",
+            "head_after must be the new commit sha, not the tree sha"
+        );
+        assert_ne!(outcome.head_after, "TREE1");
+    }
+
+    #[tokio::test]
+    async fn destination_collision_aborts_with_conflict() {
+        let server = MockServer::start().await;
+        ok_pipeline(&server).await;
+        mount_patch_ok(&server).await;
+        // Base tree already contains the destination path: rename must abort
+        // before creating the new tree.
+        mount_tree_recursive(
+            &server,
+            "TREE0",
+            &[
+                ("notes/new.md", "EXISTING_BLOB"),
+                ("notes/old.md", "OLD_BLOB"),
+            ],
+        )
+        .await;
+
+        let http = GithubHttp::new().unwrap();
+        let gh = GithubClient::new(target()).with_api_base(server.uri());
+        let mut m = mutation_simple();
+        m.expect_absent = vec!["notes/new.md".into()];
+
+        let err = run(&http, &gh, "tok", m, BackoffPolicy::instant())
+            .await
+            .expect_err("destination occupied");
+        assert!(
+            matches!(err, BrainError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+        assert!(err.to_string().contains("notes/new.md"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn referrer_drift_aborts_with_conflict() {
+        let server = MockServer::start().await;
+        ok_pipeline(&server).await;
+        mount_patch_ok(&server).await;
+        // Caller expected referrer at OLD_REF_BLOB, but the live base_tree has
+        // it at NEW_REF_BLOB — a concurrent commit changed it. Rename must
+        // abort instead of overwriting that change.
+        mount_tree_recursive(
+            &server,
+            "TREE0",
+            &[
+                ("notes/old.md", "OLD_BLOB"),
+                ("notes/refs.md", "NEW_REF_BLOB"),
+            ],
+        )
+        .await;
+
+        let http = GithubHttp::new().unwrap();
+        let gh = GithubClient::new(target()).with_api_base(server.uri());
+        let mut m = mutation_simple();
+        m.expected_shas = vec![("notes/refs.md".into(), "OLD_REF_BLOB".into())];
+
+        let err = run(&http, &gh, "tok", m, BackoffPolicy::instant())
+            .await
+            .expect_err("drift detected");
+        assert!(
+            matches!(err, BrainError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+        assert!(err.to_string().contains("notes/refs.md"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn missing_expected_path_aborts_with_conflict() {
+        let server = MockServer::start().await;
+        ok_pipeline(&server).await;
+        mount_patch_ok(&server).await;
+        // The base_tree no longer contains old_path at all (someone deleted
+        // it concurrently). expected_shas must catch this.
+        mount_tree_recursive(&server, "TREE0", &[("unrelated.md", "X")]).await;
+
+        let http = GithubHttp::new().unwrap();
+        let gh = GithubClient::new(target()).with_api_base(server.uri());
+        let mut m = mutation_simple();
+        m.expected_shas = vec![("notes/old.md".into(), "OLD_BLOB".into())];
+
+        let err = run(&http, &gh, "tok", m, BackoffPolicy::instant())
+            .await
+            .expect_err("missing path");
+        assert!(matches!(err, BrainError::Conflict(_)), "got {err:?}");
+        assert!(err.to_string().contains("no longer exists"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn precondition_rechecked_against_new_base_tree_on_retry() {
+        // First attempt: PATCH 422 fast-forward. HEAD jumps to HEAD1 with a
+        // *different* base_tree (TREE_AFTER) where the destination has
+        // appeared. The retry must re-read the recursive tree against
+        // TREE_AFTER and fail with Conflict instead of silently overwriting.
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/refs/heads/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ref": "refs/heads/main",
+                "object": { "sha": "HEAD0", "type": "commit" }
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/refs/heads/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ref": "refs/heads/main",
+                "object": { "sha": "HEAD1", "type": "commit" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/commits/HEAD0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "tree": { "sha": "TREE_BEFORE" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/commits/HEAD1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "tree": { "sha": "TREE_AFTER" }
+            })))
+            .mount(&server)
+            .await;
+        // Before the race: destination is absent.
+        mount_tree_recursive(&server, "TREE_BEFORE", &[("notes/old.md", "OLD_BLOB")]).await;
+        // After the race: destination has appeared.
+        mount_tree_recursive(
+            &server,
+            "TREE_AFTER",
+            &[("notes/old.md", "OLD_BLOB"), ("notes/new.md", "INTRUDER")],
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/kb/git/blobs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "sha": "BLOB1" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/kb/git/trees"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "sha": "TREE1" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/kb/git/commits"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "sha": "COMMIT1" })))
+            .mount(&server)
+            .await;
+        // First PATCH: 422 fast-forward → triggers retry.
+        Mock::given(method("PATCH"))
+            .and(path("/repos/acme/kb/git/refs/heads/main"))
+            .respond_with(
+                ResponseTemplate::new(422)
+                    .set_body_string(r#"{"message":"Update is not a fast forward"}"#),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Second PATCH would 200 — but precondition check on TREE_AFTER must
+        // fail first, so the second PATCH should never fire.
+        Mock::given(method("PATCH"))
+            .and(path("/repos/acme/kb/git/refs/heads/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "object": { "sha": "COMMIT1" }
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let http = GithubHttp::new().unwrap();
+        let gh = GithubClient::new(target()).with_api_base(server.uri());
+        let mut m = mutation_simple();
+        m.expect_absent = vec!["notes/new.md".into()];
+
+        let err = run(&http, &gh, "tok", m, BackoffPolicy::instant())
+            .await
+            .expect_err("retry must surface conflict");
+        assert!(matches!(err, BrainError::Conflict(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn truncated_tree_response_is_rejected() {
+        let server = MockServer::start().await;
+        ok_pipeline(&server).await;
+        mount_patch_ok(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/trees/TREE0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "sha": "TREE0",
+                "tree": [],
+                "truncated": true,
+            })))
+            .mount(&server)
+            .await;
+
+        let http = GithubHttp::new().unwrap();
+        let gh = GithubClient::new(target()).with_api_base(server.uri());
+        let mut m = mutation_simple();
+        m.expect_absent = vec!["notes/new.md".into()];
+
+        let err = run(&http, &gh, "tok", m, BackoffPolicy::instant())
+            .await
+            .expect_err("truncated tree");
+        assert!(err.to_string().contains("truncated"), "{err}");
+    }
+
     #[tokio::test]
     async fn empty_mutation_is_rejected() {
         let http = GithubHttp::new().unwrap();
@@ -718,6 +1074,8 @@ mod tests {
             RenameMutation {
                 upserts: vec![],
                 deletes: vec![],
+                expect_absent: vec![],
+                expected_shas: vec![],
                 message: "x".into(),
                 author_name: "a".into(),
                 author_email: "a@b".into(),

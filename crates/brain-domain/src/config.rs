@@ -125,6 +125,16 @@ impl GithubClient {
         )
     }
 
+    /// Recursive tree read by tree SHA (not by branch). Used to verify
+    /// optimistic-concurrency preconditions against the exact base_tree we are
+    /// about to commit on top of.
+    pub fn git_tree_by_sha_url(&self, tree_sha: &str) -> String {
+        format!(
+            "{}/repos/{}/{}/git/trees/{}?recursive=1",
+            self.api_base, self.target.org, self.target.repo, tree_sha
+        )
+    }
+
     pub fn git_commits_url(&self) -> String {
         format!(
             "{}/repos/{}/{}/git/commits",
@@ -809,6 +819,15 @@ node_types:
         assert_eq!(
             c.git_ref_url(),
             "https://api.github.com/repos/acme/kb/git/refs/heads/main"
+        );
+    }
+
+    #[test]
+    fn git_tree_by_sha_url_is_recursive() {
+        let c = gh("acme", "kb", "main");
+        assert_eq!(
+            c.git_tree_by_sha_url("ABC123"),
+            "https://api.github.com/repos/acme/kb/git/trees/ABC123?recursive=1"
         );
     }
 

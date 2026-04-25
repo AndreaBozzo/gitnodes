@@ -427,7 +427,7 @@ pub async fn rename_brain_file(
     // Sanity: the source file still exists at the sha the client saw.
     let (old_content, live_sha) = storage.read_file(&token, &old_path).await.map_err(sfe)?;
     if live_sha != old_sha {
-        return Err(sfe(BrainError::other(
+        return Err(sfe(BrainError::conflict(
             "File was modified since you opened it; reload and retry",
         )));
     }
@@ -443,12 +443,13 @@ pub async fn rename_brain_file(
     // renamed file's new path. They will be committed together via the Git
     // Data API instead of one Contents API commit per file.
     let mut upserts: Vec<(String, String)> = Vec::new();
+    let mut expected_shas: Vec<(String, String)> = vec![(old_path.clone(), live_sha.clone())];
     let mut updated_referrers = Vec::<String>::new();
     for candidate in &all_paths {
         if candidate == &old_path {
             continue;
         }
-        let (content, _sha) = match storage.read_file(&token, candidate).await {
+        let (content, sha) = match storage.read_file(&token, candidate).await {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -456,6 +457,7 @@ pub async fn rename_brain_file(
             continue;
         };
         upserts.push((candidate.clone(), rewritten));
+        expected_shas.push((candidate.clone(), sha));
         updated_referrers.push(candidate.clone());
     }
     upserts.push((new_path.clone(), old_content));
@@ -476,6 +478,8 @@ pub async fn rename_brain_file(
             brain_storage::RenameMutation {
                 upserts,
                 deletes: vec![old_path.clone()],
+                expect_absent: vec![new_path.clone()],
+                expected_shas,
                 message,
                 author_name: user.clone(),
                 author_email: author_email.clone(),
