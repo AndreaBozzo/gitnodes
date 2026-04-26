@@ -8,15 +8,18 @@ use super::detail_panel::DetailPanel;
 use super::editor::EditorPanel;
 use super::filter_panel::FilterPanel;
 use super::graph_canvas::GraphCanvas;
-use super::live_sync::{LiveSync, SyncStatus};
+use super::live_sync::SyncStatus;
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
 use crate::api::{load_brain_config, load_brain_graph, refresh_brain_graph};
+use crate::app::{GraphVersion, SyncStatusSignal};
 
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
-    let graph_version = RwSignal::new(0u64);
-    let sync_status = RwSignal::new(SyncStatus::Fresh);
+    // Both signals are owned by `App` and shared via context so the global
+    // SyncStatusBanner stays in sync with this page's data fetches.
+    let graph_version = expect_context::<GraphVersion>().0;
+    let sync_status = expect_context::<SyncStatusSignal>().0;
     let graph = Resource::new_blocking(
         move || graph_version.get(),
         |_| async { load_brain_graph().await },
@@ -175,7 +178,6 @@ fn KnowledgeView(
                         }).collect::<Vec<_>>();
                         stats_views.into_view()
                     }
-                    <LiveSync graph_version=graph_version sync_status=sync_status />
                     <RefreshButton graph_version=graph_version sync_status=sync_status />
                     <button
                         class="ml-2 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
@@ -193,9 +195,6 @@ fn KnowledgeView(
                     </button>
                 </div>
             </header>
-            <Show when=move || sync_status.get().is_stale()>
-                <SyncStatusBanner sync_status=sync_status />
-            </Show>
             <OrphanBanner nodes=nodes config=config />
             <div class="flex-1 flex min-h-0">
                 <FilterPanel
@@ -278,30 +277,5 @@ fn RefreshButton(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>
         >
             {move || if busy.get() { "Refreshing…" } else { "Refresh" }}
         </button>
-    }
-}
-
-#[component]
-fn SyncStatusBanner(sync_status: RwSignal<SyncStatus>) -> impl IntoView {
-    view! {
-        <div class="mx-6 mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
-            <div class="flex items-start gap-3">
-                <div class="mt-1 h-2 w-2 rounded-full bg-amber-300"></div>
-                <div class="flex flex-col gap-1">
-                    <span class="font-semibold uppercase tracking-[0.2em] text-amber-200">
-                        "Stale Data"
-                    </span>
-                    <span class="text-amber-100/80">
-                        {move || match sync_status.get() {
-                            SyncStatus::Fresh => String::new(),
-                            SyncStatus::Stale { message: Some(message) } => message,
-                            SyncStatus::Stale { message: None } => {
-                                "A background sync reported stale data. The UI is showing the last successful snapshot until the next successful refresh.".to_string()
-                            }
-                        }}
-                    </span>
-                </div>
-            </div>
-        </div>
     }
 }

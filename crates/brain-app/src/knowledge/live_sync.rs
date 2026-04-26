@@ -177,3 +177,32 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
         let _ = (graph_version, sync_status);
     }
 }
+
+/// Global "Stale Data" banner. Renders only when `sync_status` is stale, so it
+/// is safe to mount unconditionally above the routes.
+#[component]
+pub fn SyncStatusBanner(sync_status: RwSignal<SyncStatus>) -> impl IntoView {
+    view! {
+        <Show when=move || sync_status.get().is_stale()>
+            <div class="mx-6 mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+                <div class="flex items-start gap-3">
+                    <div class="mt-1 h-2 w-2 rounded-full bg-amber-300"></div>
+                    <div class="flex flex-col gap-1">
+                        <span class="font-semibold uppercase tracking-[0.2em] text-amber-200">
+                            "Stale Data"
+                        </span>
+                        <span class="text-amber-100/80">
+                            {move || match sync_status.get() {
+                                SyncStatus::Fresh => String::new(),
+                                SyncStatus::Stale { message: Some(message) } => message,
+                                SyncStatus::Stale { message: None } => {
+                                    "A background sync reported stale data. The UI is showing the last successful snapshot until the next successful refresh.".to_string()
+                                }
+                            }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </Show>
+    }
+}

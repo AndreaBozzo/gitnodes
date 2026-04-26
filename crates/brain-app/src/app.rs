@@ -8,7 +8,16 @@ use leptos_router::{
 use crate::admin::AdminPage;
 use crate::api::get_app_config;
 use crate::knowledge::KnowledgePage;
+use crate::knowledge::live_sync::{LiveSync, SyncStatus, SyncStatusBanner};
 use crate::landing::Landing;
+
+/// Wrapper around `RwSignal<u64>` so context lookup is unambiguous — without
+/// it, any `RwSignal<u64>` provided elsewhere in the tree would collide.
+#[derive(Clone, Copy)]
+pub struct GraphVersion(pub RwSignal<u64>);
+
+#[derive(Clone, Copy)]
+pub struct SyncStatusSignal(pub RwSignal<SyncStatus>);
 
 /// The shell rendered on the server for every page.
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -40,9 +49,20 @@ pub fn App() -> impl IntoView {
     let app_config = Resource::new(|| (), |_| async move { get_app_config().await });
     provide_context(app_config);
 
+    // Global sync state. `LiveSync` (mounted below) keeps these in sync with
+    // server-sent events; the banner reads `sync_status` so admins on settings
+    // or work-item pages see staleness, not just /knowledge.
+    let graph_version = RwSignal::new(0u64);
+    let sync_status = RwSignal::new(SyncStatus::Fresh);
+    provide_context(GraphVersion(graph_version));
+    provide_context(SyncStatusSignal(sync_status));
+
     view! {
         <Stylesheet id="leptos" href="/pkg/brain_ui.css"/>
         <Title text="Brain"/>
+
+        <LiveSync graph_version=graph_version sync_status=sync_status />
+        <SyncStatusBanner sync_status=sync_status />
 
         <Router>
             <Routes fallback=|| "Page not found.".into_view()>

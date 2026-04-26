@@ -70,8 +70,16 @@ pub async fn oauth_callback(
         .ok()
         .flatten();
 
+    // Distinguish "no state cookie at all" (cookie dropped between /auth/login
+    // and the GitHub redirect — usually a SameSite/Secure or session-store
+    // problem) from "cookie present but value differs" (replay, double-submit,
+    // or stolen link). Same redirect to the user; different audit reason.
     match (&expected_state, &params.state) {
         (Some(expected), Some(got)) if expected == got => {}
+        (None, _) => {
+            crate::server::audit::log("login_fail", None, "state_missing").await;
+            return Redirect::to("/?error=state_mismatch").into_response();
+        }
         _ => {
             crate::server::audit::log("login_fail", None, "state_mismatch").await;
             return Redirect::to("/?error=state_mismatch").into_response();
