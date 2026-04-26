@@ -1,4 +1,5 @@
 #![recursion_limit = "512"]
+#![cfg_attr(not(test), warn(clippy::unwrap_used))]
 
 #[cfg(feature = "ssr")]
 fn required_env_with_legacy(primary: &str, legacy: &str) -> String {
@@ -73,7 +74,9 @@ async fn main() {
 
     // Only attempt to create parent directories if it's a local SQLite file
     if db_url.starts_with("sqlite://") && !db_url.starts_with("sqlite://:memory:") {
-        let file_path = db_url.strip_prefix("sqlite://").unwrap();
+        let file_path = db_url
+            .strip_prefix("sqlite://")
+            .expect("db_url starts_with sqlite:// guard above guarantees this prefix");
         if let Some(parent) = std::path::Path::new(file_path).parent()
             && !parent.as_os_str().is_empty()
         {
@@ -139,7 +142,7 @@ async fn main() {
         .with_same_site(SameSite::Lax)
         .with_secure(cookie_secure);
 
-    let conf = get_configuration(None).unwrap();
+    let conf = get_configuration(None).expect("load Leptos configuration");
     let leptos_options = conf.leptos_options;
 
     // Railway (and similar PaaS) set $PORT at runtime.
@@ -267,10 +270,12 @@ async fn main() {
         .with_state(leptos_options);
 
     tracing::info!(%addr, "brain_app listening");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| panic!("bind TCP listener on {addr}: {e}"));
     axum::serve(listener, app.into_make_service())
         .await
-        .unwrap();
+        .expect("axum serve loop terminated with error");
 }
 
 #[cfg(not(feature = "ssr"))]
