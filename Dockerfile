@@ -30,8 +30,8 @@ RUN set -eux; \
         -o /tmp/cargo-leptos.tar.gz \
         "https://github.com/leptos-rs/cargo-leptos/releases/download/v${CARGO_LEPTOS_VERSION}/cargo-leptos-${leptos_target}.tar.gz"; \
     tar -xzf /tmp/cargo-leptos.tar.gz -C /tmp; \
-    install -m 0755 /tmp/cargo-leptos /usr/local/cargo/bin/cargo-leptos; \
-    rm -rf /tmp/cargo-leptos /tmp/cargo-leptos.tar.gz
+    install -m 0755 "/tmp/cargo-leptos-${leptos_target}/cargo-leptos" /usr/local/cargo/bin/cargo-leptos; \
+    rm -rf "/tmp/cargo-leptos-${leptos_target}" /tmp/cargo-leptos.tar.gz
 
 WORKDIR /app
 
