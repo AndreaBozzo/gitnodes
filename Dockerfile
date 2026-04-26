@@ -11,13 +11,27 @@ RUN npx tailwindcss -i crates/brain-app/style/tailwind.css -o crates/brain-app/s
 # ---- Rust build stage ----
 FROM rust:1.95-slim AS builder
 
+ARG CARGO_LEPTOS_VERSION=0.3.6
+ARG TARGETARCH
+
 RUN apt-get update && apt-get install -y pkg-config libssl-dev curl perl make && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-unknown-unknown
 
-# Cache cargo-leptos install across builds
-RUN --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=s/1f4c0640-e2bb-448a-8b76-62e3566c4420-v2-/usr/local/cargo/git,target=/usr/local/cargo/git \
-    cargo install cargo-leptos --locked
+# Download a pinned prebuilt cargo-leptos binary. Compiling it from source adds
+# several minutes to cold builds and can starve the actual project build when
+# the Docker layer cache is unavailable.
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) leptos_target='x86_64-unknown-linux-gnu' ;; \
+        arm64) leptos_target='aarch64-unknown-linux-gnu' ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        -o /tmp/cargo-leptos.tar.gz \
+        "https://github.com/leptos-rs/cargo-leptos/releases/download/v${CARGO_LEPTOS_VERSION}/cargo-leptos-${leptos_target}.tar.gz"; \
+    tar -xzf /tmp/cargo-leptos.tar.gz -C /tmp; \
+    install -m 0755 /tmp/cargo-leptos /usr/local/cargo/bin/cargo-leptos; \
+    rm -rf /tmp/cargo-leptos /tmp/cargo-leptos.tar.gz
 
 WORKDIR /app
 
