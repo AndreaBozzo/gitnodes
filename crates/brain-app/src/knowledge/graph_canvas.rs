@@ -82,6 +82,7 @@ pub fn GraphCanvas(
                                 stroke-width=width
                                 stroke-linecap="round"
                                 stroke-opacity=opacity
+                                style="transition: stroke 200ms ease, stroke-width 200ms ease, stroke-opacity 200ms ease;"
                             />
                         }
                     })
@@ -167,13 +168,17 @@ pub fn GraphCanvas(
                                 stroke-width=move || if is_selected.get() { "0.5" } else { "0.18" }
                                 style={
                                     let accent = accent.clone();
+                                    // SVG presentation attributes (r, stroke, stroke-width, filter)
+                                    // are CSS-mapped, so a `transition` here crossfades hover/select
+                                    // states without any JS animation loop.
+                                    const TRANSITION: &str = "transition: r 200ms ease, stroke 200ms ease, stroke-width 200ms ease, filter 200ms ease;";
                                     move || {
                                         if is_selected.get() {
-                                            format!("filter: drop-shadow(0 0 2.4px {}); animation: brain-pulse 2.4s ease-in-out infinite;", accent)
+                                            format!("{TRANSITION} filter: drop-shadow(0 0 2.4px {accent}); animation: brain-pulse 2.4s ease-in-out infinite;")
                                         } else if is_hovered.get() {
-                                            format!("filter: drop-shadow(0 0 1.8px {});", accent)
+                                            format!("{TRANSITION} filter: drop-shadow(0 0 1.8px {accent});")
                                         } else {
-                                            String::new()
+                                            TRANSITION.to_string()
                                         }
                                     }
                                 }

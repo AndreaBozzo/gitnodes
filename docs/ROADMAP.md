@@ -210,7 +210,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 3. **WASM bundle +80–120 KB from `pulldown-cmark`** — non-optional because the editor renders live preview client-side. If initial load feels slow, revert: make `pulldown-cmark` ssr-only and swap live preview for a debounced `render_markdown_preview` server fn.
 
-4. **`prose-sm` typography sizing is a guess** — tune `tailwind.config.js` `typography.invert` palette and/or swap `prose-sm` → `prose-base` after seeing real content.
+4. ~~`prose-sm` typography sizing is a guess~~ — **DONE 2026-04-26 (no-op)**. Both render sites (`detail_panel.rs`, `editor.rs`) already use `prose prose-invert max-w-prose` (default size, equivalent to `prose-base`), not `prose-sm`. The original caveat was stale. Future tuning of `tailwind.config.js` `typography.invert` palette remains available if real content warrants it.
 
 5. ~~Update path regenerates frontmatter from templates~~ — **DONE 2026-04-22**. `merge_frontmatter` fa overlay dei campi del form sulla mappa preservata invece di rigenerare da template. Tests in `brain-app::api::merge_frontmatter_tests`.
 
@@ -224,4 +224,8 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 10. ~~Sync visibility is still page-local~~ — **DONE 2026-04-26**. `LiveSync` (EventSource subscription) e `SyncStatusBanner` ora vivono in `App`, sopra `<Routes>`, leggendo `graph_version`/`sync_status` esposti via `provide_context(GraphVersion)` / `provide_context(SyncStatusSignal)`. Admin su `/admin` o future route work-item vedono lo stesso banner `Stale Data` di `/knowledge`. `RefreshButton` resta page-local in Knowledge ma muta gli stessi signal globali.
 
-11. **UI limitations** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100.
+11. **UI limitations (canvas)** — No animated transitions between viewBox states (snap is instant). Nodes near graph edges show empty area outside the data space. Hover does not recenter, only selection does. No zoom: scale stays 100×100. **Mitigation 2026-04-26**: hover/selection states on individual nodes and edges now crossfade via CSS `transition` on `r`, `stroke`, `stroke-width`, `stroke-opacity`, and `filter` — pure CSS, no RAF/JS. The full viewBox tween + zoom controls remain Phase 3.6.
+
+12. ~~Filters are not URL-persisted~~ — **DONE 2026-04-26**. `active_tags` and `active_types` round-trip through `?tags=` and `?types=` query params alongside the existing `?path=`. Refresh and link-share both restore the filtered view. Navigation uses `replace: true` so toggling filters doesn't pollute history. Tags are normalized lowercase in both directions; types preserve case (they map to `BrainConfig.node_types[].name`).
+
+13. ~~No keyboard dismissal~~ — **DONE 2026-04-26**. Esc cascade in `KnowledgeView` (hydrate-only `keydown` listener on `window`): closes the editor first if open, otherwise clears the selected node. Skipped while focus is in `input`/`textarea`/`select`/`contenteditable` so Esc doesn't fight IME or form-local handlers. Listener is cleaned up via `on_cleanup` on route change.

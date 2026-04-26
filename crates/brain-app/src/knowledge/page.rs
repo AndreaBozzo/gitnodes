@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use leptos_router::hooks::use_query_map;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::{use_navigate, use_query_map};
 
 use super::detail_bar::DetailBar;
 use super::detail_panel::DetailPanel;
@@ -111,12 +112,99 @@ fn KnowledgeView(
     let edit_mode = RwSignal::new(EditMode::Closed);
     let editing = Memo::new(move |_| !matches!(edit_mode.get(), EditMode::Closed));
 
+    // Tags are stored lowercase already (case-insensitive matching); types
+    // preserve case because they map to `node_types[].name` in BrainConfig.
+    fn parse_csv(raw: &str) -> HashSet<String> {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    }
+
+    fn join_sorted(set: &HashSet<String>) -> String {
+        let mut v: Vec<&str> = set.iter().map(String::as_str).collect();
+        v.sort();
+        v.join(",")
+    }
+
+    // Minimal percent-encoder: anything outside RFC 3986 unreserved + a few
+    // path-safe symbols gets encoded. We don't need a full crate for this —
+    // tags/types are ASCII CSV; paths are repo-relative markdown filenames.
+    fn url_encode(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        for byte in input.bytes() {
+            let safe = byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/' | b',');
+            if safe {
+                out.push(byte as char);
+            } else {
+                out.push_str(&format!("%{:02X}", byte));
+            }
+        }
+        out
+    }
+
     Effect::new(move |_| {
         let params = query.get();
-        let Some(path) = params.get_str("path") else {
-            return;
+        if let Some(path) = params.get_str("path") {
+            selected_path.set(Some(path.to_string()));
+        }
+        let next_tags = params
+            .get_str("tags")
+            .map(|raw| parse_csv(&raw.to_lowercase()))
+            .unwrap_or_default();
+        let next_types = params.get_str("types").map(parse_csv).unwrap_or_default();
+        if next_tags != active_tags.get_untracked() {
+            active_tags.set(next_tags);
+        }
+        if next_types != active_types.get_untracked() {
+            active_types.set(next_types);
+        }
+    });
+
+    // Push filter changes back to the URL so refresh and link sharing both
+    // round-trip through the same query string. `replace=true` keeps filter
+    // toggling out of the back/forward history (one filter change = one nav
+    // event would make Back unusable on this page).
+    let navigate = use_navigate();
+    Effect::new(move |_| {
+        let tags = active_tags.get();
+        let types = active_types.get();
+        let path = selected_path.get();
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(p) = path.as_ref().filter(|s| !s.is_empty()) {
+            parts.push(format!("path={}", url_encode(p)));
+        }
+        if !tags.is_empty() {
+            parts.push(format!("tags={}", url_encode(&join_sorted(&tags))));
+        }
+        if !types.is_empty() {
+            parts.push(format!("types={}", url_encode(&join_sorted(&types))));
+        }
+        let target = if parts.is_empty() {
+            "/knowledge".to_string()
+        } else {
+            format!("/knowledge?{}", parts.join("&"))
         };
-        selected_path.set(Some(path.to_string()));
+        // Avoid feedback loop: only navigate if the URL actually differs.
+        let current = query.get_untracked();
+        let current_tags = current
+            .get_str("tags")
+            .map(|raw| parse_csv(&raw.to_lowercase()))
+            .unwrap_or_default();
+        let current_types = current.get_str("types").map(parse_csv).unwrap_or_default();
+        let current_path = current.get_str("path").map(str::to_string);
+        if current_tags == tags && current_types == types && current_path == path {
+            return;
+        }
+        navigate(
+            &target,
+            NavigateOptions {
+                replace: true,
+                ..Default::default()
+            },
+        );
     });
 
     Effect::new(move |_| {
@@ -127,6 +215,64 @@ fn KnowledgeView(
             selected.set(next);
         }
     });
+
+    // Esc cascade: close the editor first if it's open, otherwise clear the
+    // selected node. One-key dismiss for the frontmost overlay. Handler runs
+    // only after hydration; SSR has no `window`.
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
+        use web_sys::KeyboardEvent;
+
+        if let Some(window) = web_sys::window() {
+            let handler = Closure::<dyn FnMut(KeyboardEvent)>::new(move |ev: KeyboardEvent| {
+                if ev.key() != "Escape" {
+                    return;
+                }
+                // Don't hijack Esc while the user is typing in a form control —
+                // textarea/input expect Esc to stay local (e.g. clearing IME).
+                let typing_in_form = web_sys::window()
+                    .and_then(|w| w.document())
+                    .and_then(|d| d.active_element())
+                    .map(|el| {
+                        let tag = el.tag_name();
+                        tag.eq_ignore_ascii_case("input")
+                            || tag.eq_ignore_ascii_case("textarea")
+                            || tag.eq_ignore_ascii_case("select")
+                            || el.get_attribute("contenteditable").is_some()
+                    })
+                    .unwrap_or(false);
+                if typing_in_form {
+                    return;
+                }
+                if !matches!(edit_mode.get_untracked(), EditMode::Closed) {
+                    edit_mode.set(EditMode::Closed);
+                    ev.prevent_default();
+                    return;
+                }
+                if selected_path.get_untracked().is_some() {
+                    selected_path.set(None);
+                    ev.prevent_default();
+                }
+            });
+            let _ = window
+                .add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
+            // Keep the closure alive for the lifetime of the component; drop
+            // on route change so we don't leak a listener per remount.
+            let stored = StoredValue::new_local(handler);
+            on_cleanup(move || {
+                stored.with_value(|h| {
+                    if let Some(w) = web_sys::window() {
+                        let _ = w.remove_event_listener_with_callback(
+                            "keydown",
+                            h.as_ref().unchecked_ref(),
+                        );
+                    }
+                });
+            });
+        }
+    }
 
     let visible_ids = Memo::new(move |_| {
         let tags = active_tags.get();
