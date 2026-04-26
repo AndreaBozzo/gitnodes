@@ -2,7 +2,9 @@
 
 Questo documento delinea l'evoluzione di **Brain UI** da un visualizzatore di grafi Markdown a un CMS distribuito, collaborativo, platform-agnostic e potenziato dall'Intelligenza Artificiale.
 
-**Stato architetturale corrente:** Git e il repo target restano la *Single Source of Truth*. SQLite copre sessioni, audit log e una projection locale target-scoped per `nodes`, `edges`, `files` e `backlinks`, con rebuild esplicito e watermark/error state. La sincronizzazione inbound (webhook/SSE) e la materializzazione operativa dei work item restano capability di Fase 2B ancora aperte.
+**Stato architetturale corrente:** Git e il repo target restano la *Single Source of Truth*. SQLite copre sessioni, audit log e una projection locale target-scoped per `nodes`, `edges`, `files`, `backlinks`, `work_items` e `work_item_bindings`, con rebuild esplicito e watermark/error state. La sincronizzazione inbound baseline (webhook/SSE) e la materializzazione operativa dei work item sono chiuse; il gap residuo sta ora nelle mutazioni bidirezionali verso il forge, nel routing multi-target end-to-end e nella gestione permission-aware delle scritture.
+
+**Realignment 2026-04-26:** Fasi 3 e 4 non vanno più trattate come estensioni speculative. La base costruita in Fase 2B (projection SQLite multi-tenant, target-scoped cache, `brain_id` stabile, rename atomici via Git Data API) consente di pianificare il lavoro successivo come evoluzione concreta del runtime esistente. In pratica: Fase 3 diventa la fase del **workspace multi-tenant collaborativo**, Fase 4 quella della **standardizzazione forge/time-travel/local mode**.
 
 ---
 
@@ -110,43 +112,70 @@ Introduzione di flussi operativi, sincronizzazione in tempo reale e salvaguardia
     - La rebuild della projection materializza i documenti work item in SQLite (`work_items`, `work_item_bindings`) leggendo `work_item_kind`, `state`, `system_of_record`, `assignees` ed eventuale `external_binding` dal frontmatter; i label provider vengono derivati dalla `label_taxonomy` del config.
     - `LoadWorkItemByPath` espone il read model SQLite come API read-only dedicata; il detail panel mostra il primo scope UI minimale e read-only (`state`, `system_of_record`, `assignees`, binding esterno) senza introdurre scritture sul forge.
     - Policy iniziale: `task ↔ issue` è opt-in, non rigido. `system_of_record: brain|split|external` e `external_binding` opzionale coprono `draft task`, item local-only e item provider-bound senza introdurre dual-write nel write path.
-    - Il primo scope UI resta volutamente minimo: commenti, review branch, mutazioni issue/PR e board UX rimangono rinviati alla Fase 3.
+    - Il primo scope UI resta volutamente minimo sul lato forge: l'editor già espone i campi operativi (`state`, `system_of_record`, `assignees`) nel normale save flow, ma commenti, mutazioni issue/PR, sync provider-bound e board UX rimangono rinviati alla Fase 3.
 
 ---
 
-## 🟠 Fase 3: Collaborazione e Sicurezza (RBAC)
+## 🟠 Fase 3: Workspace Collaborativo, Work Item & RBAC
 
-Abilitare l'uso della piattaforma a team estesi, sfruttando l'App OAuth esistente.
+Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondamenta già chiuse in Fase 2B. Il focus non è più "aggiungere OAuth" in astratto, ma separare chiaramente tre piani: **routing del target**, **mutazioni operative dei work item**, **orchestrazione permission-aware delle scritture**.
 
-- [ ] **Impersonation tramite OAuth**
-    - Uso dell'access token univoco dell'utente loggato per azioni sul forge a suo nome (commenti su work item bindati, apertura PR).
-- [ ] **Multi-Repo Workspace UX**
-    - "Brain Switcher" nella UI (menu laterale) per navigare tra repository dell'organizzazione senza cambiare URL.
-    - Discovery via token OAuth: scansione dei repo accessibili all'utente e listing automatico di quelli che espongono `.brain-config.yml`. Dipende dall'impersonation dello stesso step.
-    - Gestione graceful degli errori di autorizzazione: se l'utente non ha permessi Git su un Brain, messaggio esplicito senza crash.
-    - Il backend diventa effettivamente multi-repo solo dopo target-scoped caches + Projection Layer SQLite multi-tenant; fino ad allora il runtime resta concettualmente single-target per sessione.
-- [ ] **Workflow di Review (Branching & PR)**
-    - Flusso "Proponi Modifica" per utenti non-admin.
-    - Creazione automatica di branch temporanei e apertura PR direttamente dalla UI.
-- [ ] **Rate-Limit Shielding**
-    - Centralizzazione delle chiamate al forge tramite job in background. Il frontend interroga esclusivamente la cache SQLite.
-- [ ] **Pannello Impostazioni (Visual YAML Editor)** _(spostato da Fase 1)_
-    - UI dedicata (solo Admin) per creare e modificare tipi di nodo: Color Picker, gestione cartelle, mapping `work_item_kind`/binding provider.
-    - Il backend Axum serializza (`serde_yaml`) e pusha le modifiche a `.brain-config.yml`.
+**Principio guida:** il backend ha già le primitive giuste (`TargetKey`, projection SQLite per target, `brain_id` stabile, write path GitHub centralizzato). La Fase 3 deve evitare nuove scorciatoie single-target e introdurre ogni nuova capability come target-aware fin dal primo commit.
+
+- [ ] **3.1 Multi-Tenant Workspace Routing**
+    - Evolvere il router Leptos da path statici (`/knowledge`, `/admin`) a path dinamici `/{org}/{repo}/knowledge` e `/{org}/{repo}/admin`, mantenendo eventuali redirect dal target di default solo come compat layer temporaneo.
+    - Spostare la risoluzione del `TargetConfig` dal boot statico del server al contesto della request/pagina. `GithubHttp` pooled è già target-agnostic; ciò che manca è togliere l'assunzione che asset proxy, SSR context e webhook state puntino a un solo repo definito da env.
+    - Introdurre il **Brain Switcher** nella sidebar: discovery via token OAuth dei repo accessibili all'utente che contengono `.brain-config.yml`, con stato esplicito per `accessible / missing-config / forbidden`.
+    - Success criterion: la stessa istanza Brain UI può navigare più repo/target senza restart né collisioni di cache/projection, e l'URL diventa l'identificatore canonico del target attivo.
+- [ ] **3.2 Work Items Interattivi e Bidirectional Sync**
+    - Promuovere il modello `WorkItem` da read model/editorial overlay a workflow operativo completo. Aggiornare `state`, `assignees`, label taxonomiche e binding esterno deve poter mutare il provider quando `system_of_record` lo richiede.
+    - Aggiungere server fn mutate-only dedicate (`transition_work_item`, `assign_work_item`, `bind_work_item`, ecc.) invece di sovraccaricare il save markdown generico: il salvataggio editoriale del file e la mutazione del provider hanno failure mode, audit trail e policy diverse.
+    - Usare l'access token OAuth dell'utente per le mutazioni GitHub Issue/PR; in ingresso, estendere la pipeline webhook oltre `push` per intercettare eventi `issues`, `issue_comment`, `pull_request`, `labeled`, `assigned` quando afferenti a item bindati, e propagare SSE mirate (`work_item_updated`, `binding_updated`) oltre al generico `graph_updated`.
+    - Formalizzare una policy di coerenza per `system_of_record`:
+      - `brain`: mutate solo frontmatter/projection locale.
+      - `split`: mutare sia Brain che provider con riconciliazione esplicita.
+      - `external`: UI Brain come control plane/read-through cache di un item nato altrove.
+    - Success criterion: un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band rientra in projection/UI senza refresh manuale.
+- [ ] **3.3 RBAC e Save Orchestration Permission-Aware**
+    - Smettere di modellare RBAC come semplice flag admin/non-admin. Il controllo reale è una capability matrix per target: `can_read`, `can_write_default_branch`, `can_review_via_pr`, `can_admin_config`, derivata da sessione OAuth + permessi repo/branch.
+    - Riutilizzare la logica di tree commit atomico già introdotta per i rename, generalizzandola in un write path capace di scegliere tra:
+      - commit diretto sul branch target se l'utente ha write access;
+      - branch temporaneo `patch-{user}-{timestamp}` + apertura PR se non può scrivere direttamente ma può proporre review.
+    - Tutte le azioni di scrittura ad alto livello (`save`, `rename`, `config update`, future work item mutations che toccano file) devono passare per questo orchestratore, così il fallback PR non diventa un caso speciale fragile.
+    - La UI deve rendere esplicito l'esito: `Saved to main`, `Proposed via PR`, `Blocked by permissions`, con link a branch/PR e audit coerente.
+    - Success criterion: un contributor senza write access può usare Brain UI normalmente; il sistema devia automaticamente su branch+PR senza perdere atomicità o metadata di autore.
+- [ ] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
+    - Portare `.brain-config.yml` fuori dall'editor raw con una GUI admin-only che copra i casi reali emersi: node types, directory mapping, accent colors, `work_item_kind`, `label_taxonomy`, binding provider e impostazioni visuali del grafo.
+    - Il backend continua a serializzare YAML con `serde_yaml`, ma il save deve transitare dallo stesso orchestratore permission-aware della 3.3: commit diretto per admin con write access, PR proposta negli altri casi approvati.
+    - La validazione deve riutilizzare il parser runtime del config, non uno schema parallelo nel frontend, per evitare drift tra editor visuale e loader server-side.
+- [ ] **3.5 Rate-Limit Shielding e Background Reconciliation**
+    - Una volta introdotte mutazioni work item e discovery multi-repo, spostare le chiamate GitHub più costose dietro job/reconcile espliciti e usare SQLite come cache operativa interrogabile dal frontend.
+    - Questo asse non è l'entry point della fase, ma diventa necessario appena la UI smette di leggere solo il repo attivo e comincia a scansionare repo, issue e PR per utente.
 
 ---
 
-## 🔴 Fase 4: History & Multi-Forge
+## 🔴 Fase 4: Forge Independence & Deep History
 
-Esplorazione del passato e indipendenza totale dal provider.
+Sfruttare la maturazione del backend GitHub-first per standardizzare il boundary verso altri forge e usare la projection SQLite come motore per la vista temporale e il local/offline mode.
 
-- [ ] **Git Time Jump**
-    - Navigazione della history dalla UI (visualizzazione di un nodo a uno specifico SHA), con stato conversazionale del `WorkItem` bindato quando presente.
-- [ ] **`ForgeAdapter` Trait + Multi-Forge Support** _(trait spostato da Fase 1)_
-    - Estrazione del `trait ForgeAdapter` da `GithubClient`, progettato contro i requisiti reali dei nuovi adapter e solo dopo aver saturato il backend GitHub-first.
-    - Adapter ufficiali per **GitLab** e **Gitea/Codeberg**.
-- [ ] **Offline Mode / Local Git**
-    - Supporto per repository locali senza un forge remoto.
+**Principio guida:** il trait non va estratto da `GithubClient` in modo cosmetico. Va ricavato dalle capability realmente saturate in Fase 3: repository discovery, snapshot tree/blob, mutazioni branch/PR, work item sync, webhook normalization e policy di rate limit.
+
+- [ ] **4.1 `ForgeAdapter` Trait (capability-driven)**
+    - Estrarre un boundary che copra i bisogni reali del runtime, non un semplice wrapper HTTP. Le capability minime previste sono: target discovery/listing, lettura tree/blob, write commit/branch/ref update, PR/MR creation, work item issue mutation, webhook verification + event normalization.
+    - Valutare esplicitamente se implementarlo come un singolo trait o come famiglia di subtrait/capabilities (`ForgeRepoAdapter`, `ForgeCollaborationAdapter`, `ForgeWebhookAdapter`) per evitare un "lowest common denominator" troppo povero o un god-trait ingestibile.
+    - Adapter secondari: **GitLab** e **Gitea/Forgejo**. GitHub resta reference implementation finché i casi reali non stabilizzano la forma finale.
+- [ ] **4.2 Temporal Graph View (Git Time Jump)**
+    - La feature non deve limitarsi a mostrare vecchi file. L'obiettivo è una modalità storica completa con slider/timeline che ricostruisce una projection temporanea del repository a una data/SHA e la rende navigabile nella stessa UI a grafo.
+    - Reuse intenzionale della pipeline esistente: fetch tree storico → build in-memory/ephemeral SQLite projection → render di graph canvas, detail panel e knowledge base in modalità read-only storica.
+    - Estensione naturale: confronto `then vs now` per nodi, backlink e work item bindati, senza introdurre un parser o store storico separato.
+- [ ] **4.3 Local / Offline Execution Context**
+    - Permettere l'esecuzione di Brain UI contro un `.git` locale o una working tree locale senza dipendere da Axum come proxy di un forge remoto.
+    - Implementare un `LocalFileSystemAdapter`/`LocalGitAdapter` che offra la stessa superficie minima usata dal runtime: lettura snapshot, commit locali, branch locali, eventuale sync successivo verso remoto opzionale.
+    - Evitare fork architetturali: stessa UI, stesso projection pipeline, diverso adapter.
+- [ ] **4.4 Advanced Conflict Resolution**
+    - La Fase 2B ha introdotto il banner `Stale Data`; con collaborazione reale e fallback via PR non basta più.
+    - Quando webhook o ref update rivelano divergenze rispetto al draft locale o al branch corrente, servono diff e merge espliciti: vista side-by-side, scelta hunk-based o almeno `local / remote / apply anyway`.
+    - Questo asse è particolarmente importante se la 3.3 porta davvero contributor multipli e branch temporanei: il conflitto non sarà più eccezione, ma percorso operativo ordinario.
 
 ---
 
