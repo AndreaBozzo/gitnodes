@@ -4,6 +4,140 @@ use leptos::prelude::*;
 
 use super::types::{Edge, Node};
 
+#[derive(Clone, Copy)]
+struct LabelCandidate {
+    id: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    priority: i32,
+}
+
+fn label_budget(visible_count: usize, has_focus: bool) -> usize {
+    if has_focus {
+        18
+    } else if visible_count > 90 {
+        12
+    } else if visible_count > 55 {
+        16
+    } else {
+        24
+    }
+}
+
+fn compact_label(title: &str, is_tag: bool, is_focus: bool) -> String {
+    let limit = if is_focus {
+        34
+    } else if is_tag {
+        18
+    } else {
+        24
+    };
+
+    if title.chars().count() <= limit {
+        return title.to_string();
+    }
+
+    let mut out: String = title.chars().take(limit.saturating_sub(3)).collect();
+    out.push_str("...");
+    out
+}
+
+fn estimated_label_width(label: &str, font_size: f32) -> f32 {
+    label.chars().count() as f32 * font_size * 0.58 + 1.0
+}
+
+fn labels_overlap(a: LabelCandidate, b: LabelCandidate) -> bool {
+    let horizontal_gap = (a.width + b.width) * 0.5 + 1.2;
+    let vertical_gap = 3.2;
+    (a.x - b.x).abs() < horizontal_gap && (a.y - b.y).abs() < vertical_gap
+}
+
+fn visible_label_ids(
+    nodes: &[Node],
+    visible_ids: &HashSet<u32>,
+    degrees: &HashMap<u32, usize>,
+    adjacency: &HashMap<u32, HashSet<u32>>,
+    focus: Option<u32>,
+    tag_type: Option<&str>,
+) -> HashSet<u32> {
+    let mut candidates: Vec<LabelCandidate> = nodes
+        .iter()
+        .filter(|n| visible_ids.contains(&n.id))
+        .filter_map(|n| {
+            let deg = *degrees.get(&n.id).unwrap_or(&0);
+            let is_tag = tag_type == Some(n.node_type.as_str());
+            let in_focus_neighbourhood = focus.is_some_and(|f| {
+                f == n.id
+                    || adjacency
+                        .get(&f)
+                        .map(|s| s.contains(&n.id))
+                        .unwrap_or(false)
+            });
+
+            if focus.is_some() && !in_focus_neighbourhood {
+                return None;
+            }
+
+            if focus.is_none() && is_tag && deg < 4 {
+                return None;
+            }
+
+            let base_r = if is_tag {
+                0.9_f32 + (deg as f32).min(4.0) * 0.12
+            } else {
+                1.5_f32 + (deg as f32).min(6.0) * 0.18
+            };
+            let label_size = if is_tag { 1.1 } else { 1.55 };
+            let is_focus = focus == Some(n.id);
+            let label = compact_label(&n.title, is_tag, is_focus);
+
+            let mut priority = (deg as i32) * 8;
+            if !is_tag {
+                priority += 24;
+            }
+            if in_focus_neighbourhood {
+                priority += 60;
+            }
+            if is_focus {
+                priority += 1_000;
+            }
+
+            Some(LabelCandidate {
+                id: n.id,
+                x: n.x,
+                y: n.y + base_r + 2.4,
+                width: estimated_label_width(&label, label_size),
+                priority,
+            })
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.y.total_cmp(&b.y))
+            .then_with(|| a.x.total_cmp(&b.x))
+    });
+
+    let budget = label_budget(visible_ids.len(), focus.is_some());
+    let mut placed: Vec<LabelCandidate> = Vec::new();
+    let mut ids = HashSet::new();
+
+    for candidate in candidates {
+        let forced = focus == Some(candidate.id);
+        if !forced && placed.len() >= budget {
+            break;
+        }
+        if forced || placed.iter().all(|p| !labels_overlap(candidate, *p)) {
+            ids.insert(candidate.id);
+            placed.push(candidate);
+        }
+    }
+
+    ids
+}
+
 #[component]
 pub fn GraphCanvas(
     nodes: StoredValue<Vec<Node>>,
@@ -94,6 +228,15 @@ pub fn GraphCanvas(
     let config_for_nodes = config.clone();
     let nodes_view = move || {
         let vis = visible_ids.get();
+        let f = focus.get();
+        let tag_type = config_for_nodes
+            .synthetic_tag_spec()
+            .map(|s| s.name.clone());
+        let label_ids = nodes.with_value(|ns| {
+            degrees.with_value(|d| {
+                adjacency.with_value(|a| visible_label_ids(ns, &vis, d, a, f, tag_type.as_deref()))
+            })
+        });
         nodes.with_value(|ns| {
             ns.iter()
                 .filter(|n| vis.contains(&n.id))
@@ -127,6 +270,8 @@ pub fn GraphCanvas(
                     let label_size = if is_tag { 1.1 } else { 1.55 };
                     let label_offset = base_r + 2.4;
                     let label_fill = if is_tag { "#cbd5e1" } else { "#e2e8f0" };
+                    let is_label_visible = label_ids.contains(&id);
+                    let label = compact_label(&title, is_tag, f == Some(id));
 
                     view! {
                         <g
@@ -150,6 +295,7 @@ pub fn GraphCanvas(
                                 }
                             }
                         >
+                            <title>{title.clone()}</title>
                             <circle
                                 cx=format!("{:.3}", x)
                                 cy=format!("{:.3}", y)
@@ -183,16 +329,18 @@ pub fn GraphCanvas(
                                     }
                                 }
                             />
-                            <text
-                                x=format!("{:.3}", x)
-                                y=format!("{:.3}", y + label_offset)
-                                text-anchor="middle"
-                                font-size=label_size
-                                fill=label_fill
-                                style="pointer-events:none; font-weight:500;"
-                            >
-                                {title}
-                            </text>
+                            {is_label_visible.then(|| view! {
+                                <text
+                                    x=format!("{:.3}", x)
+                                    y=format!("{:.3}", y + label_offset)
+                                    text-anchor="middle"
+                                    font-size=label_size
+                                    fill=label_fill
+                                    style="pointer-events:none; font-weight:500; paint-order:stroke; stroke:#020617; stroke-width:0.55; stroke-linejoin:round;"
+                                >
+                                    {label}
+                                </text>
+                            })}
                         </g>
                     }
                 })
@@ -236,5 +384,73 @@ pub fn GraphCanvas(
                 {move || format!("graph · {} nodes", visible_ids.get().len())}
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: u32, title: &str, node_type: &str, x: f32, y: f32) -> Node {
+        Node {
+            id,
+            title: title.to_string(),
+            summary: String::new(),
+            node_type: node_type.to_string(),
+            tags: Vec::new(),
+            x,
+            y,
+            path: format!("{title}.md"),
+            sha: String::new(),
+        }
+    }
+
+    #[test]
+    fn compact_labels_keep_focus_titles_longer() {
+        let title = "A very long operational decision title that would crowd the graph";
+
+        assert!(compact_label(title, false, false).len() < compact_label(title, false, true).len());
+        assert!(compact_label(title, true, false).len() < compact_label(title, false, false).len());
+    }
+
+    #[test]
+    fn focused_labels_stay_in_the_focused_neighbourhood() {
+        let nodes = vec![
+            node(1, "Selected", "concept", 10.0, 10.0),
+            node(2, "Neighbour", "concept", 30.0, 30.0),
+            node(3, "Distant Hub", "concept", 80.0, 80.0),
+        ];
+        let visible_ids = HashSet::from([1, 2, 3]);
+        let degrees = HashMap::from([(1, 1), (2, 1), (3, 12)]);
+        let adjacency = HashMap::from([(1, HashSet::from([2]))]);
+
+        let labels = visible_label_ids(&nodes, &visible_ids, &degrees, &adjacency, Some(1), None);
+
+        assert!(labels.contains(&1));
+        assert!(labels.contains(&2));
+        assert!(!labels.contains(&3));
+    }
+
+    #[test]
+    fn overview_hides_low_degree_tag_labels() {
+        let nodes = vec![
+            node(1, "Concept", "concept", 10.0, 10.0),
+            node(2, "#small", "tag", 40.0, 40.0),
+        ];
+        let visible_ids = HashSet::from([1, 2]);
+        let degrees = HashMap::from([(1, 1), (2, 1)]);
+        let adjacency = HashMap::new();
+
+        let labels = visible_label_ids(
+            &nodes,
+            &visible_ids,
+            &degrees,
+            &adjacency,
+            None,
+            Some("tag"),
+        );
+
+        assert!(labels.contains(&1));
+        assert!(!labels.contains(&2));
     }
 }
