@@ -127,7 +127,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Spostare la risoluzione del `TargetConfig` dal boot statico del server al contesto della request/pagina. `GithubHttp` pooled è già target-agnostic; ciò che manca è togliere l'assunzione che asset proxy, SSR context e webhook state puntino a un solo repo definito da env.
     - Introdurre il **Brain Switcher** nella sidebar: discovery via token OAuth dei repo accessibili all'utente che contengono `.brain-config.yml`, con stato esplicito per `accessible / missing-config / forbidden`.
     - Success criterion: la stessa istanza Brain UI può navigare più repo/target senza restart né collisioni di cache/projection, e l'URL diventa l'identificatore canonico del target attivo.
-- [~] **3.2 Work Items Interattivi e Bidirectional Sync** _(α landed 2026-04-27, β pending)_
+- [x] **3.2 Work Items Interattivi e Bidirectional Sync** _(α+β landed 2026-04-27)_
     - **3.2-α (landed)** — UI → file → projection → SSE loop chiuso, sempre con `system_of_record = brain` lato write:
       - `BrainEvent::WorkItemUpdated { brain_id, content_path }` e `BindingUpdated { ... }` aggiunti al bus tipato; `LiveSync` ora sottoscrive entrambi gli event name.
       - `EventBus::init()` / `global()` espone il bus come singleton process-wide così le server fn possono pubblicare senza prendere il bus in firma.
@@ -135,12 +135,12 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
       - Tre server fn mutate-only: `TransitionWorkItem`, `AssignWorkItem`, `BindWorkItem`. Pattern condiviso in `apply_work_item_mutation`: load file → patch frontmatter mirato (overlay del singolo campo, custom keys preservate) → singolo commit via `GithubStorage::save_file` → patch projection → publish SSE → return record refreshed. Audit log per ogni kind (`work_item_transition`/`assign`/`bind`).
       - UI controls inline nel `DetailPanel::WorkItemCard`: `<details>` collapsible con state dropdown, assignees CSV input, binding form (system/project/item_key/url) + Unbind. Action separate per kind di mutazione, errori scoped, `graph_version` bumpato su success per refetch.
       - Webhook pipeline esteso a `issues`/`pull_request`: parsing minimale (repo + number), gate sul target repo, lookup binding via `find_work_item_by_external`. Item non bindati → silently 202; bindati → rebuild projection + emit `WorkItemUpdated { brain_id }` con il `brain_id` reale del documento.
-    - **3.2-β (pending)** — taglio successivo, sopra la base α:
-      - Provider-side push delle mutazioni quando `system_of_record` è `split` o `external`: helper `GithubHttp::issues_*` (PATCH `/repos/{owner}/{repo}/issues/{n}`), policy di reconciliation, audit dedicato per failure provider-side senza rollback dell'editorial save.
-      - Coerenza `system_of_record` esplicita: `brain` = no-op provider, `split` = mutazione duale con reconcile, `external` = UI come control plane di un item nato altrove (read-through + replay locale).
-      - `issue_comment` come timeline event SSE (oggi escluso perché rumoroso e non muta state).
-      - Sync incrementale dell'evento webhook (oggi rebuildiamo l'intera projection del target — economic finché i target sono singoli, da refattorizzare quando `find_work_item_by_external` discrimina davvero il delta).
-    - Success criterion (residuo): un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band rientra in projection/UI senza refresh manuale (oggi: rientra solo se l'item è già bindato).
+    - **3.2-β (landed)** — bidirectional sync sopra la base α:
+      - Provider-side push delle mutazioni quando `system_of_record` è `split` o `external`: `GithubHttp::issue_labels` + `patch_issue` leggono le label correnti, preservano le label non-Brain, applicano lo stato GitHub (`done/cancelled → closed`, altri stati → `open`), sincronizzano gli assignee e auditano i failure provider-side senza rollback dell'editorial save.
+      - Coerenza `system_of_record` esplicita: `brain` = no-op provider; `split`/`external` = commit editoriale Brain + push provider quando il binding è GitHub. Le mutazioni provider-originated rientrano senza echo di ritorno.
+      - Webhook `issues`/`pull_request`: per item bindati legge state/labels/assignees dal payload, mappa le label `label_taxonomy` allo stato Brain, aggiorna il file Markdown/projection con `GITHUB_TOKEN` e pubblica `WorkItemUpdated`.
+    - Success criterion chiuso: un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band su item già bindato rientra in projection/UI senza refresh manuale.
+    - Follow-up non bloccanti: `issue_comment` come timeline event SSE e sync incrementale puro dell'evento webhook restano da valutare in 3.5 insieme alla query layer parametrica/rate-limit shielding. Il percorso corrente usa ancora rebuild target-scoped + patch file mirata, che è accettabile per i target attuali.
 - [ ] **3.3 RBAC e Save Orchestration Permission-Aware**
     - Smettere di modellare RBAC come semplice flag admin/non-admin. Il controllo reale è una capability matrix per target: `can_read`, `can_write_default_branch`, `can_review_via_pr`, `can_admin_config`, derivata da sessione OAuth + permessi repo/branch.
     - Riutilizzare la logica di tree commit atomico già introdotta per i rename, generalizzandola in un write path capace di scegliere tra:

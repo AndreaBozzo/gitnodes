@@ -198,6 +198,53 @@ async fn main() {
         )
     }
 
+    fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
+        let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
+        match segments.as_slice() {
+            [org, repo, "knowledge"] | [org, repo, "admin"]
+                if !org.is_empty() && !repo.is_empty() =>
+            {
+                Some(TargetConfig {
+                    org: (*org).to_string(),
+                    repo: (*repo).to_string(),
+                    branch: fallback.branch.clone(),
+                })
+            }
+            [org, repo, "knowledge", _] | [org, repo, "admin", _]
+                if !org.is_empty() && !repo.is_empty() =>
+            {
+                Some(TargetConfig {
+                    org: (*org).to_string(),
+                    repo: (*repo).to_string(),
+                    branch: fallback.branch.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn path_from_referer(request: &Request<Body>) -> Option<String> {
+        let raw = request
+            .headers()
+            .get(axum::http::header::REFERER)?
+            .to_str()
+            .ok()?;
+        if raw.starts_with('/') {
+            return Some(raw.to_string());
+        }
+        let without_scheme = raw.split_once("://").map(|(_, rest)| rest)?;
+        let path_start = without_scheme.find('/')?;
+        Some(without_scheme[path_start..].to_string())
+    }
+
+    fn target_for_request(request: &Request<Body>, fallback: &TargetConfig) -> TargetConfig {
+        target_from_path(request.uri().path(), fallback)
+            .or_else(|| {
+                path_from_referer(request).and_then(|path| target_from_path(&path, fallback))
+            })
+            .unwrap_or_else(|| fallback.clone())
+    }
+
     let options_for_ssr = leptos_options.clone();
 
     // Private-repo asset proxy. Raw GitHub URLs would require the user's OAuth
@@ -235,7 +282,7 @@ async fn main() {
                 let brand_for_api = brand_cfg.clone();
                 let http_for_api = gh_http.clone();
                 move |session: Session, request: Request<Body>| {
-                    let target = target_for_api.clone();
+                    let target = target_for_request(&request, &target_for_api);
                     let brand = brand_for_api.clone();
                     let http = http_for_api.clone();
                     async move {
@@ -261,7 +308,7 @@ async fn main() {
             let http_for_ssr = gh_http.clone();
             move |session: Session, request: Request<Body>| {
                 let options = options_for_ssr.clone();
-                let target = target_for_ssr.clone();
+                let target = target_for_request(&request, &target_for_ssr);
                 let brand = brand_for_ssr.clone();
                 let http = http_for_ssr.clone();
                 async move {

@@ -5,6 +5,8 @@ use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 use brain_domain::{
     BrainConfig, BrandConfig, ExternalWorkItemBinding, TargetConfig, WorkItem, WorkItemState,
 };
+#[cfg(feature = "ssr")]
+use brain_domain::{ExternalWorkItemSystem, WorkItemSystemOfRecord};
 
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
@@ -944,25 +946,98 @@ impl WorkItemMutation {
 }
 
 /// Apply a single mutation to a work item: load file → patch frontmatter →
-/// commit single file → patch projection → publish SSE. The provider-side
-/// push (mutating the GitHub Issue when `system_of_record` is `split` or
-/// `external`) is intentionally **not** here — it is deferred to a follow-up
-/// pass with proper failure handling.
+/// commit single file → patch projection → publish SSE. For `split` and
+/// `external` GitHub-bound items, the mutation is also pushed to the provider
+/// after the editorial save; provider failure is audited without rolling back
+/// the Brain file commit.
 #[cfg(feature = "ssr")]
 async fn apply_work_item_mutation(
     brain_id: String,
     mutation: WorkItemMutation,
 ) -> Result<WorkItem, BrainError> {
     use crate::server::session;
-    use brain_storage::Storage;
-    use serde_yaml::Value;
-    use std::collections::BTreeMap;
 
     let (s, token) = session::require_session_and_token().await?;
     let user = session::session_user_or_fallback(&s).await;
     let target = session::target_cfg()?;
+    let storage = session::storage()?;
 
-    let work_item = crate::server::projection::load_work_item_by_brain_id(&target, &brain_id)
+    apply_work_item_mutation_inner(&token, &user, &target, &storage, brain_id, mutation, true).await
+}
+
+/// Apply provider-originated issue changes to Brain's editorial file and
+/// projection without echoing them back to the provider. Used by GitHub issue
+/// webhooks after the external item has already changed.
+#[cfg(feature = "ssr")]
+pub(crate) async fn apply_provider_work_item_update(
+    token: &str,
+    user: &str,
+    target: &TargetConfig,
+    storage: &brain_storage::GithubStorage,
+    brain_id: &str,
+    state: Option<WorkItemState>,
+    assignees: Option<Vec<String>>,
+) -> Result<Option<WorkItem>, BrainError> {
+    let current = crate::server::projection::load_work_item_by_brain_id(target, brain_id).await?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    if current.system_of_record == WorkItemSystemOfRecord::Brain {
+        return Ok(None);
+    }
+
+    let mut last = None;
+    if let Some(state) = state
+        && current.state != state
+    {
+        last = Some(
+            apply_work_item_mutation_inner(
+                token,
+                user,
+                target,
+                storage,
+                brain_id.to_string(),
+                WorkItemMutation::State(state),
+                false,
+            )
+            .await?,
+        );
+    }
+    if let Some(assignees) = assignees
+        && current.assignees != assignees
+    {
+        last = Some(
+            apply_work_item_mutation_inner(
+                token,
+                user,
+                target,
+                storage,
+                brain_id.to_string(),
+                WorkItemMutation::Assignees(assignees),
+                false,
+            )
+            .await?,
+        );
+    }
+
+    Ok(last)
+}
+
+#[cfg(feature = "ssr")]
+async fn apply_work_item_mutation_inner(
+    token: &str,
+    user: &str,
+    target: &TargetConfig,
+    storage: &brain_storage::GithubStorage,
+    brain_id: String,
+    mutation: WorkItemMutation,
+    sync_provider: bool,
+) -> Result<WorkItem, BrainError> {
+    use brain_storage::Storage;
+    use serde_yaml::Value;
+    use std::collections::BTreeMap;
+
+    let work_item = crate::server::projection::load_work_item_by_brain_id(target, &brain_id)
         .await?
         .ok_or_else(|| BrainError::parse(format!("work item not found: {brain_id}")))?;
     let path = work_item
@@ -970,7 +1045,6 @@ async fn apply_work_item_mutation(
         .clone()
         .ok_or_else(|| BrainError::parse(format!("work item {brain_id} has no content path")))?;
 
-    let storage = session::storage()?;
     let (content, sha) = storage.read_file(&token, &path).await?;
     let (front_raw, body) = brain_domain::split_frontmatter(&content);
 
@@ -1031,35 +1105,50 @@ async fn apply_work_item_mutation(
 
     storage
         .save_file(
-            &token,
+            token,
             &path,
             &new_content,
             Some(&sha),
             &commit_msg,
-            &user,
+            user,
             &author_email,
         )
         .await?;
 
-    crate::server::audit::log(mutation.audit_kind(), Some(&user), &path).await;
+    crate::server::audit::log(mutation.audit_kind(), Some(user), &path).await;
 
     // Patch the local projection so the same response can carry the fresh
     // record without waiting on a full rebuild.
     match &mutation {
         WorkItemMutation::State(state) => {
-            crate::server::projection::update_work_item_state(&target, &brain_id, state).await?;
+            crate::server::projection::update_work_item_state(target, &brain_id, state).await?;
         }
         WorkItemMutation::Assignees(assignees) => {
-            crate::server::projection::update_work_item_assignees(&target, &brain_id, assignees)
+            crate::server::projection::update_work_item_assignees(target, &brain_id, assignees)
                 .await?;
         }
         WorkItemMutation::Binding(binding) => {
             crate::server::projection::upsert_work_item_binding(
-                &target,
+                target,
                 &brain_id,
                 binding.as_ref(),
             )
             .await?;
+        }
+    }
+
+    if sync_provider {
+        let config = crate::knowledge::config_loader::load(target, token).await;
+        if let Err(error) =
+            sync_work_item_provider(storage.http(), token, &config, &work_item, &mutation, user)
+                .await
+        {
+            crate::server::audit::log(
+                "work_item_provider_sync_error",
+                Some(user),
+                &format!("{brain_id}: {error}"),
+            )
+            .await;
         }
     }
 
@@ -1078,9 +1167,104 @@ async fn apply_work_item_mutation(
         bus.send(event);
     }
 
-    crate::server::projection::load_work_item_by_brain_id(&target, &brain_id)
+    crate::server::projection::load_work_item_by_brain_id(target, &brain_id)
         .await?
         .ok_or_else(|| BrainError::other("work item disappeared after mutation"))
+}
+
+#[cfg(feature = "ssr")]
+async fn sync_work_item_provider(
+    http: &brain_storage::GithubHttp,
+    token: &str,
+    config: &BrainConfig,
+    item: &WorkItem,
+    mutation: &WorkItemMutation,
+    user: &str,
+) -> Result<(), BrainError> {
+    if item.system_of_record == WorkItemSystemOfRecord::Brain {
+        return Ok(());
+    }
+    let Some(binding) = item.external_binding.as_ref() else {
+        return Ok(());
+    };
+    if binding.system != ExternalWorkItemSystem::Github {
+        return Ok(());
+    }
+
+    let mut patch = brain_storage::GithubIssuePatch::default();
+    match mutation {
+        WorkItemMutation::State(state) => {
+            patch.state = Some(github_issue_state_for(state).to_string());
+            match github_labels_for_state(http, token, config, item, state).await {
+                Ok(labels) => patch.labels = labels,
+                Err(error) => {
+                    crate::server::audit::log(
+                        "work_item_provider_label_sync_error",
+                        Some(user),
+                        &format!("{}: {error}", item.brain_id),
+                    )
+                    .await;
+                }
+            }
+        }
+        WorkItemMutation::Assignees(assignees) => {
+            patch.assignees = Some(assignees.clone());
+        }
+        WorkItemMutation::Binding(_) => return Ok(()),
+    }
+
+    http.patch_issue(token, &binding.project, &binding.item_key, &patch)
+        .await
+}
+
+#[cfg(feature = "ssr")]
+async fn github_labels_for_state(
+    http: &brain_storage::GithubHttp,
+    token: &str,
+    config: &BrainConfig,
+    item: &WorkItem,
+    state: &WorkItemState,
+) -> Result<Option<Vec<String>>, BrainError> {
+    use std::collections::HashSet;
+
+    let Some(binding) = item.external_binding.as_ref() else {
+        return Ok(None);
+    };
+    let Some(spec) = config.labels_for_kind(&item.kind) else {
+        return Ok(None);
+    };
+    if spec.state_labels.is_empty() {
+        return Ok(None);
+    }
+
+    let managed_state_labels: HashSet<&str> =
+        spec.state_labels.values().map(String::as_str).collect();
+    let mut labels = http
+        .issue_labels(token, &binding.project, &binding.item_key)
+        .await?
+        .into_iter()
+        .filter(|label| !managed_state_labels.contains(label.as_str()))
+        .collect::<Vec<_>>();
+
+    if !labels.iter().any(|label| label == &spec.kind_label) {
+        labels.push(spec.kind_label.clone());
+    }
+    if let Some(label) = spec.state_labels.get(state)
+        && !labels.iter().any(|existing| existing == label)
+    {
+        labels.push(label.clone());
+    }
+    labels.sort();
+    labels.dedup();
+    Ok(Some(labels))
+}
+
+#[cfg(feature = "ssr")]
+fn github_issue_state_for(state: &WorkItemState) -> &'static str {
+    match state {
+        WorkItemState::Done | WorkItemState::Cancelled => "closed",
+        _ => "open",
+    }
 }
 
 #[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]

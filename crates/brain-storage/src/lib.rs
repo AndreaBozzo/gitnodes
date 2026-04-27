@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use brain_domain::{BrainError, Edge, GithubClient, Node, TargetConfig, TargetKey};
 use brain_graph::{RawFile, build_graph, is_included_md};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 pub mod atomic_rename;
 pub use atomic_rename::{BackoffPolicy, RenameMutation, RenameOutcome};
@@ -135,6 +135,78 @@ impl GithubHttp {
         Self::auth_headers(self.inner.patch(url), token)
     }
 
+    fn github_issue_url(project: &str, item_key: &str) -> Result<String, BrainError> {
+        let (owner, repo) = project
+            .split_once('/')
+            .ok_or_else(|| BrainError::parse(format!("invalid GitHub project: {project}")))?;
+        if owner.trim().is_empty() || repo.trim().is_empty() || repo.contains('/') {
+            return Err(BrainError::parse(format!(
+                "invalid GitHub project: {project}"
+            )));
+        }
+        let number = item_key
+            .parse::<u64>()
+            .map_err(|_| BrainError::parse(format!("invalid GitHub issue number: {item_key}")))?;
+        Ok(format!(
+            "https://api.github.com/repos/{owner}/{repo}/issues/{number}"
+        ))
+    }
+
+    /// Read the current label names for a GitHub issue. The sync layer uses
+    /// this before replacing only Brain-managed state labels, preserving any
+    /// unrelated labels maintained directly on GitHub.
+    pub async fn issue_labels(
+        &self,
+        token: &str,
+        project: &str,
+        item_key: &str,
+    ) -> Result<Vec<String>, BrainError> {
+        #[derive(Deserialize)]
+        struct IssueResponse {
+            #[serde(default)]
+            labels: Vec<IssueLabel>,
+        }
+
+        #[derive(Deserialize)]
+        struct IssueLabel {
+            name: String,
+        }
+
+        let url = Self::github_issue_url(project, item_key)?;
+        let issue: IssueResponse = Self::send_json(self.get(&url, token), "issue_get").await?;
+        Ok(issue.labels.into_iter().map(|label| label.name).collect())
+    }
+
+    /// Patch a GitHub issue. `labels` replaces the issue label set when
+    /// present, matching GitHub's REST API semantics; callers should read and
+    /// merge existing labels first when they only own a subset.
+    pub async fn patch_issue(
+        &self,
+        token: &str,
+        project: &str,
+        item_key: &str,
+        patch: &GithubIssuePatch,
+    ) -> Result<(), BrainError> {
+        let url = Self::github_issue_url(project, item_key)?;
+        let resp = self
+            .patch(&url, token)
+            .json(patch)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("issue_patch fetch: {e}")))?;
+        let status = resp.status();
+        tracing::debug!(%status, project, item_key, "github issue patch response");
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(512).collect();
+            tracing::warn!(%status, project, item_key, body = %snippet, "github issue patch failed");
+            return Err(BrainError::github(format!(
+                "issue_patch status {status}: {snippet}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Send a request and decode JSON. Centralises the
     /// `.send().error_for_status().json()` chain. `ctx` is a short string used
     /// in error and warning messages so callers don't have to repeat it three
@@ -161,6 +233,16 @@ impl GithubHttp {
             .await
             .map_err(|e| BrainError::github(format!("{ctx} parse: {e}")))
     }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct GithubIssuePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignees: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
 }
 
 /// Combination of target-agnostic HTTP transport + target-bound URL builder.
