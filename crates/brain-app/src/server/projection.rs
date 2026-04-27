@@ -9,7 +9,7 @@ use brain_domain::{
 use brain_graph::{RawFile, build_graph, parse_file};
 use brain_storage::GithubStorage;
 use serde_yaml::Value;
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, sqlite::SqliteRow};
 
 static POOL: OnceLock<SqlitePool> = OnceLock::new();
 const SQLITE_MAX_VARIABLES: usize = 900;
@@ -171,8 +171,75 @@ pub async fn load_work_item_by_path(
     target: &TargetConfig,
     path: &str,
 ) -> Result<Option<WorkItem>, BrainError> {
+    read_work_item_by_path(target, path).await
+}
+
+#[derive(Clone, Debug)]
+pub struct NodeFilters {
+    pub node_types: Vec<String>,
+    pub tags: Vec<String>,
+    pub paths: Vec<String>,
+    pub include_virtual: bool,
+}
+
+impl Default for NodeFilters {
+    fn default() -> Self {
+        Self {
+            node_types: Vec::new(),
+            tags: Vec::new(),
+            paths: Vec::new(),
+            include_virtual: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct WorkItemFilters {
+    pub brain_ids: Vec<String>,
+    pub kinds: Vec<WorkItemKind>,
+    pub states: Vec<WorkItemState>,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub content_paths: Vec<String>,
+}
+
+pub async fn list_nodes(
+    target: &TargetConfig,
+    filters: &NodeFilters,
+) -> Result<Vec<Node>, BrainError> {
     let pool = pool()?;
-    load_work_item_by_path_from_pool(pool, target, path).await
+    let target_id = ensure_target_id(pool, target).await?;
+    list_nodes_from_pool(pool, target_id, filters).await
+}
+
+pub async fn read_node(target: &TargetConfig, path: &str) -> Result<Option<Node>, BrainError> {
+    let mut filters = NodeFilters {
+        paths: vec![path.to_string()],
+        include_virtual: false,
+        ..Default::default()
+    };
+    filters.paths.retain(|p| !p.trim().is_empty());
+    Ok(list_nodes(target, &filters).await?.into_iter().next())
+}
+
+pub async fn list_work_items(
+    target: &TargetConfig,
+    filters: &WorkItemFilters,
+) -> Result<Vec<WorkItem>, BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    list_work_items_from_pool(pool, target_id, filters).await
+}
+
+pub async fn read_work_item_by_path(
+    target: &TargetConfig,
+    path: &str,
+) -> Result<Option<WorkItem>, BrainError> {
+    let filters = WorkItemFilters {
+        content_paths: vec![path.to_string()],
+        ..Default::default()
+    };
+    Ok(list_work_items(target, &filters).await?.into_iter().next())
 }
 
 /// Load a single work item by its stable `brain_id`. Used by mutate-only
@@ -322,46 +389,12 @@ pub async fn upsert_work_item_binding(
 
 pub async fn load_graph(
     storage: &GithubStorage,
-    token: &str,
-    config: &BrainConfig,
+    _token: &str,
+    _config: &BrainConfig,
 ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
     let pool = pool()?;
     let target = storage.target().clone();
     let target_id = ensure_target_id(pool, &target).await?;
-    let state = load_sync_state(pool, target_id).await?;
-    let has_success = state
-        .as_ref()
-        .and_then(|sync| sync.last_success_at.as_ref())
-        .is_some();
-    let status = state
-        .as_ref()
-        .map(|sync| sync.status.as_str())
-        .unwrap_or("missing");
-    let should_rebuild = match (status, has_success) {
-        ("ready", true) => false,
-        // A rebuild is already in progress and there's a good snapshot to serve.
-        ("running", true) => false,
-        _ => true,
-    };
-    if should_rebuild {
-        let reason = if has_success {
-            "reconcile"
-        } else {
-            "bootstrap"
-        };
-        if let Err(error) = rebuild(storage, token, config, reason).await {
-            if has_success {
-                tracing::warn!(
-                    target = %TargetKey::from(&target),
-                    reason,
-                    error = %error,
-                    "projection rebuild failed; serving last good snapshot"
-                );
-                return load_cached_graph(pool, target_id).await;
-            }
-            return Err(error);
-        }
-    }
     load_cached_graph(pool, target_id).await
 }
 
@@ -524,6 +557,7 @@ struct ProjectedWorkItemBinding {
     binding: ExternalWorkItemBinding,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 struct SyncState {
     status: String,
@@ -552,6 +586,7 @@ async fn ensure_target_id(pool: &SqlitePool, target: &TargetConfig) -> Result<i6
     Ok(row.get::<i64, _>("id"))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 async fn load_sync_state(
     pool: &SqlitePool,
     target_id: i64,
@@ -902,7 +937,89 @@ async fn load_work_item_by_path_from_pool(
     path: &str,
 ) -> Result<Option<WorkItem>, BrainError> {
     let target_id = ensure_target_id(pool, target).await?;
-    let row = sqlx::query(
+    let filters = WorkItemFilters {
+        content_paths: vec![path.to_string()],
+        ..Default::default()
+    };
+    Ok(list_work_items_from_pool(pool, target_id, &filters)
+        .await?
+        .into_iter()
+        .next())
+}
+
+async fn list_nodes_from_pool(
+    pool: &SqlitePool,
+    target_id: i64,
+    filters: &NodeFilters,
+) -> Result<Vec<Node>, BrainError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT node_id, title, summary, node_type, tags_json, x, y, path, sha
+         FROM nodes WHERE target_id = ",
+    );
+    query.push_bind(target_id);
+
+    if !filters.include_virtual {
+        query.push(" AND is_virtual = 0");
+    }
+    if !filters.node_types.is_empty() {
+        query.push(" AND node_type IN (");
+        let mut separated = query.separated(", ");
+        for node_type in &filters.node_types {
+            separated.push_bind(node_type);
+        }
+        separated.push_unseparated(")");
+    }
+    if !filters.paths.is_empty() {
+        query.push(" AND path IN (");
+        let mut separated = query.separated(", ");
+        for path in &filters.paths {
+            separated.push_bind(path);
+        }
+        separated.push_unseparated(")");
+    }
+    query.push(" ORDER BY node_id ASC");
+
+    let wanted_tags: HashSet<String> = filters.tags.iter().map(|t| t.to_lowercase()).collect();
+    let rows = query.build().fetch_all(pool).await.map_err(sqlx_error)?;
+    let mut nodes = Vec::with_capacity(rows.len());
+    for row in rows {
+        let node = node_from_row(row)?;
+        if !wanted_tags.is_empty()
+            && !node
+                .tags
+                .iter()
+                .any(|tag| wanted_tags.contains(&tag.to_lowercase()))
+        {
+            continue;
+        }
+        nodes.push(node);
+    }
+    Ok(nodes)
+}
+
+async fn list_edges_from_pool(pool: &SqlitePool, target_id: i64) -> Result<Vec<Edge>, BrainError> {
+    let edge_rows = sqlx::query(
+        "SELECT from_id, to_id FROM edges WHERE target_id = ? ORDER BY from_id ASC, to_id ASC",
+    )
+    .bind(target_id)
+    .fetch_all(pool)
+    .await
+    .map_err(sqlx_error)?;
+    Ok(edge_rows
+        .into_iter()
+        .map(|row| Edge {
+            from: row.get::<i64, _>("from_id") as u32,
+            to: row.get::<i64, _>("to_id") as u32,
+        })
+        .collect())
+}
+
+async fn list_work_items_from_pool(
+    pool: &SqlitePool,
+    target_id: i64,
+    filters: &WorkItemFilters,
+) -> Result<Vec<WorkItem>, BrainError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT
             wi.brain_id,
             wi.kind,
@@ -921,19 +1038,97 @@ async fn load_work_item_by_path_from_pool(
         LEFT JOIN work_item_bindings wb
             ON wb.target_id = wi.target_id
            AND wb.brain_id = wi.brain_id
-        WHERE wi.target_id = ? AND wi.content_path = ?
-        LIMIT 1",
-    )
-    .bind(target_id)
-    .bind(path)
-    .fetch_optional(pool)
-    .await
-    .map_err(sqlx_error)?;
+        WHERE wi.target_id = ",
+    );
+    query.push_bind(target_id);
 
-    let Some(row) = row else {
-        return Ok(None);
-    };
+    if !filters.brain_ids.is_empty() {
+        query.push(" AND wi.brain_id IN (");
+        let mut separated = query.separated(", ");
+        for brain_id in &filters.brain_ids {
+            separated.push_bind(brain_id);
+        }
+        separated.push_unseparated(")");
+    }
+    if !filters.kinds.is_empty() {
+        query.push(" AND wi.kind IN (");
+        let mut separated = query.separated(", ");
+        for kind in &filters.kinds {
+            separated.push_bind(enum_str(kind));
+        }
+        separated.push_unseparated(")");
+    }
+    if !filters.states.is_empty() {
+        query.push(" AND wi.state IN (");
+        let mut separated = query.separated(", ");
+        for state in &filters.states {
+            separated.push_bind(enum_str(state));
+        }
+        separated.push_unseparated(")");
+    }
+    if !filters.content_paths.is_empty() {
+        query.push(" AND wi.content_path IN (");
+        let mut separated = query.separated(", ");
+        for path in &filters.content_paths {
+            separated.push_bind(path);
+        }
+        separated.push_unseparated(")");
+    }
+    query.push(" ORDER BY wi.title ASC, wi.brain_id ASC");
 
+    let wanted_labels: HashSet<String> = filters
+        .labels
+        .iter()
+        .map(|label| label.to_lowercase())
+        .collect();
+    let wanted_assignees: HashSet<String> = filters
+        .assignees
+        .iter()
+        .map(|assignee| assignee.to_lowercase())
+        .collect();
+    let rows = query.build().fetch_all(pool).await.map_err(sqlx_error)?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        let item = work_item_from_row(row)?;
+        if !wanted_labels.is_empty()
+            && !item
+                .labels
+                .iter()
+                .any(|label| wanted_labels.contains(&label.to_lowercase()))
+        {
+            continue;
+        }
+        if !wanted_assignees.is_empty()
+            && !item
+                .assignees
+                .iter()
+                .any(|assignee| wanted_assignees.contains(&assignee.to_lowercase()))
+        {
+            continue;
+        }
+        items.push(item);
+    }
+    Ok(items)
+}
+
+fn node_from_row(row: SqliteRow) -> Result<Node, BrainError> {
+    let tags_json = row.get::<String, _>("tags_json");
+    let tags = serde_json::from_str::<Vec<String>>(&tags_json)
+        .map_err(|error| BrainError::parse(format!("projection tags parse: {error}")))?;
+    Ok(Node {
+        id: row.get::<i64, _>("node_id") as u32,
+        title: row.get::<String, _>("title"),
+        summary: row.get::<String, _>("summary"),
+        node_type: row.get::<String, _>("node_type"),
+        tags,
+        x: row.get::<f64, _>("x") as f32,
+        y: row.get::<f64, _>("y") as f32,
+        path: row.get::<String, _>("path"),
+        sha: row.get::<String, _>("sha"),
+    })
+}
+
+fn work_item_from_row(row: SqliteRow) -> Result<WorkItem, BrainError> {
     let labels = serde_json::from_str(&row.get::<String, _>("labels_json"))
         .map_err(|error| BrainError::parse(format!("projection labels parse: {error}")))?;
     let assignees = serde_json::from_str(&row.get::<String, _>("assignees_json"))
@@ -949,7 +1144,7 @@ async fn load_work_item_by_path_from_pool(
         None => None,
     };
 
-    Ok(Some(WorkItem {
+    Ok(WorkItem {
         brain_id: row.get::<String, _>("brain_id"),
         kind: parse_enum_str(&row.get::<String, _>("kind"))?,
         title: row.get::<String, _>("title"),
@@ -959,7 +1154,7 @@ async fn load_work_item_by_path_from_pool(
         content_path: row.get::<Option<String>, _>("content_path"),
         external_binding,
         system_of_record: parse_enum_str(&row.get::<String, _>("system_of_record"))?,
-    }))
+    })
 }
 
 fn project_work_item(
@@ -1076,48 +1271,8 @@ async fn load_cached_graph(
     pool: &SqlitePool,
     target_id: i64,
 ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
-    let node_rows = sqlx::query(
-        "SELECT node_id, title, summary, node_type, tags_json, x, y, path, sha
-         FROM nodes WHERE target_id = ? ORDER BY node_id ASC",
-    )
-    .bind(target_id)
-    .fetch_all(pool)
-    .await
-    .map_err(sqlx_error)?;
-
-    let mut nodes = Vec::with_capacity(node_rows.len());
-    for row in node_rows {
-        let tags_json = row.get::<String, _>("tags_json");
-        let tags = serde_json::from_str::<Vec<String>>(&tags_json)
-            .map_err(|error| BrainError::parse(format!("projection tags parse: {error}")))?;
-        nodes.push(Node {
-            id: row.get::<i64, _>("node_id") as u32,
-            title: row.get::<String, _>("title"),
-            summary: row.get::<String, _>("summary"),
-            node_type: row.get::<String, _>("node_type"),
-            tags,
-            x: row.get::<f64, _>("x") as f32,
-            y: row.get::<f64, _>("y") as f32,
-            path: row.get::<String, _>("path"),
-            sha: row.get::<String, _>("sha"),
-        });
-    }
-
-    let edge_rows = sqlx::query(
-        "SELECT from_id, to_id FROM edges WHERE target_id = ? ORDER BY from_id ASC, to_id ASC",
-    )
-    .bind(target_id)
-    .fetch_all(pool)
-    .await
-    .map_err(sqlx_error)?;
-    let edges = edge_rows
-        .into_iter()
-        .map(|row| Edge {
-            from: row.get::<i64, _>("from_id") as u32,
-            to: row.get::<i64, _>("to_id") as u32,
-        })
-        .collect();
-
+    let nodes = list_nodes_from_pool(pool, target_id, &NodeFilters::default()).await?;
+    let edges = list_edges_from_pool(pool, target_id).await?;
     Ok((nodes, edges))
 }
 
@@ -1381,5 +1536,125 @@ node_types:
         assert_eq!(sync.status, "ready");
         assert!(sync.last_success_at.is_some());
         assert_eq!(backlink_count, 1);
+    }
+
+    #[tokio::test]
+    async fn list_nodes_filters_projection_without_rebuild() {
+        let pool = test_pool().await;
+        let config = BrainConfig::default();
+        let target = target("org", "repo-node-query", "main");
+        let target_id = ensure_target_id(&pool, &target).await.unwrap();
+        let snapshot = ProjectionSnapshot::from_raw_files(
+            &[
+                raw(
+                    "concepts/A.md",
+                    "sha-a",
+                    "---\ntype: concept\ntopic: Alpha\ntags: [sync]\n---\nsee [B](./B.md)\n",
+                ),
+                raw(
+                    "concepts/B.md",
+                    "sha-b",
+                    "---\ntype: concept\ntopic: Beta\ntags: [sync]\n---\nbody\n",
+                ),
+            ],
+            &config,
+        );
+        persist_snapshot(&pool, target_id, &snapshot, "test-node-query")
+            .await
+            .unwrap();
+
+        let non_virtual = list_nodes_from_pool(
+            &pool,
+            target_id,
+            &NodeFilters {
+                include_virtual: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let tagged = list_nodes_from_pool(
+            &pool,
+            target_id,
+            &NodeFilters {
+                tags: vec!["SYNC".to_string()],
+                include_virtual: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let beta = list_nodes_from_pool(
+            &pool,
+            target_id,
+            &NodeFilters {
+                paths: vec!["concepts/B.md".to_string()],
+                include_virtual: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+
+        assert_eq!(non_virtual.len(), 2);
+        assert_eq!(tagged.len(), 2);
+        assert_eq!(beta.title, "Beta");
+    }
+
+    #[tokio::test]
+    async fn list_work_items_filters_projection_rows() {
+        let pool = test_pool().await;
+        let config = BrainConfig::parse(
+            r##"
+default_type: task
+node_types:
+  - name: task
+    label: Task
+    directory: tasks
+    accent: "#fb7185"
+    title_key: topic
+    work_item_kind: task
+"##,
+        )
+        .unwrap();
+
+        let target = target("org", "repo-workitem-query", "main");
+        let target_id = ensure_target_id(&pool, &target).await.unwrap();
+        let snapshot = ProjectionSnapshot::from_raw_files(
+            &[
+                raw(
+                    "tasks/a.md",
+                    "sha-a",
+                    "---\ntype: task\ntopic: A\nbrain_id: task-a\nstate: blocked\nassignees: [andrea]\n---\n",
+                ),
+                raw(
+                    "tasks/b.md",
+                    "sha-b",
+                    "---\ntype: task\ntopic: B\nbrain_id: task-b\nstate: done\nassignees: [sam]\n---\n",
+                ),
+            ],
+            &config,
+        );
+        persist_snapshot(&pool, target_id, &snapshot, "test-workitem-query")
+            .await
+            .unwrap();
+
+        let blocked = list_work_items_from_pool(
+            &pool,
+            target_id,
+            &WorkItemFilters {
+                states: vec![WorkItemState::Blocked],
+                assignees: vec!["ANDREA".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].brain_id, "task-a");
     }
 }

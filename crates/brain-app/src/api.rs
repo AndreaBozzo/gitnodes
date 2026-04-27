@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 use brain_domain::{
     BrainConfig, BrandConfig, ExternalWorkItemBinding, TargetConfig, ViewSpec, WorkItem,
-    WorkItemState,
+    WorkItemKind, WorkItemState,
 };
 #[cfg(feature = "ssr")]
 use brain_domain::{ExternalWorkItemSystem, WorkItemSystemOfRecord};
@@ -53,6 +53,9 @@ const SERVER_FNS: &[&str] = &[
     "RevokeSession",
     "GetCurrentUser",
     "LoadBrainTemplate",
+    "ListNodes",
+    "ListWorkItems",
+    "ReadNode",
     "LoadBrainGraph",
     "LoadWorkItemByPath",
     "ReadBrainFile",
@@ -87,6 +90,9 @@ pub fn register_server_functions() {
     register_explicit::<RevokeSession>();
     register_explicit::<GetCurrentUser>();
     register_explicit::<LoadBrainTemplate>();
+    register_explicit::<ListNodes>();
+    register_explicit::<ListWorkItems>();
+    register_explicit::<ReadNode>();
     register_explicit::<LoadBrainGraph>();
     register_explicit::<LoadWorkItemByPath>();
     register_explicit::<ReadBrainFile>();
@@ -416,6 +422,114 @@ pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnEr
     let raw = storage.load_template(&token, filename).await.map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);
     Ok(body.trim_start_matches('\n').to_string())
+}
+
+fn default_include_virtual() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeQueryFilters {
+    #[serde(default)]
+    pub node_types: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default = "default_include_virtual")]
+    pub include_virtual: bool,
+}
+
+impl Default for NodeQueryFilters {
+    fn default() -> Self {
+        Self {
+            node_types: Vec::new(),
+            tags: Vec::new(),
+            paths: Vec::new(),
+            include_virtual: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WorkItemQueryFilters {
+    #[serde(default)]
+    pub brain_ids: Vec<String>,
+    #[serde(default)]
+    pub kinds: Vec<WorkItemKind>,
+    #[serde(default)]
+    pub states: Vec<WorkItemState>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    #[serde(default)]
+    pub content_paths: Vec<String>,
+}
+
+/// Parametric read side for graph nodes. This intentionally exposes the
+/// target-scoped SQLite projection instead of causing a forge read; explicit
+/// reconciliation stays behind `RefreshBrainGraph`, webhook handling, and
+/// post-write rebuilds.
+#[server(ListNodes, "/api", input = server_fn::codec::Json, endpoint = "list_nodes")]
+pub async fn list_nodes(filters: NodeQueryFilters) -> Result<Vec<Node>, ServerFnError> {
+    use crate::server::session;
+
+    let _ = session::require_authenticated().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    crate::server::projection::list_nodes(
+        &target,
+        &crate::server::projection::NodeFilters {
+            node_types: filters.node_types,
+            tags: filters.tags,
+            paths: filters.paths,
+            include_virtual: filters.include_virtual,
+        },
+    )
+    .await
+    .map_err(sfe)
+}
+
+/// Parametric read side for operational items materialized in SQLite.
+#[server(
+    ListWorkItems,
+    "/api",
+    input = server_fn::codec::Json,
+    endpoint = "list_work_items"
+)]
+pub async fn list_work_items(
+    filters: WorkItemQueryFilters,
+) -> Result<Vec<WorkItem>, ServerFnError> {
+    use crate::server::session;
+
+    let _ = session::require_authenticated().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    crate::server::projection::list_work_items(
+        &target,
+        &crate::server::projection::WorkItemFilters {
+            brain_ids: filters.brain_ids,
+            kinds: filters.kinds,
+            states: filters.states,
+            labels: filters.labels,
+            assignees: filters.assignees,
+            content_paths: filters.content_paths,
+        },
+    )
+    .await
+    .map_err(sfe)
+}
+
+/// Read one projected node by repo-relative path, without fetching file
+/// content from GitHub. `ReadBrainFile` remains the markdown-content path.
+#[server(ReadNode, "/api", endpoint = "read_node")]
+pub async fn read_node(path: String) -> Result<Option<Node>, ServerFnError> {
+    use crate::server::session;
+
+    let _ = session::require_authenticated().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    crate::server::projection::read_node(&target, &path)
+        .await
+        .map_err(sfe)
 }
 
 #[server(LoadBrainGraph, "/api", endpoint = "load_brain_graph")]

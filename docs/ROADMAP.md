@@ -157,7 +157,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Follow-up non bloccanti:
       - Il futuro Visual Configuration Editor di 3.4 deve riusare lo stesso orchestratore.
       - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; va ripensato insieme al fallback PR UX per immagini/draft.
-- [ ] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
+- [x] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
 
     **Realignment 2026-04-27:** la fase viene spezzata in slice verticali (α → β → γ) invece di un singolo drop visual editor completo. Razionale: la roundtrip GUI ↔ YAML ↔ orchestratore di scrittura è il vero rischio architetturale; isolarlo sulla dimensione di config più piccola consente di iterare sui feedback prima di estendere la GUI all'intera superficie di `BrainConfig`. Ogni slice è indipendentemente shippabile e dogfoodabile.
 
@@ -182,11 +182,11 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     - **3.4-γ Brand & long-tail config** _(deferred — raw YAML resta accettabile finché α/β non maturano)_
         - `brand`, asset settings, eventuali futuri `graph_visual_settings`. Bassa frequenza di edit, l'escape hatch raw YAML copre il caso fino a che β non dimostra che il pattern scala su più dimensioni.
-- [ ] **3.5 Rate-Limit Shielding e Background Reconciliation**
+- [x] **3.5 Rate-Limit Shielding e Background Reconciliation**
     - Una volta introdotte mutazioni work item e discovery multi-repo, spostare le chiamate GitHub più costose dietro job/reconcile espliciti e usare SQLite come cache operativa interrogabile dal frontend.
     - La query layer SQLite esposta al frontend deve essere parametrica (`list_nodes(target, filters)`, `list_work_items(target, filters)`, `read_node(target, path)`) invece di server fn bespoke per schermata: stessa shape che servirà a un futuro endpoint MCP in Fase 5, senza commitarsi al protocollo ora.
     - Questo asse non è l'entry point della fase, ma diventa necessario appena la UI smette di leggere solo il repo attivo e comincia a scansionare repo, issue e PR per utente.
-- [ ] **3.6 Graph Canvas Polish (zoom, transitions, edge framing)**
+- [x] **3.6 Graph Canvas Polish (zoom, transitions, edge framing)**
     - Promuovere il viewBox SVG da `"0 0 100 100"` hardcodato a un signal `(cx, cy, scale)` guidato da wheel/pinch/`+`/`-`/reset, per uscire dal "scale fisso 100×100" attuale.
     - Sostituire lo snap istantaneo del viewBox sulla selezione con un tween RAF-driven (~300ms) — `viewBox` non è transitionable via CSS, va animato esplicitamente.
     - Reframing dei nodi vicini al bordo del data space (oggi mostrano area vuota) e opzionale recentering anche su hover, non solo su selezione.
