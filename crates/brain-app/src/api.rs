@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
 use brain_domain::{
-    BrainConfig, BrandConfig, ExternalWorkItemBinding, TargetConfig, WorkItem, WorkItemState,
+    BrainConfig, BrandConfig, ExternalWorkItemBinding, TargetConfig, ViewSpec, WorkItem,
+    WorkItemState,
 };
 #[cfg(feature = "ssr")]
 use brain_domain::{ExternalWorkItemSystem, WorkItemSystemOfRecord};
@@ -68,6 +69,8 @@ const SERVER_FNS: &[&str] = &[
     "TransitionWorkItem",
     "AssignWorkItem",
     "BindWorkItem",
+    "ListViews",
+    "SaveViews",
 ];
 
 #[cfg(feature = "ssr")]
@@ -100,6 +103,8 @@ pub fn register_server_functions() {
     register_explicit::<TransitionWorkItem>();
     register_explicit::<AssignWorkItem>();
     register_explicit::<BindWorkItem>();
+    register_explicit::<ListViews>();
+    register_explicit::<SaveViews>();
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -125,6 +130,122 @@ pub async fn load_brain_config() -> Result<BrainConfig, ServerFnError> {
     let target = session::target_cfg().map_err(sfe)?;
     let cfg = config_loader::load(&target, &token).await;
     Ok((*cfg).clone())
+}
+
+/// Read-only list of saved views for the active target. Backed by the same
+/// cached `BrainConfig` as the rest of the runtime, so it reflects the latest
+/// committed state of `.brain-config.yml` without an extra fetch.
+#[server(ListViews, "/api", endpoint = "list_views")]
+pub async fn list_views() -> Result<Vec<ViewSpec>, ServerFnError> {
+    use crate::knowledge::config_loader;
+    use crate::server::session;
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    let cfg = config_loader::load(&target, &token).await;
+    Ok(cfg.views.clone())
+}
+
+/// Replace the entire `views` block in `.brain-config.yml` with the supplied
+/// list. Other config fields (node_types, label_taxonomy, default_type) are
+/// preserved by parsing → mutating → re-serializing the existing file. Routes
+/// through the same permission-aware orchestrator as document saves: direct
+/// commit when possible, PR fallback otherwise.
+///
+/// Returns the same `WriteResult` shape as `SaveBrainFile` so the admin UI can
+/// render `Saved` / `Proposed via PR #...` consistently with the editor.
+#[server(SaveViews, "/api", endpoint = "save_views")]
+pub async fn save_views(views: Vec<ViewSpec>) -> Result<WriteResult, ServerFnError> {
+    use crate::knowledge::config_loader;
+    use crate::server::session;
+    use brain_storage::Storage;
+
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let target = session::target_cfg().map_err(sfe)?;
+    let storage = session::storage().map_err(sfe)?;
+
+    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
+    if !(permissions.admin || permissions.maintain) {
+        return Err(sfe(BrainError::other(
+            "Editing views requires admin or maintain access on the repository.",
+        )));
+    }
+
+    const CONFIG_PATH: &str = ".brain-config.yml";
+    let (existing_raw, existing_sha) = match storage.read_file(&token, CONFIG_PATH).await {
+        Ok((raw, sha)) => (raw, Some(sha)),
+        Err(BrainError::NotFound(_)) => (String::new(), None),
+        Err(e) => return Err(sfe(e)),
+    };
+
+    let mut cfg = if existing_raw.trim().is_empty() {
+        BrainConfig::default()
+    } else {
+        BrainConfig::parse(&existing_raw).map_err(|e| {
+            sfe(BrainError::other(format!(
+                "current .brain-config.yml does not parse: {e}"
+            )))
+        })?
+    };
+    cfg.views = views;
+    cfg.validate()
+        .map_err(|e| sfe(BrainError::other(e.to_string())))?;
+
+    let new_yaml = serde_yaml::to_string(&cfg)
+        .map_err(|e| sfe(BrainError::other(format!("yaml serialize: {e}"))))?;
+    let author_email = format!("{}@users.noreply.github.com", user);
+    let commit_msg = "Update saved views via Brain UI".to_string();
+
+    match save_file_permission_aware(
+        &storage,
+        &token,
+        CONFIG_PATH,
+        &new_yaml,
+        existing_sha.as_deref(),
+        &commit_msg,
+        &user,
+        &author_email,
+        &target,
+    )
+    .await
+    {
+        Ok(result) => {
+            match result.mode {
+                WriteMode::Direct => {
+                    crate::server::audit::log("update_views", Some(&user), CONFIG_PATH).await;
+                    config_loader::invalidate(&(&target).into());
+                    rebuild_projection_after_write(
+                        &storage,
+                        &target,
+                        &token,
+                        &user,
+                        "update_views",
+                    )
+                    .await;
+                }
+                WriteMode::PullRequest => {
+                    crate::server::audit::log(
+                        "propose_views_update",
+                        Some(&user),
+                        &format!(
+                            "{} via PR #{}",
+                            CONFIG_PATH,
+                            result
+                                .pr_number
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "?".to_string())
+                        ),
+                    )
+                    .await;
+                }
+            }
+            Ok(result)
+        }
+        Err(e) => {
+            crate::server::audit::log("api_error", Some(&user), &format!("save_views: {e}")).await;
+            Err(sfe(e))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

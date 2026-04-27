@@ -2,6 +2,9 @@ use leptos::prelude::*;
 
 use crate::api::{AuditEntry, SessionEntry, list_sessions, load_audit_log, revoke_session};
 
+pub mod views;
+pub use views::ViewsAdminPage;
+
 #[component]
 pub fn AdminPage() -> impl IntoView {
     let kind_filter = RwSignal::new(String::new());
@@ -42,9 +45,16 @@ pub fn AdminPage() -> impl IntoView {
                 </h1>
                 <span class="text-xs text-slate-500 ml-2">"/admin"</span>
                 <a
+                    href="/admin/views"
+                    rel="external"
+                    class="ml-auto text-xs text-teal-300 hover:text-teal-200"
+                >
+                    "edit views →"
+                </a>
+                <a
                     href="/knowledge"
                     rel="external"
-                    class="ml-auto text-xs text-slate-400 hover:text-slate-200"
+                    class="text-xs text-slate-400 hover:text-slate-200"
                 >
                     "← back to knowledge"
                 </a>

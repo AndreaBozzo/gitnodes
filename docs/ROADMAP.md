@@ -158,10 +158,30 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
       - Il futuro Visual Configuration Editor di 3.4 deve riusare lo stesso orchestratore.
       - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; va ripensato insieme al fallback PR UX per immagini/draft.
 - [ ] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
-    - Portare `.brain-config.yml` fuori dall'editor raw con una GUI admin-only che copra i casi reali emersi: node types, directory mapping, accent colors, `work_item_kind`, `label_taxonomy`, binding provider e impostazioni visuali del grafo.
-    - La copertura include anche un nuovo blocco `views` (saved filter sets) nel `.brain-config.yml`. Le view sono per-target, validate dallo stesso parser YAML del runtime, e renderizzate dalla sidebar Knowledge come scorciatoie ai filtri già URL-persistenti (`?tags=`, `?types=`). Niente nuove dimensioni di filtro: ogni view è un named tuple di filtri esistenti. La UI "create view from current filters" resta fuori scope per la v1 della 3.4 e va rivalutata dopo che la GUI dimostra stabilità.
-    - Il backend continua a serializzare YAML con `serde_yaml`, ma il save deve transitare dallo stesso orchestratore permission-aware della 3.3: commit diretto per admin con write access, PR proposta negli altri casi approvati.
-    - La validazione deve riutilizzare il parser runtime del config, non uno schema parallelo nel frontend, per evitare drift tra editor visuale e loader server-side.
+
+    **Realignment 2026-04-27:** la fase viene spezzata in slice verticali (α → β → γ) invece di un singolo drop visual editor completo. Razionale: la roundtrip GUI ↔ YAML ↔ orchestratore di scrittura è il vero rischio architetturale; isolarlo sulla dimensione di config più piccola consente di iterare sui feedback prima di estendere la GUI all'intera superficie di `BrainConfig`. Ogni slice è indipendentemente shippabile e dogfoodabile.
+
+    Vincoli condivisi (validi per α/β/γ):
+    - Il backend continua a serializzare YAML con `serde_yaml` (no schema parallelo frontend); ogni save passa dall'orchestratore permission-aware della 3.3 (`save_file_permission_aware`) → commit diretto per admin con write access, PR proposta altrimenti, blocked se nessuna delle due opzioni è permessa.
+    - Validazione = parser runtime esistente (`BrainConfig::parse/validate`), esteso quando serve. Niente regex client-side che possano divergere.
+    - Save = re-serialize del file intero a partire da `BrainConfig` in memoria; le sezioni non toccate dalla slice corrente devono sopravvivere round-trip senza riformattazione lossy.
+    - GUI sotto `/{org}/{repo}/admin/...`, gated su `can_admin_config` dalla capability matrix.
+
+    - **3.4-α Saved Views (vertical slice)** _(scope minimo per validare il pattern)_
+        - Nuovo blocco `views` in `BrainConfig`: `Vec<ViewSpec { name, slug, tags, types }>`. Ogni view è un named tuple di filtri già URL-persistenti (`?tags=`, `?types=`); niente nuove dimensioni di filtro. Slug auto-generato da `name` con fallback a override esplicito quando l'utente vuole controllarlo o risolvere collisioni.
+        - Validazione estesa: slug univoci nel target, tags lowercase, ogni `type` referenziato deve esistere in `node_types`. Round-trip YAML deve preservare gli altri campi del file invariati.
+        - Server fn nuove: `ListViews(target)` (read da config cached), `SaveViews(target, Vec<ViewSpec>) → SaveOutcome` (riusa l'orchestratore 3.3, audit `update_views` / `propose_views_update`, invalidate config cache su direct commit).
+        - Route admin dedicata `/{org}/{repo}/admin/views` (separata dall'admin esistente, coerente col routing multi-tenant 3.1): form add/edit/delete con tag chips + type chips, banner outcome (`Saved` / `Proposed via PR #...` / `Blocked by permissions`).
+        - Sidebar Knowledge: render delle view come chip cliccabili che impostano `?tags=&types=`. Implementazione triviale perché i filtri sono già URL-persistenti — niente nuovo state management.
+        - Esplicitamente fuori da α: "create view from current filters" (rivalutato dopo dogfooding), per-view ordering UI oltre l'ordine array, view-scoped permissions.
+        - Success criterion: un admin crea/modifica una view dalla GUI, il file `.brain-config.yml` viene aggiornato con un singolo commit (o PR), il banner della Knowledge sidebar mostra la nuova view senza refresh manuale, gli altri campi del file restano byte-identici alla sezione esterna a `views`.
+
+    - **3.4-β Editorial config (post-feedback expansion)** _(da pianificare dopo che α è in produzione e raccoglie feedback)_
+        - Estendere la GUI a `node_types` (name, directory, accent, frontmatter_seed minimo) e `label_taxonomy` (`work_item_kind` mapping + state labels), che sono le dimensioni più toccate dopo le views.
+        - Forma esatta dei form e granularità dei campi vanno disegnate alla luce di cosa emerge dall'uso reale di α; pianificarle ora produrrebbe quasi certamente la forma sbagliata.
+
+    - **3.4-γ Brand & long-tail config** _(deferred — raw YAML resta accettabile finché α/β non maturano)_
+        - `brand`, asset settings, eventuali futuri `graph_visual_settings`. Bassa frequenza di edit, l'escape hatch raw YAML copre il caso fino a che β non dimostra che il pattern scala su più dimensioni.
 - [ ] **3.5 Rate-Limit Shielding e Background Reconciliation**
     - Una volta introdotte mutazioni work item e discovery multi-repo, spostare le chiamate GitHub più costose dietro job/reconcile espliciti e usare SQLite come cache operativa interrogabile dal frontend.
     - La query layer SQLite esposta al frontend deve essere parametrica (`list_nodes(target, filters)`, `list_work_items(target, filters)`, `read_node(target, path)`) invece di server fn bespoke per schermata: stessa shape che servirà a un futuro endpoint MCP in Fase 5, senza commitarsi al protocollo ora.

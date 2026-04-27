@@ -49,6 +49,49 @@ pub fn FilterPanel(
         })
         .collect_view();
 
+    let view_buttons = config
+        .views
+        .iter()
+        .cloned()
+        .map(|v| {
+            let view_tags: HashSet<String> = v.tags.iter().cloned().collect();
+            let view_types: HashSet<String> = v.types.iter().cloned().collect();
+            let label = v.name.clone();
+            let is_on = {
+                let view_tags = view_tags.clone();
+                let view_types = view_types.clone();
+                Memo::new(move |_| {
+                    active_tags.with(|t| t == &view_tags)
+                        && active_types.with(|t| t == &view_types)
+                })
+            };
+            let apply = move |_| {
+                active_tags.set(view_tags.clone());
+                active_types.set(view_types.clone());
+            };
+            view! {
+                <button
+                    class="px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
+                    class=("bg-amber-400/20", move || is_on.get())
+                    class=("text-amber-100", move || is_on.get())
+                    class=("border-amber-400/60", move || is_on.get())
+                    class=("text-slate-300", move || !is_on.get())
+                    class=("border-slate-700", move || !is_on.get())
+                    class=("hover:border-slate-500", move || !is_on.get())
+                    on:click=apply
+                    title=format!(
+                        "tags: {}\ntypes: {}",
+                        if v.tags.is_empty() { "—".to_string() } else { v.tags.join(", ") },
+                        if v.types.is_empty() { "—".to_string() } else { v.types.join(", ") },
+                    )
+                >
+                    {label}
+                </button>
+            }
+        })
+        .collect_view();
+    let has_views = !config.views.is_empty();
+
     let tag_buttons = all_tags
         .into_iter()
         .map(|tag| {
@@ -89,6 +132,12 @@ pub fn FilterPanel(
                 current_org=(!current_org.is_empty()).then(|| current_org.clone())
                 current_repo=(!current_repo.is_empty()).then(|| current_repo.clone())
             />
+            {has_views.then(|| view! {
+                <section>
+                    <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-3">"Views"</h2>
+                    <div class="flex flex-wrap gap-2">{view_buttons}</div>
+                </section>
+            })}
             <section>
                 <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-3">"Type"</h2>
                 <div class="flex flex-wrap gap-2">{type_buttons}</div>

@@ -5,7 +5,7 @@ use leptos_router::{
     components::{Route, Router, Routes},
 };
 
-use crate::admin::AdminPage;
+use crate::admin::{AdminPage, ViewsAdminPage};
 use crate::api::get_app_config;
 use crate::knowledge::KnowledgePage;
 use crate::knowledge::brain_switcher::KnowledgePageForTarget;
@@ -71,6 +71,10 @@ pub fn App() -> impl IntoView {
                 // Legacy single-target routes (compat layer, still backed by boot env).
                 <Route path=StaticSegment("knowledge") view=KnowledgePage/>
                 <Route path=StaticSegment("admin") view=AdminPage/>
+                <Route
+                    path=(StaticSegment("admin"), StaticSegment("views"))
+                    view=ViewsAdminPage
+                />
                 // Multi-tenant routes: /{org}/{repo}/knowledge and /{org}/{repo}/admin.
                 <Route
                     path=(ParamSegment("org"), ParamSegment("repo"), StaticSegment("knowledge"))
@@ -79,6 +83,15 @@ pub fn App() -> impl IntoView {
                 <Route
                     path=(ParamSegment("org"), ParamSegment("repo"), StaticSegment("admin"))
                     view=AdminPage
+                />
+                <Route
+                    path=(
+                        ParamSegment("org"),
+                        ParamSegment("repo"),
+                        StaticSegment("admin"),
+                        StaticSegment("views"),
+                    )
+                    view=ViewsAdminPage
                 />
             </Routes>
         </Router>
