@@ -1450,7 +1450,10 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
-    let mut targets: Vec<AccessibleTarget> = Vec::new();
+    // Fan out the per-repo config probe concurrently. With up to 100 repos at
+    // ~100ms each, a sequential scan would block the Brain Switcher open for
+    // ~10s. JoinSet gives us bounded concurrency via reqwest's connection pool.
+    let mut set = tokio::task::JoinSet::new();
     for r in repos.into_iter().filter(|r| !r.archived) {
         let parts: Vec<&str> = r.full_name.splitn(2, '/').collect();
         if parts.len() != 2 {
@@ -1461,19 +1464,40 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
             "https://raw.githubusercontent.com/{}/{}/{}/.brain-config.yml",
             org, repo, r.default_branch
         );
-        let has_brain_config = check_url_exists(&http, &token, &raw_url).await;
-        targets.push(AccessibleTarget {
-            org,
-            repo,
-            has_brain_config,
+        let client = http.client();
+        let token = token.clone();
+        set.spawn(async move {
+            let has_brain_config = check_url_exists(&client, &token, &raw_url).await;
+            AccessibleTarget {
+                org,
+                repo,
+                has_brain_config,
+            }
         });
     }
+
+    let mut targets: Vec<AccessibleTarget> = Vec::with_capacity(set.len());
+    while let Some(res) = set.join_next().await {
+        if let Ok(t) = res {
+            targets.push(t);
+        }
+    }
+    // Preserve a stable, predictable order regardless of probe completion order.
+    targets.sort_by(|a, b| a.org.cmp(&b.org).then_with(|| a.repo.cmp(&b.repo)));
     Ok(targets)
 }
 
+/// HEAD the raw URL to probe existence without downloading the file body.
+/// `raw.githubusercontent.com` is **not** the GitHub REST API, so the
+/// `Accept: application/vnd.github+json` and `X-GitHub-Api-Version` headers
+/// `GithubHttp::get` adds would be wrong here — we hit the underlying
+/// reqwest client directly and only attach the bearer (needed for private
+/// repos; raw.githubusercontent.com accepts it for the same content scope).
 #[cfg(feature = "ssr")]
-async fn check_url_exists(http: &brain_storage::GithubHttp, token: &str, url: &str) -> bool {
-    http.get(url, token)
+async fn check_url_exists(client: &reqwest::Client, token: &str, url: &str) -> bool {
+    client
+        .head(url)
+        .bearer_auth(token)
         .send()
         .await
         .map(|r| r.status().is_success())

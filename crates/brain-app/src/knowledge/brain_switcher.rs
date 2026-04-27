@@ -151,34 +151,45 @@ pub fn BrainSwitcher(
                                 list.into_iter().map(|t| {
                                     let is_current = current_org.with_value(|o| o.as_deref() == Some(&t.org))
                                         && current_repo.with_value(|r| r.as_deref() == Some(&t.repo));
-                                    let href = format!("/{}/{}/knowledge", t.org, t.repo);
                                     let label = format!("{}/{}", t.org, t.repo);
-                                    let status_dot = if t.has_brain_config {
-                                        "bg-teal-400"
+                                    // Missing-config repos render as a dimmed,
+                                    // non-clickable row: navigating to them
+                                    // would silently fall back to the default
+                                    // config and show an empty graph with no
+                                    // cause shown. Keep them visible (so the
+                                    // user knows the repo exists and what to do
+                                    // about it) but inert.
+                                    if t.has_brain_config {
+                                        let href = format!("/{}/{}/knowledge", t.org, t.repo);
+                                        view! {
+                                            <a
+                                                href=href
+                                                rel="external"
+                                                class="flex items-center gap-2 px-1 py-1 rounded text-[11px] transition-colors"
+                                                class=("text-teal-200", is_current)
+                                                class=("bg-teal-500/10", is_current)
+                                                class=("text-slate-400", !is_current)
+                                                class=("hover:text-slate-200", !is_current)
+                                            >
+                                                <span
+                                                    class="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-teal-400"
+                                                    title="Brain config present"
+                                                ></span>
+                                                <span class="truncate">{label}</span>
+                                            </a>
+                                        }.into_any()
                                     } else {
-                                        "bg-slate-600"
-                                    };
-                                    let status_title = if t.has_brain_config {
-                                        "Brain config present"
-                                    } else {
-                                        "No .brain-config.yml"
-                                    };
-                                    view! {
-                                        <a
-                                            href=href
-                                            rel="external"
-                                            class="flex items-center gap-2 px-1 py-1 rounded text-[11px] transition-colors"
-                                            class=("text-teal-200", is_current)
-                                            class=("bg-teal-500/10", is_current)
-                                            class=("text-slate-400", !is_current)
-                                            class=("hover:text-slate-200", !is_current)
-                                        >
-                                            <span
-                                                class=format!("inline-block w-1.5 h-1.5 rounded-full shrink-0 {}", status_dot)
-                                                title=status_title
-                                            ></span>
-                                            <span class="truncate">{label}</span>
-                                        </a>
+                                        view! {
+                                            <div
+                                                class="flex items-center gap-2 px-1 py-1 rounded text-[11px] text-slate-600 cursor-not-allowed"
+                                                title="No .brain-config.yml at repo root — add one to enable Brain."
+                                            >
+                                                <span
+                                                    class="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-slate-700"
+                                                ></span>
+                                                <span class="truncate">{label}</span>
+                                            </div>
+                                        }.into_any()
                                     }
                                 }).collect_view().into_any()
                             }}
