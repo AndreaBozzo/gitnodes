@@ -122,20 +122,25 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
 **Principio guida:** il backend ha già le primitive giuste (`TargetKey`, projection SQLite per target, `brain_id` stabile, write path GitHub centralizzato). La Fase 3 deve evitare nuove scorciatoie single-target e introdurre ogni nuova capability come target-aware fin dal primo commit.
 
-- [ ] **3.1 Multi-Tenant Workspace Routing**
+- [x] **3.1 Multi-Tenant Workspace Routing**
     - Evolvere il router Leptos da path statici (`/knowledge`, `/admin`) a path dinamici `/{org}/{repo}/knowledge` e `/{org}/{repo}/admin`, mantenendo eventuali redirect dal target di default solo come compat layer temporaneo.
     - Spostare la risoluzione del `TargetConfig` dal boot statico del server al contesto della request/pagina. `GithubHttp` pooled è già target-agnostic; ciò che manca è togliere l'assunzione che asset proxy, SSR context e webhook state puntino a un solo repo definito da env.
     - Introdurre il **Brain Switcher** nella sidebar: discovery via token OAuth dei repo accessibili all'utente che contengono `.brain-config.yml`, con stato esplicito per `accessible / missing-config / forbidden`.
     - Success criterion: la stessa istanza Brain UI può navigare più repo/target senza restart né collisioni di cache/projection, e l'URL diventa l'identificatore canonico del target attivo.
-- [ ] **3.2 Work Items Interattivi e Bidirectional Sync**
-    - Promuovere il modello `WorkItem` da read model/editorial overlay a workflow operativo completo. Aggiornare `state`, `assignees`, label taxonomiche e binding esterno deve poter mutare il provider quando `system_of_record` lo richiede.
-    - Aggiungere server fn mutate-only dedicate (`transition_work_item`, `assign_work_item`, `bind_work_item`, ecc.) invece di sovraccaricare il save markdown generico: il salvataggio editoriale del file e la mutazione del provider hanno failure mode, audit trail e policy diverse.
-    - Usare l'access token OAuth dell'utente per le mutazioni GitHub Issue/PR; in ingresso, estendere la pipeline webhook oltre `push` per intercettare eventi `issues`, `issue_comment`, `pull_request`, `labeled`, `assigned` quando afferenti a item bindati, e propagare SSE mirate (`work_item_updated`, `binding_updated`) oltre al generico `graph_updated`.
-    - Formalizzare una policy di coerenza per `system_of_record`:
-      - `brain`: mutate solo frontmatter/projection locale.
-      - `split`: mutare sia Brain che provider con riconciliazione esplicita.
-      - `external`: UI Brain come control plane/read-through cache di un item nato altrove.
-    - Success criterion: un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band rientra in projection/UI senza refresh manuale.
+- [~] **3.2 Work Items Interattivi e Bidirectional Sync** _(α landed 2026-04-27, β pending)_
+    - **3.2-α (landed)** — UI → file → projection → SSE loop chiuso, sempre con `system_of_record = brain` lato write:
+      - `BrainEvent::WorkItemUpdated { brain_id, content_path }` e `BindingUpdated { ... }` aggiunti al bus tipato; `LiveSync` ora sottoscrive entrambi gli event name.
+      - `EventBus::init()` / `global()` espone il bus come singleton process-wide così le server fn possono pubblicare senza prendere il bus in firma.
+      - Mutazioni projection single-row: `update_work_item_state`, `update_work_item_assignees`, `upsert_work_item_binding`, `find_work_item_by_external` in `server::projection`.
+      - Tre server fn mutate-only: `TransitionWorkItem`, `AssignWorkItem`, `BindWorkItem`. Pattern condiviso in `apply_work_item_mutation`: load file → patch frontmatter mirato (overlay del singolo campo, custom keys preservate) → singolo commit via `GithubStorage::save_file` → patch projection → publish SSE → return record refreshed. Audit log per ogni kind (`work_item_transition`/`assign`/`bind`).
+      - UI controls inline nel `DetailPanel::WorkItemCard`: `<details>` collapsible con state dropdown, assignees CSV input, binding form (system/project/item_key/url) + Unbind. Action separate per kind di mutazione, errori scoped, `graph_version` bumpato su success per refetch.
+      - Webhook pipeline esteso a `issues`/`pull_request`: parsing minimale (repo + number), gate sul target repo, lookup binding via `find_work_item_by_external`. Item non bindati → silently 202; bindati → rebuild projection + emit `WorkItemUpdated { brain_id }` con il `brain_id` reale del documento.
+    - **3.2-β (pending)** — taglio successivo, sopra la base α:
+      - Provider-side push delle mutazioni quando `system_of_record` è `split` o `external`: helper `GithubHttp::issues_*` (PATCH `/repos/{owner}/{repo}/issues/{n}`), policy di reconciliation, audit dedicato per failure provider-side senza rollback dell'editorial save.
+      - Coerenza `system_of_record` esplicita: `brain` = no-op provider, `split` = mutazione duale con reconcile, `external` = UI come control plane di un item nato altrove (read-through + replay locale).
+      - `issue_comment` come timeline event SSE (oggi escluso perché rumoroso e non muta state).
+      - Sync incrementale dell'evento webhook (oggi rebuildiamo l'intera projection del target — economic finché i target sono singoli, da refattorizzare quando `find_work_item_by_external` discrimina davvero il delta).
+    - Success criterion (residuo): un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band rientra in projection/UI senza refresh manuale (oggi: rientra solo se l'item è già bindato).
 - [ ] **3.3 RBAC e Save Orchestration Permission-Aware**
     - Smettere di modellare RBAC come semplice flag admin/non-admin. Il controllo reale è una capability matrix per target: `can_read`, `can_write_default_branch`, `can_review_via_pr`, `can_admin_config`, derivata da sessione OAuth + permessi repo/branch.
     - Riutilizzare la logica di tree commit atomico già introdotta per i rename, generalizzandola in un write path capace di scegliere tra:
@@ -237,3 +242,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 12. ~~Filters are not URL-persisted~~ — **DONE 2026-04-26**. `active_tags` and `active_types` round-trip through `?tags=` and `?types=` query params alongside the existing `?path=`. Refresh and link-share both restore the filtered view. Navigation uses `replace: true` so toggling filters doesn't pollute history. Tags are normalized lowercase in both directions; types preserve case (they map to `BrainConfig.node_types[].name`).
 
 13. ~~No keyboard dismissal~~ — **DONE 2026-04-26**. Esc cascade in `KnowledgeView` (hydrate-only `keydown` listener on `window`): closes the editor first if open, otherwise clears the selected node. Skipped while focus is in `input`/`textarea`/`select`/`contenteditable` so Esc doesn't fight IME or form-local handlers. Listener is cleaned up via `on_cleanup` on route change.
+
+14. **`Stale Data` banner can flash before login** — `SyncStatusBanner` lives above `<Routes>` (caveat #10) and its signal is hydrated on app boot, so unauthenticated users hitting the public landing or the OAuth redirect path can briefly see the banner before the session resolves. The banner should be gated on auth state (or at least on having an active target), not just on `sync_status`. Likely fix: thread an `is_authenticated` / `has_active_target` derived signal into `SyncStatusBanner` and short-circuit render when false. Low priority but unpolished — first impression for new users.
+
+15. **Node hover flicker on graph canvas** — Hovering some nodes produces a visible flicker / re-trigger of the hover state instead of the smooth crossfade introduced in caveat #11. Likely causes to investigate, in order: (a) hover state owned by a parent that re-renders on `pointermove`, recreating the `<circle>` and restarting the CSS transition; (b) overlapping SVG elements (label `<text>`, halo, edge endpoints) intercepting `pointerleave`/`pointerenter` events and toggling state; (c) the CSS transition targeting a property that also changes due to layout (e.g. `r` recomputed from a signal on every frame). Reproduce with slow `pointermove` near node edges before deciding the fix.

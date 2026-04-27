@@ -2,7 +2,9 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::knowledge::types::{BrainFilePayload, Edge, Node};
-use brain_domain::{BrainConfig, BrandConfig, TargetConfig, WorkItem};
+use brain_domain::{
+    BrainConfig, BrandConfig, ExternalWorkItemBinding, TargetConfig, WorkItem, WorkItemState,
+};
 
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
@@ -60,6 +62,9 @@ const SERVER_FNS: &[&str] = &[
     "ListAccessibleTargets",
     "LoadBrainGraphForTarget",
     "LoadBrainConfigForTarget",
+    "TransitionWorkItem",
+    "AssignWorkItem",
+    "BindWorkItem",
 ];
 
 #[cfg(feature = "ssr")]
@@ -88,6 +93,9 @@ pub fn register_server_functions() {
     register_explicit::<ListAccessibleTargets>();
     register_explicit::<LoadBrainGraphForTarget>();
     register_explicit::<LoadBrainConfigForTarget>();
+    register_explicit::<TransitionWorkItem>();
+    register_explicit::<AssignWorkItem>();
+    register_explicit::<BindWorkItem>();
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -234,6 +242,43 @@ pub async fn load_work_item_by_path(path: String) -> Result<Option<WorkItem>, Se
     let _ = session::require_authenticated().await.map_err(sfe)?;
     let target = session::target_cfg().map_err(sfe)?;
     crate::server::projection::load_work_item_by_path(&target, &path)
+        .await
+        .map_err(sfe)
+}
+
+/// Transition a work item to a new state. Updates frontmatter on the forge in
+/// a single commit, then patches the local projection. For 3.2-α this only
+/// touches the markdown file + projection — provider-side mutation (issue
+/// state) is deferred to the bidirectional sync pass.
+#[server(TransitionWorkItem, "/api", endpoint = "transition_work_item")]
+pub async fn transition_work_item(
+    brain_id: String,
+    new_state: WorkItemState,
+) -> Result<WorkItem, ServerFnError> {
+    apply_work_item_mutation(brain_id, WorkItemMutation::State(new_state))
+        .await
+        .map_err(sfe)
+}
+
+/// Replace the assignees list on a work item. Same semantics as
+/// `transition_work_item` (frontmatter + projection only in this slice).
+#[server(AssignWorkItem, "/api", input = server_fn::codec::Json, endpoint = "assign_work_item")]
+pub async fn assign_work_item(
+    brain_id: String,
+    assignees: Vec<String>,
+) -> Result<WorkItem, ServerFnError> {
+    apply_work_item_mutation(brain_id, WorkItemMutation::Assignees(assignees))
+        .await
+        .map_err(sfe)
+}
+
+/// Set or clear the external binding of a work item. Pass `None` to unbind.
+#[server(BindWorkItem, "/api", input = server_fn::codec::Json, endpoint = "bind_work_item")]
+pub async fn bind_work_item(
+    brain_id: String,
+    binding: Option<ExternalWorkItemBinding>,
+) -> Result<WorkItem, ServerFnError> {
+    apply_work_item_mutation(brain_id, WorkItemMutation::Binding(binding))
         .await
         .map_err(sfe)
 }
@@ -868,6 +913,174 @@ async fn rebuild_projection_after_write(
         )
         .await;
     }
+}
+
+/// One mutation against a work item's editorial frontmatter. Each variant
+/// targets a single YAML field so the patch stays surgical — other custom
+/// frontmatter keys are preserved verbatim.
+#[cfg(feature = "ssr")]
+enum WorkItemMutation {
+    State(WorkItemState),
+    Assignees(Vec<String>),
+    Binding(Option<ExternalWorkItemBinding>),
+}
+
+#[cfg(feature = "ssr")]
+impl WorkItemMutation {
+    fn audit_kind(&self) -> &'static str {
+        match self {
+            WorkItemMutation::State(_) => "work_item_transition",
+            WorkItemMutation::Assignees(_) => "work_item_assign",
+            WorkItemMutation::Binding(_) => "work_item_bind",
+        }
+    }
+
+    /// Whether this mutation changes the external binding (vs the work item
+    /// itself). Drives the choice between `BindingUpdated` and
+    /// `WorkItemUpdated` SSE events.
+    fn is_binding(&self) -> bool {
+        matches!(self, WorkItemMutation::Binding(_))
+    }
+}
+
+/// Apply a single mutation to a work item: load file → patch frontmatter →
+/// commit single file → patch projection → publish SSE. The provider-side
+/// push (mutating the GitHub Issue when `system_of_record` is `split` or
+/// `external`) is intentionally **not** here — it is deferred to a follow-up
+/// pass with proper failure handling.
+#[cfg(feature = "ssr")]
+async fn apply_work_item_mutation(
+    brain_id: String,
+    mutation: WorkItemMutation,
+) -> Result<WorkItem, BrainError> {
+    use crate::server::session;
+    use brain_storage::Storage;
+    use serde_yaml::Value;
+    use std::collections::BTreeMap;
+
+    let (s, token) = session::require_session_and_token().await?;
+    let user = session::session_user_or_fallback(&s).await;
+    let target = session::target_cfg()?;
+
+    let work_item = crate::server::projection::load_work_item_by_brain_id(&target, &brain_id)
+        .await?
+        .ok_or_else(|| BrainError::parse(format!("work item not found: {brain_id}")))?;
+    let path = work_item
+        .content_path
+        .clone()
+        .ok_or_else(|| BrainError::parse(format!("work item {brain_id} has no content path")))?;
+
+    let storage = session::storage()?;
+    let (content, sha) = storage.read_file(&token, &path).await?;
+    let (front_raw, body) = brain_domain::split_frontmatter(&content);
+
+    // Empty frontmatter would mean either a non-work-item file or a malformed
+    // document the projection somehow indexed. Either way refuse to write.
+    if front_raw.trim().is_empty() {
+        return Err(BrainError::parse(format!(
+            "work item {brain_id} has no frontmatter to patch"
+        )));
+    }
+
+    let mut map: BTreeMap<String, Value> = serde_yaml::from_str(front_raw)
+        .map_err(|error| BrainError::parse(format!("frontmatter parse: {error}")))?;
+
+    match &mutation {
+        WorkItemMutation::State(state) => {
+            let serialized = serde_yaml::to_value(state)
+                .map_err(|error| BrainError::parse(format!("state serialize: {error}")))?;
+            map.insert("state".to_string(), serialized);
+        }
+        WorkItemMutation::Assignees(assignees) => {
+            let serialized = serde_yaml::to_value(assignees)
+                .map_err(|error| BrainError::parse(format!("assignees serialize: {error}")))?;
+            map.insert("assignees".to_string(), serialized);
+        }
+        WorkItemMutation::Binding(binding) => match binding {
+            Some(binding) => {
+                let serialized = serde_yaml::to_value(binding)
+                    .map_err(|error| BrainError::parse(format!("binding serialize: {error}")))?;
+                map.insert("external_binding".to_string(), serialized);
+            }
+            None => {
+                map.remove("external_binding");
+            }
+        },
+    }
+
+    let new_front = serde_yaml::to_string(&map)
+        .map_err(|error| BrainError::parse(format!("frontmatter serialize: {error}")))?;
+    let new_content = format!("---\n{}---\n{}", new_front, body);
+
+    let commit_msg = match &mutation {
+        WorkItemMutation::State(state) => format!(
+            "chore({brain_id}): set state to {state:?} via Brain UI",
+            state = state
+        ),
+        WorkItemMutation::Assignees(_) => {
+            format!("chore({brain_id}): update assignees via Brain UI")
+        }
+        WorkItemMutation::Binding(Some(_)) => {
+            format!("chore({brain_id}): bind external item via Brain UI")
+        }
+        WorkItemMutation::Binding(None) => {
+            format!("chore({brain_id}): unbind external item via Brain UI")
+        }
+    };
+    let author_email = format!("{user}@users.noreply.github.com");
+
+    storage
+        .save_file(
+            &token,
+            &path,
+            &new_content,
+            Some(&sha),
+            &commit_msg,
+            &user,
+            &author_email,
+        )
+        .await?;
+
+    crate::server::audit::log(mutation.audit_kind(), Some(&user), &path).await;
+
+    // Patch the local projection so the same response can carry the fresh
+    // record without waiting on a full rebuild.
+    match &mutation {
+        WorkItemMutation::State(state) => {
+            crate::server::projection::update_work_item_state(&target, &brain_id, state).await?;
+        }
+        WorkItemMutation::Assignees(assignees) => {
+            crate::server::projection::update_work_item_assignees(&target, &brain_id, assignees)
+                .await?;
+        }
+        WorkItemMutation::Binding(binding) => {
+            crate::server::projection::upsert_work_item_binding(
+                &target,
+                &brain_id,
+                binding.as_ref(),
+            )
+            .await?;
+        }
+    }
+
+    if let Some(bus) = crate::server::sse::global() {
+        let event = if mutation.is_binding() {
+            crate::server::sse::BrainEvent::BindingUpdated {
+                brain_id: brain_id.clone(),
+                content_path: Some(path.clone()),
+            }
+        } else {
+            crate::server::sse::BrainEvent::WorkItemUpdated {
+                brain_id: brain_id.clone(),
+                content_path: Some(path.clone()),
+            }
+        };
+        bus.send(event);
+    }
+
+    crate::server::projection::load_work_item_by_brain_id(&target, &brain_id)
+        .await?
+        .ok_or_else(|| BrainError::other("work item disappeared after mutation"))
 }
 
 #[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]

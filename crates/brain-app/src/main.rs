@@ -121,6 +121,7 @@ async fn main() {
     brain_app::server::projection::init(pool.clone());
 
     let event_bus = brain_app::server::sse::EventBus::new();
+    brain_app::server::sse::init(event_bus.clone());
 
     let webhook_secret = std::env::var("WEBHOOK_SECRET").ok();
     if webhook_secret.is_none() {

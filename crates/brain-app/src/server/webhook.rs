@@ -63,6 +63,22 @@ pub async fn handle(
         tokio::spawn(async move {
             handle_push(state_clone).await;
         });
+    } else if event_type == "issues" || event_type == "pull_request" {
+        let Some(payload) = parse_item_payload(&body, event_type) else {
+            tracing::debug!(
+                event_type,
+                "webhook item event: payload not parseable — ignored"
+            );
+            return StatusCode::ACCEPTED;
+        };
+        if !item_matches_target(&payload, &state.target) {
+            return StatusCode::ACCEPTED;
+        }
+        let state_clone = state.clone();
+        let payload_clone = payload;
+        tokio::spawn(async move {
+            handle_item_event(state_clone, payload_clone).await;
+        });
     }
 
     StatusCode::ACCEPTED
@@ -141,6 +157,131 @@ async fn handle_push(state: WebhookState) {
             });
         }
     }
+}
+
+/// Minimal payload shared by `issues` and `pull_request` webhook events: we
+/// only need the repository (to gate cross-repo deliveries) and the item
+/// number (to look up the bound work item). The rest of the payload is
+/// authoritative on GitHub — we never trust it as the source of truth, we use
+/// it only as a *trigger* to rebuild the projection from the forge.
+#[derive(Clone, Debug)]
+struct ItemEventPayload {
+    repo_full_name: String,
+    item_key: String,
+    /// `issues` → `"issue"`. `pull_request` → `"pull_request"`. Currently
+    /// unused by the handler but kept for future log/observability tagging.
+    #[allow(dead_code)]
+    item_kind: &'static str,
+}
+
+#[derive(serde::Deserialize)]
+struct IssuesEnvelope {
+    repository: PushRepository,
+    issue: ItemNumber,
+}
+
+#[derive(serde::Deserialize)]
+struct PullRequestEnvelope {
+    repository: PushRepository,
+    pull_request: ItemNumber,
+}
+
+#[derive(serde::Deserialize)]
+struct ItemNumber {
+    number: u64,
+}
+
+fn parse_item_payload(body: &[u8], event_type: &str) -> Option<ItemEventPayload> {
+    match event_type {
+        "issues" => {
+            let env: IssuesEnvelope = serde_json::from_slice(body).ok()?;
+            Some(ItemEventPayload {
+                repo_full_name: env.repository.full_name,
+                item_key: env.issue.number.to_string(),
+                item_kind: "issue",
+            })
+        }
+        "pull_request" => {
+            let env: PullRequestEnvelope = serde_json::from_slice(body).ok()?;
+            Some(ItemEventPayload {
+                repo_full_name: env.repository.full_name,
+                item_key: env.pull_request.number.to_string(),
+                item_kind: "pull_request",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn item_matches_target(payload: &ItemEventPayload, target: &brain_domain::TargetConfig) -> bool {
+    payload.repo_full_name == format!("{}/{}", target.org, target.repo)
+}
+
+async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
+    use brain_domain::TargetKey;
+    use brain_storage::GithubStorage;
+
+    // The binding lookup uses the project as `{org}/{repo}` to stay
+    // forge-agnostic with how `WorkItemControls` writes it from the UI.
+    let project = format!("{}/{}", state.target.org, state.target.repo);
+    let bound = match crate::server::projection::find_work_item_by_external(
+        &state.target,
+        "github",
+        &project,
+        &payload.item_key,
+    )
+    .await
+    {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            tracing::debug!(
+                repo = %payload.repo_full_name,
+                item_key = %payload.item_key,
+                "webhook item event: no bound work item — ignored"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "webhook item event: binding lookup failed");
+            return;
+        }
+    };
+
+    let token = match std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("TARGET_GITHUB_TOKEN"))
+    {
+        Ok(t) => t,
+        Err(_) => {
+            tracing::warn!(
+                "webhook item event: no GITHUB_TOKEN — emitting cache-bump event without rebuild"
+            );
+            state.bus.send(BrainEvent::WorkItemUpdated {
+                brain_id: bound.0,
+                content_path: bound.1,
+            });
+            return;
+        }
+    };
+
+    let storage = GithubStorage::new(state.http, state.target.clone());
+    let key = TargetKey::from(storage.target());
+    brain_storage::invalidate(&key);
+    brain_storage::invalidate_template(&key);
+    crate::knowledge::config_loader::invalidate(&key);
+
+    let config = crate::knowledge::config_loader::load(storage.target(), &token).await;
+    if let Err(error) =
+        crate::server::projection::rebuild(&storage, &token, &config, "webhook_item").await
+    {
+        tracing::warn!(target = %key, error = %error, "webhook item event: projection rebuild failed");
+        // Still emit so the UI bumps and refetches — the next manual refresh
+        // or push event will reconcile.
+    }
+
+    state.bus.send(BrainEvent::WorkItemUpdated {
+        brain_id: bound.0,
+        content_path: bound.1,
+    });
 }
 
 /// Constant-time HMAC-SHA256 verification of `X-Hub-Signature-256`.
@@ -266,5 +407,48 @@ mod tests {
             "not-sha256-prefixed".parse().unwrap(),
         );
         assert!(!verify_signature(b"secret", &headers, b"body"));
+    }
+
+    #[test]
+    fn issues_payload_parses_repo_and_number() {
+        let body = br#"{"action":"labeled","issue":{"number":42},"repository":{"full_name":"acme/brain"}}"#;
+        let payload = parse_item_payload(body, "issues").unwrap();
+        assert_eq!(payload.repo_full_name, "acme/brain");
+        assert_eq!(payload.item_key, "42");
+        assert_eq!(payload.item_kind, "issue");
+    }
+
+    #[test]
+    fn pull_request_payload_parses_repo_and_number() {
+        let body = br#"{"action":"opened","pull_request":{"number":7},"repository":{"full_name":"acme/brain"}}"#;
+        let payload = parse_item_payload(body, "pull_request").unwrap();
+        assert_eq!(payload.item_key, "7");
+        assert_eq!(payload.item_kind, "pull_request");
+    }
+
+    #[test]
+    fn item_payload_for_unrelated_repo_is_rejected() {
+        let payload = ItemEventPayload {
+            repo_full_name: "evil/elsewhere".to_string(),
+            item_key: "1".to_string(),
+            item_kind: "issue",
+        };
+        assert!(!item_matches_target(
+            &payload,
+            &target("acme", "brain", "main")
+        ));
+    }
+
+    #[test]
+    fn item_payload_for_target_repo_is_accepted() {
+        let payload = ItemEventPayload {
+            repo_full_name: "acme/brain".to_string(),
+            item_key: "1".to_string(),
+            item_kind: "issue",
+        };
+        assert!(item_matches_target(
+            &payload,
+            &target("acme", "brain", "main")
+        ));
     }
 }

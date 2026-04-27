@@ -175,6 +175,151 @@ pub async fn load_work_item_by_path(
     load_work_item_by_path_from_pool(pool, target, path).await
 }
 
+/// Load a single work item by its stable `brain_id`. Used by mutate-only
+/// server fns that already know the identity and don't need a path lookup.
+pub async fn load_work_item_by_brain_id(
+    target: &TargetConfig,
+    brain_id: &str,
+) -> Result<Option<WorkItem>, BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    let row = sqlx::query(
+        "SELECT content_path FROM work_items WHERE target_id = ? AND brain_id = ? LIMIT 1",
+    )
+    .bind(target_id)
+    .bind(brain_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(sqlx_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let path: Option<String> = row.get("content_path");
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    load_work_item_by_path_from_pool(pool, target, &path).await
+}
+
+/// Update only the `state` column of a work item. Caller is responsible for
+/// having already updated the markdown frontmatter on the forge — this keeps
+/// the local read model in sync without a full rebuild.
+pub async fn update_work_item_state(
+    target: &TargetConfig,
+    brain_id: &str,
+    state: &WorkItemState,
+) -> Result<(), BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    sqlx::query("UPDATE work_items SET state = ? WHERE target_id = ? AND brain_id = ?")
+        .bind(enum_str(state))
+        .bind(target_id)
+        .bind(brain_id)
+        .execute(pool)
+        .await
+        .map_err(sqlx_error)?;
+    Ok(())
+}
+
+/// Replace the assignees JSON column.
+pub async fn update_work_item_assignees(
+    target: &TargetConfig,
+    brain_id: &str,
+    assignees: &[String],
+) -> Result<(), BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    let assignees_json = serde_json::to_string(assignees)
+        .map_err(|error| BrainError::parse(format!("projection assignees json: {error}")))?;
+    sqlx::query("UPDATE work_items SET assignees_json = ? WHERE target_id = ? AND brain_id = ?")
+        .bind(assignees_json)
+        .bind(target_id)
+        .bind(brain_id)
+        .execute(pool)
+        .await
+        .map_err(sqlx_error)?;
+    Ok(())
+}
+
+/// Look up the work item bound to a given external item, if any. Returns
+/// the matching `(brain_id, content_path)` so the webhook handler can emit
+/// a granular SSE event without doing a second round trip.
+pub async fn find_work_item_by_external(
+    target: &TargetConfig,
+    system: &str,
+    project: &str,
+    item_key: &str,
+) -> Result<Option<(String, Option<String>)>, BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    let row = sqlx::query(
+        "SELECT wi.brain_id, wi.content_path
+         FROM work_item_bindings wb
+         JOIN work_items wi
+           ON wi.target_id = wb.target_id AND wi.brain_id = wb.brain_id
+         WHERE wb.target_id = ? AND wb.system = ? AND wb.project = ? AND wb.item_key = ?
+         LIMIT 1",
+    )
+    .bind(target_id)
+    .bind(system)
+    .bind(project)
+    .bind(item_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(sqlx_error)?;
+    Ok(row.map(|row| {
+        (
+            row.get::<String, _>("brain_id"),
+            row.get::<Option<String>, _>("content_path"),
+        )
+    }))
+}
+
+/// Set or clear the external binding for a work item. Passing `None` deletes
+/// the binding row; passing `Some(_)` upserts it.
+pub async fn upsert_work_item_binding(
+    target: &TargetConfig,
+    brain_id: &str,
+    binding: Option<&ExternalWorkItemBinding>,
+) -> Result<(), BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    match binding {
+        None => {
+            sqlx::query("DELETE FROM work_item_bindings WHERE target_id = ? AND brain_id = ?")
+                .bind(target_id)
+                .bind(brain_id)
+                .execute(pool)
+                .await
+                .map_err(sqlx_error)?;
+        }
+        Some(b) => {
+            sqlx::query(
+                "INSERT INTO work_item_bindings (
+                    target_id, brain_id, system, project, item_key, provider_id, url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(target_id, brain_id) DO UPDATE SET
+                    system = excluded.system,
+                    project = excluded.project,
+                    item_key = excluded.item_key,
+                    provider_id = excluded.provider_id,
+                    url = excluded.url",
+            )
+            .bind(target_id)
+            .bind(brain_id)
+            .bind(enum_str(&b.system))
+            .bind(&b.project)
+            .bind(&b.item_key)
+            .bind(&b.provider_id)
+            .bind(&b.url)
+            .execute(pool)
+            .await
+            .map_err(sqlx_error)?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn load_graph(
     storage: &GithubStorage,
     token: &str,

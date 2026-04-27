@@ -43,6 +43,8 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             on_open: Option<Closure<dyn FnMut(Event)>>,
             on_updated: Option<Closure<dyn FnMut(MessageEvent)>>,
             on_failed: Option<Closure<dyn FnMut(MessageEvent)>>,
+            on_work_item: Option<Closure<dyn FnMut(MessageEvent)>>,
+            on_binding: Option<Closure<dyn FnMut(MessageEvent)>>,
             on_error: Option<Closure<dyn FnMut(Event)>>,
         }
 
@@ -90,6 +92,8 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 state.on_open = None;
                 state.on_updated = None;
                 state.on_failed = None;
+                state.on_work_item = None;
+                state.on_binding = None;
                 state.on_error = None;
 
                 let runtime = runtime.clone();
@@ -133,6 +137,20 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                         graph_version.update(|v| *v += 1);
                         sync_status.set(SyncStatus::Stale { message });
                     });
+                // Granular work item events: for the 3.2-α slice both variants
+                // simply bump the version so existing Resources refetch. A
+                // future iteration can demux on `brain_id` to refresh only the
+                // affected detail panel without a full graph reload.
+                let on_work_item: Closure<dyn FnMut(MessageEvent)> =
+                    Closure::new(move |_event: MessageEvent| {
+                        graph_version.update(|v| *v += 1);
+                        sync_status.set(SyncStatus::Fresh);
+                    });
+                let on_binding: Closure<dyn FnMut(MessageEvent)> =
+                    Closure::new(move |_event: MessageEvent| {
+                        graph_version.update(|v| *v += 1);
+                        sync_status.set(SyncStatus::Fresh);
+                    });
                 let on_error: Closure<dyn FnMut(Event)> = {
                     let schedule_reconnect = schedule_reconnect.clone();
                     Closure::new(move |_event: Event| {
@@ -150,6 +168,14 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                     "sync_failed",
                     on_failed.as_ref().unchecked_ref(),
                 );
+                let _ = source.add_event_listener_with_callback(
+                    "work_item_updated",
+                    on_work_item.as_ref().unchecked_ref(),
+                );
+                let _ = source.add_event_listener_with_callback(
+                    "binding_updated",
+                    on_binding.as_ref().unchecked_ref(),
+                );
                 let _ = source
                     .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref());
 
@@ -158,6 +184,8 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 state.on_open = Some(on_open);
                 state.on_updated = Some(on_updated);
                 state.on_failed = Some(on_failed);
+                state.on_work_item = Some(on_work_item);
+                state.on_binding = Some(on_binding);
                 state.on_error = Some(on_error);
             }));
         }

@@ -6,8 +6,26 @@ use axum::{
     },
 };
 use std::convert::Infallible;
+use std::sync::OnceLock;
 use tokio::sync::broadcast;
 use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
+
+static EVENT_BUS: OnceLock<EventBus> = OnceLock::new();
+
+/// Register the process-wide event bus. Call once during startup, after
+/// constructing the `EventBus` that the webhook + SSE handlers will share.
+/// Safe to call only once; subsequent calls are no-ops.
+pub fn init(bus: EventBus) {
+    let _ = EVENT_BUS.set(bus);
+}
+
+/// Read the process-wide event bus. Returns `None` before [`init`] runs (e.g.
+/// in tests that don't bring up the full server). Mutate-only server fns use
+/// this to publish granular SSE events without taking the bus through every
+/// call site.
+pub fn global() -> Option<&'static EventBus> {
+    EVENT_BUS.get()
+}
 
 /// Typed events the backend can publish to all connected Leptos clients.
 #[derive(Clone, Debug)]
@@ -16,6 +34,19 @@ pub enum BrainEvent {
     GraphUpdated,
     /// The background sync worker failed and can provide an operator-facing reason.
     SyncFailed { message: String },
+    /// A single work item mutated (state, assignees, labels). Carries enough
+    /// identity for the client to refetch a single record without a full graph
+    /// reload, but clients that don't handle it can fall back to bumping the
+    /// generic graph version.
+    WorkItemUpdated {
+        brain_id: String,
+        content_path: Option<String>,
+    },
+    /// The external binding of a work item changed (set, cleared, or rebound).
+    BindingUpdated {
+        brain_id: String,
+        content_path: Option<String>,
+    },
 }
 
 impl BrainEvent {
@@ -23,6 +54,8 @@ impl BrainEvent {
         match self {
             BrainEvent::GraphUpdated => "graph_updated",
             BrainEvent::SyncFailed { .. } => "sync_failed",
+            BrainEvent::WorkItemUpdated { .. } => "work_item_updated",
+            BrainEvent::BindingUpdated { .. } => "binding_updated",
         }
     }
 
@@ -32,6 +65,18 @@ impl BrainEvent {
             BrainEvent::SyncFailed { message } => {
                 serde_json::json!({ "message": message }).to_string()
             }
+            BrainEvent::WorkItemUpdated {
+                brain_id,
+                content_path,
+            }
+            | BrainEvent::BindingUpdated {
+                brain_id,
+                content_path,
+            } => serde_json::json!({
+                "brain_id": brain_id,
+                "content_path": content_path,
+            })
+            .to_string(),
         }
     }
 }
