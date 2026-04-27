@@ -215,7 +215,29 @@ impl GithubStorage {
     /// Fetch every markdown file that participates in the Brain graph from the
     /// current target repository.
     pub async fn fetch_raw_files(&self, token: &str) -> Result<Vec<RawFile>, BrainError> {
-        let tree_url = self.gh.tree_url();
+        // Resolve the branch name to a commit SHA. GitHub's tree API works more
+        // reliably with commit SHAs than branch names (avoids edge cases with
+        // recently created / renamed branches or race conditions).
+        let ref_url = self.gh.git_ref_url();
+        #[derive(Deserialize)]
+        struct RefResponse {
+            object: RefObject,
+        }
+        #[derive(Deserialize)]
+        struct RefObject {
+            sha: String,
+        }
+        let ref_resp: RefResponse =
+            GithubHttp::send_json(self.http.get(&ref_url, token), "git_ref").await?;
+        let commit_sha = ref_resp.object.sha;
+
+        // Now fetch the tree using the resolved commit SHA instead of the branch name.
+        let tree_url = format!(
+            "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+            self.gh.target().org,
+            self.gh.target().repo,
+            commit_sha
+        );
         let tree: TreeResponse =
             GithubHttp::send_json(self.http.get(&tree_url, token), "tree").await?;
 
