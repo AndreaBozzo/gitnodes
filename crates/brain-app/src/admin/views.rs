@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_router::hooks::use_params_map;
 
 use brain_domain::{BrainConfig, ViewSpec, slugify_view_name};
 
@@ -6,6 +7,20 @@ use crate::api::{WriteMode, list_views, load_brain_config, save_views};
 
 #[component]
 pub fn ViewsAdminPage() -> impl IntoView {
+    let params = use_params_map();
+    let target_prefix = Memo::new(move |_| {
+        let (org, repo) = params.with(|p| {
+            (
+                p.get("org").unwrap_or_default().to_string(),
+                p.get("repo").unwrap_or_default().to_string(),
+            )
+        });
+        if org.is_empty() || repo.is_empty() {
+            String::new()
+        } else {
+            format!("/{org}/{repo}")
+        }
+    });
     let reload_tick = RwSignal::new(0u32);
     let outcome_msg = RwSignal::new(Option::<OutcomeBanner>::None);
 
@@ -25,9 +40,11 @@ pub fn ViewsAdminPage() -> impl IntoView {
                 <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300">
                     "Brain · Admin · Views"
                 </h1>
-                <span class="text-xs text-slate-500 ml-2">"/admin/views"</span>
+                <span class="text-xs text-slate-500 ml-2">
+                    {move || format!("{}/admin/views", target_prefix.get())}
+                </span>
                 <a
-                    href="/admin"
+                    href=move || format!("{}/admin", target_prefix.get())
                     rel="external"
                     class="ml-auto text-xs text-slate-400 hover:text-slate-200"
                 >

@@ -135,78 +135,6 @@ impl GithubHttp {
         Self::auth_headers(self.inner.patch(url), token)
     }
 
-    fn github_issue_url(project: &str, item_key: &str) -> Result<String, BrainError> {
-        let (owner, repo) = project
-            .split_once('/')
-            .ok_or_else(|| BrainError::parse(format!("invalid GitHub project: {project}")))?;
-        if owner.trim().is_empty() || repo.trim().is_empty() || repo.contains('/') {
-            return Err(BrainError::parse(format!(
-                "invalid GitHub project: {project}"
-            )));
-        }
-        let number = item_key
-            .parse::<u64>()
-            .map_err(|_| BrainError::parse(format!("invalid GitHub issue number: {item_key}")))?;
-        Ok(format!(
-            "https://api.github.com/repos/{owner}/{repo}/issues/{number}"
-        ))
-    }
-
-    /// Read the current label names for a GitHub issue. The sync layer uses
-    /// this before replacing only Brain-managed state labels, preserving any
-    /// unrelated labels maintained directly on GitHub.
-    pub async fn issue_labels(
-        &self,
-        token: &str,
-        project: &str,
-        item_key: &str,
-    ) -> Result<Vec<String>, BrainError> {
-        #[derive(Deserialize)]
-        struct IssueResponse {
-            #[serde(default)]
-            labels: Vec<IssueLabel>,
-        }
-
-        #[derive(Deserialize)]
-        struct IssueLabel {
-            name: String,
-        }
-
-        let url = Self::github_issue_url(project, item_key)?;
-        let issue: IssueResponse = Self::send_json(self.get(&url, token), "issue_get").await?;
-        Ok(issue.labels.into_iter().map(|label| label.name).collect())
-    }
-
-    /// Patch a GitHub issue. `labels` replaces the issue label set when
-    /// present, matching GitHub's REST API semantics; callers should read and
-    /// merge existing labels first when they only own a subset.
-    pub async fn patch_issue(
-        &self,
-        token: &str,
-        project: &str,
-        item_key: &str,
-        patch: &GithubIssuePatch,
-    ) -> Result<(), BrainError> {
-        let url = Self::github_issue_url(project, item_key)?;
-        let resp = self
-            .patch(&url, token)
-            .json(patch)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("issue_patch fetch: {e}")))?;
-        let status = resp.status();
-        tracing::debug!(%status, project, item_key, "github issue patch response");
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            let snippet: String = body.chars().take(512).collect();
-            tracing::warn!(%status, project, item_key, body = %snippet, "github issue patch failed");
-            return Err(BrainError::github(format!(
-                "issue_patch status {status}: {snippet}"
-            )));
-        }
-        Ok(())
-    }
-
     /// Send a request and decode JSON. Centralises the
     /// `.send().error_for_status().json()` chain. `ctx` is a short string used
     /// in error and warning messages so callers don't have to repeat it three
@@ -324,11 +252,7 @@ impl GithubStorage {
             permissions: RepositoryPermissions,
         }
 
-        let url = format!(
-            "https://api.github.com/repos/{}/{}",
-            self.gh.target().org,
-            self.gh.target().repo
-        );
+        let url = self.gh.target_repo_url();
         let repo: RepoResponse = GithubHttp::send_json(self.http.get(&url, token), "repo").await?;
         Ok(repo.permissions)
     }
@@ -354,11 +278,7 @@ impl GithubStorage {
         branch: &str,
         sha: &str,
     ) -> Result<(), BrainError> {
-        let url = format!(
-            "https://api.github.com/repos/{}/{}/git/refs",
-            self.gh.target().org,
-            self.gh.target().repo
-        );
+        let url = self.gh.git_refs_url();
         let body = serde_json::json!({
             "ref": format!("refs/heads/{branch}"),
             "sha": sha,
@@ -382,11 +302,7 @@ impl GithubStorage {
     }
 
     pub async fn ensure_fork(&self, token: &str, owner: &str) -> Result<(), BrainError> {
-        let repo_url = format!(
-            "https://api.github.com/repos/{}/{}",
-            owner,
-            self.gh.target().repo
-        );
+        let repo_url = self.gh.repo_url(owner, &self.gh.target().repo);
         let existing = self
             .http
             .get(&repo_url, token)
@@ -397,11 +313,7 @@ impl GithubStorage {
             return Ok(());
         }
 
-        let fork_url = format!(
-            "https://api.github.com/repos/{}/{}/forks",
-            self.gh.target().org,
-            self.gh.target().repo
-        );
+        let fork_url = self.gh.forks_url();
         let resp = self
             .http
             .post(&fork_url, token)
@@ -433,11 +345,7 @@ impl GithubStorage {
             html_url: String,
         }
 
-        let url = format!(
-            "https://api.github.com/repos/{}/{}/pulls",
-            self.gh.target().org,
-            self.gh.target().repo
-        );
+        let url = self.gh.pulls_url();
         let payload = serde_json::json!({
             "title": title,
             "head": head,
@@ -463,12 +371,7 @@ impl GithubStorage {
         let commit_sha = self.head_sha(token).await?;
 
         // Now fetch the tree using the resolved commit SHA instead of the branch name.
-        let tree_url = format!(
-            "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
-            self.gh.target().org,
-            self.gh.target().repo,
-            commit_sha
-        );
+        let tree_url = self.gh.git_tree_by_sha_url(&commit_sha);
         let tree: TreeResponse =
             GithubHttp::send_json(self.http.get(&tree_url, token), "tree").await?;
 
@@ -530,6 +433,63 @@ impl GithubStorage {
         let outcome = atomic_rename::run(&self.http, &self.gh, token, mutation, policy).await?;
         invalidate(&self.target_key());
         Ok(outcome)
+    }
+
+    /// Read the current label names for a GitHub issue. The sync layer uses
+    /// this before replacing only Brain-managed state labels, preserving any
+    /// unrelated labels maintained directly on GitHub.
+    pub async fn issue_labels(
+        &self,
+        token: &str,
+        project: &str,
+        item_key: &str,
+    ) -> Result<Vec<String>, BrainError> {
+        #[derive(Deserialize)]
+        struct IssueResponse {
+            #[serde(default)]
+            labels: Vec<IssueLabel>,
+        }
+
+        #[derive(Deserialize)]
+        struct IssueLabel {
+            name: String,
+        }
+
+        let url = self.gh.issue_url(project, item_key)?;
+        let issue: IssueResponse =
+            GithubHttp::send_json(self.http.get(&url, token), "issue_get").await?;
+        Ok(issue.labels.into_iter().map(|label| label.name).collect())
+    }
+
+    /// Patch a GitHub issue. `labels` replaces the issue label set when
+    /// present, matching GitHub's REST API semantics; callers should read and
+    /// merge existing labels first when they only own a subset.
+    pub async fn patch_issue(
+        &self,
+        token: &str,
+        project: &str,
+        item_key: &str,
+        patch: &GithubIssuePatch,
+    ) -> Result<(), BrainError> {
+        let url = self.gh.issue_url(project, item_key)?;
+        let resp = self
+            .http
+            .patch(&url, token)
+            .json(patch)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("issue_patch fetch: {e}")))?;
+        let status = resp.status();
+        tracing::debug!(%status, project, item_key, "github issue patch response");
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(512).collect();
+            tracing::warn!(%status, project, item_key, body = %snippet, "github issue patch failed");
+            return Err(BrainError::github(format!(
+                "issue_patch status {status}: {snippet}"
+            )));
+        }
+        Ok(())
     }
 }
 

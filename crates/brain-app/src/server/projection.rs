@@ -389,12 +389,32 @@ pub async fn upsert_work_item_binding(
 
 pub async fn load_graph(
     storage: &GithubStorage,
-    _token: &str,
-    _config: &BrainConfig,
+    token: &str,
+    config: &BrainConfig,
 ) -> Result<(Vec<Node>, Vec<Edge>), BrainError> {
     let pool = pool()?;
     let target = storage.target().clone();
     let target_id = ensure_target_id(pool, &target).await?;
+    let state = load_sync_state(pool, target_id).await?;
+    let has_success = state
+        .as_ref()
+        .and_then(|sync| sync.last_success_at.as_ref())
+        .is_some();
+
+    if !has_success {
+        match rebuild(storage, token, config, "bootstrap").await {
+            Ok(()) => {}
+            Err(error) => {
+                tracing::warn!(
+                    target = %TargetKey::from(&target),
+                    error = %error,
+                    "projection bootstrap rebuild failed"
+                );
+                return Err(error);
+            }
+        }
+    }
+
     load_cached_graph(pool, target_id).await
 }
 

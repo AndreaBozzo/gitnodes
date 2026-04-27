@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_router::hooks::use_params_map;
 
 use crate::api::{AuditEntry, SessionEntry, list_sessions, load_audit_log, revoke_session};
 
@@ -7,6 +8,20 @@ pub use views::ViewsAdminPage;
 
 #[component]
 pub fn AdminPage() -> impl IntoView {
+    let params = use_params_map();
+    let target_prefix = Memo::new(move |_| {
+        let (org, repo) = params.with(|p| {
+            (
+                p.get("org").unwrap_or_default().to_string(),
+                p.get("repo").unwrap_or_default().to_string(),
+            )
+        });
+        if org.is_empty() || repo.is_empty() {
+            String::new()
+        } else {
+            format!("/{org}/{repo}")
+        }
+    });
     let kind_filter = RwSignal::new(String::new());
     let reload_tick = RwSignal::new(0u32);
 
@@ -43,16 +58,18 @@ pub fn AdminPage() -> impl IntoView {
                 <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300">
                     "Brain · Admin"
                 </h1>
-                <span class="text-xs text-slate-500 ml-2">"/admin"</span>
+                <span class="text-xs text-slate-500 ml-2">
+                    {move || format!("{}/admin", target_prefix.get())}
+                </span>
                 <a
-                    href="/admin/views"
+                    href=move || format!("{}/admin/views", target_prefix.get())
                     rel="external"
                     class="ml-auto text-xs text-teal-300 hover:text-teal-200"
                 >
                     "edit views →"
                 </a>
                 <a
-                    href="/knowledge"
+                    href=move || format!("{}/knowledge", target_prefix.get())
                     rel="external"
                     class="text-xs text-slate-400 hover:text-slate-200"
                 >

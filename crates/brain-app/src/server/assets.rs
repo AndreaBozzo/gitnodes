@@ -10,7 +10,7 @@
 //! arbitrary repo files through the proxy.
 
 use axum::{
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -34,8 +34,8 @@ pub struct AssetProxyState {
 pub async fn serve_asset(
     State(state): State<AssetProxyState>,
     session: Session,
+    OriginalUri(uri): OriginalUri,
     Path(path): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
     if !auth::is_authenticated(&session).await {
         return (StatusCode::UNAUTHORIZED, "not authenticated").into_response();
@@ -51,7 +51,8 @@ pub async fn serve_asset(
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
 
-    let target = target_from_headers(&headers, &state.target);
+    let target =
+        target_from_path(uri.path(), &state.target).unwrap_or_else(|| state.target.clone());
     let gh = GithubClient::new(target.clone());
     let url = format!("{}?ref={}", gh.contents_url(&repo_path), target.branch);
     let resp = match state.http.get(&url, &token).send().await {
@@ -94,42 +95,19 @@ pub async fn serve_asset(
     (StatusCode::OK, headers, bytes).into_response()
 }
 
-fn target_from_headers(headers: &HeaderMap, fallback: &TargetConfig) -> TargetConfig {
-    headers
-        .get(header::REFERER)
-        .and_then(|raw| raw.to_str().ok())
-        .and_then(|referer| {
-            let path = if referer.starts_with('/') {
-                referer.to_string()
-            } else {
-                let without_scheme = referer.split_once("://").map(|(_, rest)| rest)?;
-                let path_start = without_scheme.find('/')?;
-                without_scheme[path_start..].to_string()
-            };
-            target_from_path(&path, fallback)
-        })
-        .unwrap_or_else(|| fallback.clone())
-}
-
 fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
     let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
     match segments.as_slice() {
-        [org, repo, "knowledge"] | [org, repo, "admin"] if !org.is_empty() && !repo.is_empty() => {
-            Some(TargetConfig {
-                org: (*org).to_string(),
-                repo: (*repo).to_string(),
-                branch: fallback.branch.clone(),
-            })
-        }
-        [org, repo, "knowledge", _] | [org, repo, "admin", _]
-            if !org.is_empty() && !repo.is_empty() =>
-        {
-            Some(TargetConfig {
-                org: (*org).to_string(),
-                repo: (*repo).to_string(),
-                branch: fallback.branch.clone(),
-            })
-        }
+        [org, repo, "assets"] if !org.is_empty() && !repo.is_empty() => Some(TargetConfig {
+            org: (*org).to_string(),
+            repo: (*repo).to_string(),
+            branch: fallback.branch.clone(),
+        }),
+        [org, repo, "assets", _] if !org.is_empty() && !repo.is_empty() => Some(TargetConfig {
+            org: (*org).to_string(),
+            repo: (*repo).to_string(),
+            branch: fallback.branch.clone(),
+        }),
         _ => None,
     }
 }

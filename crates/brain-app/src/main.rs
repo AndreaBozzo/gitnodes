@@ -175,8 +175,7 @@ async fn main() {
             || path.starts_with("/admin/")
             || path.starts_with("/assets/")
             || path.starts_with("/sse/")
-            // Multi-tenant: /{org}/{repo}/knowledge and /{org}/{repo}/admin.
-            // A valid multi-tenant path has exactly 3 segments: /org/repo/page.
+            // Multi-tenant: /{org}/{repo}/knowledge, /admin, and /assets.
             || is_multi_tenant_protected(path);
         if needs_auth && !auth::is_authenticated(&session).await {
             if path.starts_with("/sse/") {
@@ -190,18 +189,23 @@ async fn main() {
     }
 
     fn is_multi_tenant_protected(path: &str) -> bool {
-        // Match /{org}/{repo}/knowledge or /{org}/{repo}/admin (no trailing slash needed).
+        // Match /{org}/{repo}/knowledge, /admin, or /assets (no trailing slash needed).
         let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
         matches!(
             segments.as_slice(),
-            [_, _, "knowledge"] | [_, _, "admin"] | [_, _, "knowledge", _] | [_, _, "admin", _]
+            [_, _, "knowledge"]
+                | [_, _, "admin"]
+                | [_, _, "assets"]
+                | [_, _, "knowledge", _]
+                | [_, _, "admin", _]
+                | [_, _, "assets", _]
         )
     }
 
     fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
         let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
         match segments.as_slice() {
-            [org, repo, "knowledge"] | [org, repo, "admin"]
+            [org, repo, "knowledge"] | [org, repo, "admin"] | [org, repo, "assets"]
                 if !org.is_empty() && !repo.is_empty() =>
             {
                 Some(TargetConfig {
@@ -210,7 +214,7 @@ async fn main() {
                     branch: fallback.branch.clone(),
                 })
             }
-            [org, repo, "knowledge", _] | [org, repo, "admin", _]
+            [org, repo, "knowledge", _] | [org, repo, "admin", _] | [org, repo, "assets", _]
                 if !org.is_empty() && !repo.is_empty() =>
             {
                 Some(TargetConfig {
@@ -223,7 +227,7 @@ async fn main() {
         }
     }
 
-    fn path_from_referer(request: &Request<Body>) -> Option<String> {
+    fn path_from_same_origin_referer(request: &Request<Body>) -> Option<String> {
         let raw = request
             .headers()
             .get(axum::http::header::REFERER)?
@@ -234,13 +238,22 @@ async fn main() {
         }
         let without_scheme = raw.split_once("://").map(|(_, rest)| rest)?;
         let path_start = without_scheme.find('/')?;
+        let referer_host = &without_scheme[..path_start];
+        let request_host = request
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|value| value.to_str().ok())?;
+        if referer_host != request_host {
+            return None;
+        }
         Some(without_scheme[path_start..].to_string())
     }
 
     fn target_for_request(request: &Request<Body>, fallback: &TargetConfig) -> TargetConfig {
         target_from_path(request.uri().path(), fallback)
             .or_else(|| {
-                path_from_referer(request).and_then(|path| target_from_path(&path, fallback))
+                path_from_same_origin_referer(request)
+                    .and_then(|path| target_from_path(&path, fallback))
             })
             .unwrap_or_else(|| fallback.clone())
     }
@@ -261,7 +274,8 @@ async fn main() {
         });
 
     let app = Router::new()
-        .nest("/assets", asset_router)
+        .nest("/assets", asset_router.clone())
+        .nest("/{org}/{repo}/assets", asset_router)
         .route("/auth/login", axum::routing::get(auth::login))
         .route("/auth/logout", axum::routing::get(auth::logout))
         .route("/auth/callback", axum::routing::get(auth::oauth_callback))

@@ -1742,7 +1742,7 @@ pub(crate) async fn apply_provider_work_item_update(
                 WorkItemMutation::State(state),
                 false,
                 true,
-                true,
+                false,
             )
             .await?,
         );
@@ -1760,7 +1760,7 @@ pub(crate) async fn apply_provider_work_item_update(
                 WorkItemMutation::Assignees(assignees),
                 false,
                 true,
-                true,
+                false,
             )
             .await?,
         );
@@ -1891,8 +1891,7 @@ async fn apply_work_item_mutation_inner(
     if sync_provider {
         let config = crate::knowledge::config_loader::load(target, token).await;
         if let Err(error) =
-            sync_work_item_provider(storage.http(), token, &config, &work_item, &mutation, user)
-                .await
+            sync_work_item_provider(storage, token, &config, &work_item, &mutation, user).await
         {
             crate::server::audit::log(
                 "work_item_provider_sync_error",
@@ -1939,7 +1938,7 @@ fn work_item_with_mutation(mut item: WorkItem, mutation: &WorkItemMutation) -> W
 
 #[cfg(feature = "ssr")]
 async fn sync_work_item_provider(
-    http: &brain_storage::GithubHttp,
+    storage: &brain_storage::GithubStorage,
     token: &str,
     config: &BrainConfig,
     item: &WorkItem,
@@ -1960,7 +1959,7 @@ async fn sync_work_item_provider(
     match mutation {
         WorkItemMutation::State(state) => {
             patch.state = Some(github_issue_state_for(state).to_string());
-            match github_labels_for_state(http, token, config, item, state).await {
+            match github_labels_for_state(storage, token, config, item, state).await {
                 Ok(labels) => patch.labels = labels,
                 Err(error) => {
                     crate::server::audit::log(
@@ -1978,13 +1977,14 @@ async fn sync_work_item_provider(
         WorkItemMutation::Binding(_) => return Ok(()),
     }
 
-    http.patch_issue(token, &binding.project, &binding.item_key, &patch)
+    storage
+        .patch_issue(token, &binding.project, &binding.item_key, &patch)
         .await
 }
 
 #[cfg(feature = "ssr")]
 async fn github_labels_for_state(
-    http: &brain_storage::GithubHttp,
+    storage: &brain_storage::GithubStorage,
     token: &str,
     config: &BrainConfig,
     item: &WorkItem,
@@ -2004,7 +2004,7 @@ async fn github_labels_for_state(
 
     let managed_state_labels: HashSet<&str> =
         spec.state_labels.values().map(String::as_str).collect();
-    let mut labels = http
+    let mut labels = storage
         .issue_labels(token, &binding.project, &binding.item_key)
         .await?
         .into_iter()
@@ -2580,9 +2580,9 @@ pub struct AccessibleTarget {
 
 /// Discover repos accessible to the current user that might host a Brain
 /// knowledge base. Queries `GET /user/repos` (up to 100, sorted by pushed)
-/// then checks each for `.brain-config.yml` existence via a lightweight HEAD
-/// request on the raw URL. Repos where the user has no read access are
-/// filtered out by the GitHub API automatically.
+/// then checks each for `.brain-config.yml` existence through the Contents API.
+/// Repos where the user has no read access are filtered out by the GitHub API
+/// automatically.
 ///
 /// This is intentionally best-effort: a failed per-repo config check is
 /// recorded as `has_brain_config: false` rather than bubbling an error.
@@ -2622,14 +2622,20 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
             continue;
         }
         let (org, repo) = (parts[0].to_string(), parts[1].to_string());
-        let raw_url = format!(
-            "https://raw.githubusercontent.com/{}/{}/{}/.brain-config.yml",
-            org, repo, r.default_branch
+        let target = TargetConfig {
+            org: org.clone(),
+            repo: repo.clone(),
+            branch: r.default_branch,
+        };
+        let config_url = format!(
+            "{}?ref={}",
+            brain_domain::GithubClient::new(target.clone()).contents_url(".brain-config.yml"),
+            target.branch
         );
-        let client = http.client();
+        let http = http.clone();
         let token = token.clone();
         set.spawn(async move {
-            let has_brain_config = check_url_exists(&client, &token, &raw_url).await;
+            let has_brain_config = check_brain_config_exists(&http, &token, &config_url).await;
             AccessibleTarget {
                 org,
                 repo,
@@ -2649,17 +2655,16 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
     Ok(targets)
 }
 
-/// HEAD the raw URL to probe existence without downloading the file body.
-/// `raw.githubusercontent.com` is **not** the GitHub REST API, so the
-/// `Accept: application/vnd.github+json` and `X-GitHub-Api-Version` headers
-/// `GithubHttp::get` adds would be wrong here — we hit the underlying
-/// reqwest client directly and only attach the bearer (needed for private
-/// repos; raw.githubusercontent.com accepts it for the same content scope).
+/// Probe `.brain-config.yml` through the authenticated GitHub Contents API.
+/// This works for private repos, unlike raw.githubusercontent.com where bearer
+/// token behavior is inconsistent.
 #[cfg(feature = "ssr")]
-async fn check_url_exists(client: &reqwest::Client, token: &str, url: &str) -> bool {
-    client
-        .head(url)
-        .bearer_auth(token)
+async fn check_brain_config_exists(
+    http: &brain_storage::GithubHttp,
+    token: &str,
+    url: &str,
+) -> bool {
+    http.get(url, token)
         .send()
         .await
         .map(|r| r.status().is_success())

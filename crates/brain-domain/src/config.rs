@@ -84,6 +84,14 @@ impl GithubClient {
         )
     }
 
+    pub fn repo_url(&self, owner: &str, repo: &str) -> String {
+        format!("{}/repos/{owner}/{repo}", self.api_base)
+    }
+
+    pub fn target_repo_url(&self) -> String {
+        self.repo_url(&self.target.org, &self.target.repo)
+    }
+
     pub fn tree_url(&self) -> String {
         format!(
             "{}/repos/{}/{}/git/trees/{}?recursive=1",
@@ -154,6 +162,45 @@ impl GithubClient {
             "{}/repos/{}/{}/git/refs/heads/{}",
             self.api_base, self.target.org, self.target.repo, self.target.branch
         )
+    }
+
+    pub fn git_refs_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/git/refs",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn forks_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/forks",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn pulls_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/pulls",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn issue_url(&self, project: &str, item_key: &str) -> Result<String, crate::BrainError> {
+        let (owner, repo) = project.split_once('/').ok_or_else(|| {
+            crate::BrainError::parse(format!("invalid GitHub project: {project}"))
+        })?;
+        if owner.trim().is_empty() || repo.trim().is_empty() || repo.contains('/') {
+            return Err(crate::BrainError::parse(format!(
+                "invalid GitHub project: {project}"
+            )));
+        }
+        let number = item_key.parse::<u64>().map_err(|_| {
+            crate::BrainError::parse(format!("invalid GitHub issue number: {item_key}"))
+        })?;
+        Ok(format!(
+            "{}/repos/{owner}/{repo}/issues/{number}",
+            self.api_base
+        ))
     }
 }
 
