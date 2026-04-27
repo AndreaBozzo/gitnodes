@@ -141,7 +141,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
       - Webhook `issues`/`pull_request`: per item bindati legge state/labels/assignees dal payload, mappa le label `label_taxonomy` allo stato Brain, aggiorna il file Markdown/projection con `GITHUB_TOKEN` e pubblica `WorkItemUpdated`.
     - Success criterion chiuso: un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band su item già bindato rientra in projection/UI senza refresh manuale.
     - Follow-up non bloccanti: `issue_comment` come timeline event SSE e sync incrementale puro dell'evento webhook restano da valutare in 3.5 insieme alla query layer parametrica/rate-limit shielding. Il percorso corrente usa ancora rebuild target-scoped + patch file mirata, che è accettabile per i target attuali.
-- [ ] **3.3 RBAC e Save Orchestration Permission-Aware**
+- [x] **3.3 RBAC e Save Orchestration Permission-Aware** _(landed 2026-04-27)_
     - Smettere di modellare RBAC come semplice flag admin/non-admin. Il controllo reale è una capability matrix per target: `can_read`, `can_write_default_branch`, `can_review_via_pr`, `can_admin_config`, derivata da sessione OAuth + permessi repo/branch.
     - Riutilizzare la logica di tree commit atomico già introdotta per i rename, generalizzandola in un write path capace di scegliere tra:
       - commit diretto sul branch target se l'utente ha write access;
@@ -149,6 +149,14 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Tutte le azioni di scrittura ad alto livello (`save`, `rename`, `config update`, future work item mutations che toccano file) devono passare per questo orchestratore, così il fallback PR non diventa un caso speciale fragile.
     - La UI deve rendere esplicito l'esito: `Saved to main`, `Proposed via PR`, `Blocked by permissions`, con link a branch/PR e audit coerente.
     - Success criterion: un contributor senza write access può usare Brain UI normalmente; il sistema devia automaticamente su branch+PR senza perdere atomicità o metadata di autore.
+    - Implementazione corrente:
+      - `GetWriteCapabilities` espone la capability matrix per target (`read`, `write default branch`, `review via PR`, `admin config`) dai permessi repo GitHub.
+      - Save, delete, rename atomico e mutazioni work item passano dal write orchestrator: direct commit quando possibile; fallback a branch temporaneo + PR quando il branch target rifiuta la scrittura o quando serve un fork utente.
+      - I fallback PR non mutano la projection locale del branch target finché la PR non viene mergiata; la UI mostra `Proposed via PR #...` invece di simulare un save live.
+      - Audit dedicato per `propose_write`, `propose_delete`, `propose_rename`, `propose_work_item_mutation`.
+    - Follow-up non bloccanti:
+      - Il futuro Visual Configuration Editor di 3.4 deve riusare lo stesso orchestratore.
+      - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; va ripensato insieme al fallback PR UX per immagini/draft.
 - [ ] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
     - Portare `.brain-config.yml` fuori dall'editor raw con una GUI admin-only che copra i casi reali emersi: node types, directory mapping, accent colors, `work_item_kind`, `label_taxonomy`, binding provider e impostazioni visuali del grafo.
     - La copertura include anche un nuovo blocco `views` (saved filter sets) nel `.brain-config.yml`. Le view sono per-target, validate dallo stesso parser YAML del runtime, e renderizzate dalla sidebar Knowledge come scorciatoie ai filtri già URL-persistenti (`?tags=`, `?types=`). Niente nuove dimensioni di filtro: ogni view è un named tuple di filtri esistenti. La UI "create view from current filters" resta fuori scope per la v1 della 3.4 e va rivalutata dopo che la GUI dimostra stabilità.

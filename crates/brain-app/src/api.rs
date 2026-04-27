@@ -61,6 +61,7 @@ const SERVER_FNS: &[&str] = &[
     "UploadAsset",
     "ListBrainFolders",
     "RefreshBrainGraph",
+    "GetWriteCapabilities",
     "ListAccessibleTargets",
     "LoadBrainGraphForTarget",
     "LoadBrainConfigForTarget",
@@ -92,6 +93,7 @@ pub fn register_server_functions() {
     register_explicit::<UploadAsset>();
     register_explicit::<ListBrainFolders>();
     register_explicit::<RefreshBrainGraph>();
+    register_explicit::<GetWriteCapabilities>();
     register_explicit::<ListAccessibleTargets>();
     register_explicit::<LoadBrainGraphForTarget>();
     register_explicit::<LoadBrainConfigForTarget>();
@@ -199,6 +201,76 @@ pub struct BrainFile {
     pub rendered_html: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteMode {
+    Direct,
+    PullRequest,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WriteResult {
+    pub path: String,
+    pub mode: WriteMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WriteCapabilities {
+    pub can_read: bool,
+    pub can_write_default_branch: bool,
+    pub can_review_via_pr: bool,
+    pub can_admin_config: bool,
+}
+
+#[server(GetWriteCapabilities, "/api", endpoint = "get_write_capabilities")]
+pub async fn get_write_capabilities() -> Result<WriteCapabilities, ServerFnError> {
+    use crate::server::session;
+
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let storage = session::storage().map_err(sfe)?;
+    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
+    Ok(WriteCapabilities {
+        can_read: permissions.pull,
+        can_write_default_branch: permissions.push,
+        can_review_via_pr: permissions.pull,
+        can_admin_config: permissions.admin || permissions.maintain,
+    })
+}
+
+#[cfg(feature = "ssr")]
+impl WriteResult {
+    fn direct(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            mode: WriteMode::Direct,
+            branch: None,
+            pr_url: None,
+            pr_number: None,
+        }
+    }
+
+    fn pull_request(
+        path: impl Into<String>,
+        branch: impl Into<String>,
+        pr_number: u64,
+        pr_url: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            mode: WriteMode::PullRequest,
+            branch: Some(branch.into()),
+            pr_url: Some(pr_url.into()),
+            pr_number: Some(pr_number),
+        }
+    }
+}
+
 #[server(GetCurrentUser, "/api", endpoint = "get_current_user")]
 pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     use crate::server::session;
@@ -256,7 +328,7 @@ pub async fn load_work_item_by_path(path: String) -> Result<Option<WorkItem>, Se
 pub async fn transition_work_item(
     brain_id: String,
     new_state: WorkItemState,
-) -> Result<WorkItem, ServerFnError> {
+) -> Result<WorkItemMutationResult, ServerFnError> {
     apply_work_item_mutation(brain_id, WorkItemMutation::State(new_state))
         .await
         .map_err(sfe)
@@ -268,7 +340,7 @@ pub async fn transition_work_item(
 pub async fn assign_work_item(
     brain_id: String,
     assignees: Vec<String>,
-) -> Result<WorkItem, ServerFnError> {
+) -> Result<WorkItemMutationResult, ServerFnError> {
     apply_work_item_mutation(brain_id, WorkItemMutation::Assignees(assignees))
         .await
         .map_err(sfe)
@@ -279,7 +351,7 @@ pub async fn assign_work_item(
 pub async fn bind_work_item(
     brain_id: String,
     binding: Option<ExternalWorkItemBinding>,
-) -> Result<WorkItem, ServerFnError> {
+) -> Result<WorkItemMutationResult, ServerFnError> {
     apply_work_item_mutation(brain_id, WorkItemMutation::Binding(binding))
         .await
         .map_err(sfe)
@@ -312,9 +384,8 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
     input = server_fn::codec::Json,
     endpoint = "save_brain_file",
 )]
-pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, ServerFnError> {
+pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, ServerFnError> {
     use crate::server::session;
-    use brain_storage::Storage;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -370,34 +441,54 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<String, Server
     let storage = session::storage().map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
 
-    match storage
-        .save_file(
-            &token,
-            &file_path,
-            &markdown,
-            payload.sha.as_deref(),
-            &commit_msg,
-            &user,
-            &author_email,
-        )
-        .await
+    match save_file_permission_aware(
+        &storage,
+        &token,
+        &file_path,
+        &markdown,
+        payload.sha.as_deref(),
+        &commit_msg,
+        &user,
+        &author_email,
+        &target,
+    )
+    .await
     {
-        Ok(path) => {
+        Ok(result) => {
             let kind = if payload.sha.is_some() {
                 "update"
             } else {
                 "create"
             };
-            crate::server::audit::log(kind, Some(&user), &file_path).await;
-            rebuild_projection_after_write(
-                &storage,
-                &target,
-                &token,
-                &user,
-                &format!("write:{file_path}"),
-            )
-            .await;
-            Ok(path)
+            match result.mode {
+                WriteMode::Direct => {
+                    crate::server::audit::log(kind, Some(&user), &file_path).await;
+                    rebuild_projection_after_write(
+                        &storage,
+                        &target,
+                        &token,
+                        &user,
+                        &format!("write:{file_path}"),
+                    )
+                    .await;
+                }
+                WriteMode::PullRequest => {
+                    crate::server::audit::log(
+                        "propose_write",
+                        Some(&user),
+                        &format!(
+                            "{} via PR #{}",
+                            file_path,
+                            result
+                                .pr_number
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "?".to_string())
+                        ),
+                    )
+                    .await;
+                }
+            }
+            Ok(result)
         }
         Err(e) => {
             crate::server::audit::log("api_error", Some(&user), &format!("save {file_path}: {e}"))
@@ -412,9 +503,8 @@ pub async fn delete_brain_file(
     path: String,
     sha: String,
     commit_message: Option<String>,
-) -> Result<(), ServerFnError> {
+) -> Result<WriteResult, ServerFnError> {
     use crate::server::session;
-    use brain_storage::Storage;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -424,21 +514,48 @@ pub async fn delete_brain_file(
         .unwrap_or_else(|| format!("Delete {} via Brain UI", path));
 
     let storage = session::storage().map_err(sfe)?;
-    match storage
-        .delete_file(&token, &path, &sha, &commit_msg, &user, &author_email)
-        .await
+    match delete_file_permission_aware(
+        &storage,
+        &token,
+        &path,
+        &sha,
+        &commit_msg,
+        &user,
+        &author_email,
+        &target,
+    )
+    .await
     {
-        Ok(_) => {
-            crate::server::audit::log("delete", Some(&user), &path).await;
-            rebuild_projection_after_write(
-                &storage,
-                &target,
-                &token,
-                &user,
-                &format!("delete:{path}"),
-            )
-            .await;
-            Ok(())
+        Ok(result) => {
+            match result.mode {
+                WriteMode::Direct => {
+                    crate::server::audit::log("delete", Some(&user), &path).await;
+                    rebuild_projection_after_write(
+                        &storage,
+                        &target,
+                        &token,
+                        &user,
+                        &format!("delete:{path}"),
+                    )
+                    .await;
+                }
+                WriteMode::PullRequest => {
+                    crate::server::audit::log(
+                        "propose_delete",
+                        Some(&user),
+                        &format!(
+                            "{} via PR #{}",
+                            path,
+                            result
+                                .pr_number
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "?".to_string())
+                        ),
+                    )
+                    .await;
+                }
+            }
+            Ok(result)
         }
         Err(e) => {
             crate::server::audit::log("api_error", Some(&user), &format!("delete {path}: {e}"))
@@ -453,6 +570,7 @@ pub struct RenameResult {
     pub new_path: String,
     /// Paths of files whose links were rewritten to point at `new_path`.
     pub updated_referrers: Vec<String>,
+    pub write: WriteResult,
 }
 
 /// Move a file to a new path and rewrite every markdown link that pointed at
@@ -467,7 +585,6 @@ pub async fn rename_brain_file(
     commit_message: Option<String>,
 ) -> Result<RenameResult, ServerFnError> {
     use crate::server::session;
-    use brain_storage::Storage;
 
     let old_path = old_path.trim().trim_matches('/').to_string();
     let new_path = new_path.trim().trim_matches('/').to_string();
@@ -488,97 +605,178 @@ pub async fn rename_brain_file(
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let author_email = format!("{}@users.noreply.github.com", user);
-    let cfg = session::target_cfg().map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
     let storage = session::storage().map_err(sfe)?;
 
-    // Sanity: the source file still exists at the sha the client saw.
-    let (old_content, live_sha) = storage.read_file(&token, &old_path).await.map_err(sfe)?;
-    if live_sha != old_sha {
-        return Err(sfe(BrainError::conflict(
-            "File was modified since you opened it; reload and retry",
-        )));
+    let user_msg = sanitize_commit_message(commit_message.as_deref());
+    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
+
+    if permissions.push {
+        match perform_rename_on_storage(
+            &storage,
+            &token,
+            &old_path,
+            &new_path,
+            &old_sha,
+            user_msg.clone(),
+            &user,
+            &author_email,
+        )
+        .await
+        {
+            Ok(updated_referrers) => {
+                crate::server::audit::log(
+                    "rename",
+                    Some(&user),
+                    &format!(
+                        "{old_path} -> {new_path} ({} referrers)",
+                        updated_referrers.len()
+                    ),
+                )
+                .await;
+                rebuild_projection_after_write(
+                    &storage,
+                    &target,
+                    &token,
+                    &user,
+                    &format!("rename:{old_path}->{new_path}"),
+                )
+                .await;
+                return Ok(RenameResult {
+                    new_path: new_path.clone(),
+                    updated_referrers,
+                    write: WriteResult::direct(new_path),
+                });
+            }
+            Err(error) if should_fallback_to_pr(&error) => {}
+            Err(error) => return Err(sfe(error)),
+        }
     }
 
-    let config = crate::knowledge::config_loader::load(&cfg, &token).await;
+    let plan = prepare_pr_write(
+        &storage,
+        &token,
+        &user,
+        &target,
+        "rename",
+        &old_path,
+        permissions.push,
+    )
+    .await
+    .map_err(sfe)?;
+    let updated_referrers = perform_rename_on_storage(
+        &plan.storage,
+        &token,
+        &old_path,
+        &new_path,
+        &old_sha,
+        user_msg,
+        &user,
+        &author_email,
+    )
+    .await
+    .map_err(sfe)?;
+    let pr = open_write_pr(
+        &storage,
+        &token,
+        &plan,
+        &format!("Propose rename {old_path} to {new_path} via Brain UI"),
+        &format!("Brain UI could not rename `{old_path}` directly on `{}` and proposed the rename through a pull request instead.\n\nNew path: `{new_path}`\nRewritten referrers: {}", target.branch, updated_referrers.len()),
+    )
+    .await
+    .map_err(sfe)?;
+    crate::server::audit::log(
+        "propose_rename",
+        Some(&user),
+        &format!("{old_path} -> {new_path} via PR #{}", pr.number),
+    )
+    .await;
+
+    Ok(RenameResult {
+        new_path: new_path.clone(),
+        updated_referrers,
+        write: WriteResult::pull_request(new_path, plan.branch, pr.number, pr.html_url),
+    })
+}
+
+#[cfg(feature = "ssr")]
+#[allow(clippy::too_many_arguments)]
+async fn perform_rename_on_storage(
+    storage: &brain_storage::GithubStorage,
+    token: &str,
+    old_path: &str,
+    new_path: &str,
+    old_sha: &str,
+    user_msg: Option<String>,
+    user: &str,
+    author_email: &str,
+) -> Result<Vec<String>, BrainError> {
+    use brain_storage::Storage;
+
+    // Sanity: the source file still exists at the sha the client saw.
+    let (old_content, live_sha) = storage.read_file(token, old_path).await?;
+    if live_sha != old_sha {
+        return Err(BrainError::conflict(
+            "File was modified since you opened it; reload and retry",
+        ));
+    }
+
+    let config = crate::knowledge::config_loader::load(storage.target(), token).await;
 
     // Find every file that links to old_path. Walk the tree once, read each
     // candidate, and string-scan for link targets that resolve to old_path.
-    let (_nodes, _edges) = storage.load_graph(&token, &config).await.map_err(sfe)?;
-    let all_paths = collect_repo_md_paths(&token, &storage).await.map_err(sfe)?;
+    let (_nodes, _edges) = storage.load_graph(token, &config).await?;
+    let all_paths = collect_repo_md_paths(token, storage).await?;
 
     // Collect every referrer that needs a link rewrite together with the
     // renamed file's new path. They will be committed together via the Git
     // Data API instead of one Contents API commit per file.
     let mut upserts: Vec<(String, String)> = Vec::new();
-    let mut expected_shas: Vec<(String, String)> = vec![(old_path.clone(), live_sha.clone())];
+    let mut expected_shas: Vec<(String, String)> = vec![(old_path.to_string(), live_sha.clone())];
     let mut updated_referrers = Vec::<String>::new();
     for candidate in &all_paths {
-        if candidate == &old_path {
+        if candidate == old_path {
             continue;
         }
-        let (content, sha) = match storage.read_file(&token, candidate).await {
+        let (content, sha) = match storage.read_file(token, candidate).await {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let Some(rewritten) = rewrite_links(&content, candidate, &old_path, &new_path) else {
+        let Some(rewritten) = rewrite_links(&content, candidate, old_path, new_path) else {
             continue;
         };
         upserts.push((candidate.clone(), rewritten));
         expected_shas.push((candidate.clone(), sha));
         updated_referrers.push(candidate.clone());
     }
-    upserts.push((new_path.clone(), old_content));
+    upserts.push((new_path.to_string(), old_content));
 
-    let user_msg = sanitize_commit_message(commit_message.as_deref());
     let referrer_count = updated_referrers.len();
     let message = user_msg.unwrap_or_else(|| {
         if referrer_count == 0 {
-            format!("Rename {old_path} → {new_path} via Brain UI")
+            format!("Rename {old_path} -> {new_path} via Brain UI")
         } else {
-            format!("Rename {old_path} → {new_path} via Brain UI ({referrer_count} referrers)")
+            format!("Rename {old_path} -> {new_path} via Brain UI ({referrer_count} referrers)")
         }
     });
 
     storage
         .atomic_rename(
-            &token,
+            token,
             brain_storage::RenameMutation {
                 upserts,
-                deletes: vec![old_path.clone()],
-                expect_absent: vec![new_path.clone()],
+                deletes: vec![old_path.to_string()],
+                expect_absent: vec![new_path.to_string()],
                 expected_shas,
                 message,
-                author_name: user.clone(),
-                author_email: author_email.clone(),
+                author_name: user.to_string(),
+                author_email: author_email.to_string(),
             },
             brain_storage::BackoffPolicy::default(),
         )
-        .await
-        .map_err(sfe)?;
+        .await?;
 
-    crate::server::audit::log(
-        "rename",
-        Some(&user),
-        &format!(
-            "{old_path} -> {new_path} ({} referrers)",
-            updated_referrers.len()
-        ),
-    )
-    .await;
-
-    rebuild_projection_after_write(
-        &storage,
-        &cfg,
-        &token,
-        &user,
-        &format!("rename:{old_path}->{new_path}"),
-    )
-    .await;
-
-    Ok(RenameResult {
-        new_path,
-        updated_referrers,
-    })
+    Ok(updated_referrers)
 }
 
 #[cfg(feature = "ssr")]
@@ -894,6 +1092,235 @@ fn short_content_hash(bytes: &[u8]) -> String {
 }
 
 #[cfg(feature = "ssr")]
+#[allow(clippy::too_many_arguments)]
+async fn save_file_permission_aware(
+    storage: &brain_storage::GithubStorage,
+    token: &str,
+    path: &str,
+    content: &str,
+    sha: Option<&str>,
+    message: &str,
+    user: &str,
+    author_email: &str,
+    target: &TargetConfig,
+) -> Result<WriteResult, BrainError> {
+    use brain_storage::Storage;
+
+    let permissions = storage.repository_permissions(token).await?;
+    if permissions.push {
+        match storage
+            .save_file(token, path, content, sha, message, user, author_email)
+            .await
+        {
+            Ok(path) => return Ok(WriteResult::direct(path)),
+            Err(error) if should_fallback_to_pr(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    let plan =
+        prepare_pr_write(storage, token, user, target, "save", path, permissions.push).await?;
+    let written_path = plan
+        .storage
+        .save_file(token, path, content, sha, message, user, author_email)
+        .await?;
+    let pr = open_write_pr(
+        storage,
+        token,
+        &plan,
+        &format!("Propose {path} via Brain UI"),
+        &format!("Brain UI could not write directly to `{}` and proposed this change through a pull request instead.\n\nTouched path: `{path}`", target.branch),
+    )
+    .await?;
+    Ok(WriteResult::pull_request(
+        written_path,
+        plan.branch,
+        pr.number,
+        pr.html_url,
+    ))
+}
+
+#[cfg(feature = "ssr")]
+#[allow(clippy::too_many_arguments)]
+async fn delete_file_permission_aware(
+    storage: &brain_storage::GithubStorage,
+    token: &str,
+    path: &str,
+    sha: &str,
+    message: &str,
+    user: &str,
+    author_email: &str,
+    target: &TargetConfig,
+) -> Result<WriteResult, BrainError> {
+    use brain_storage::Storage;
+
+    let permissions = storage.repository_permissions(token).await?;
+    if permissions.push {
+        match storage
+            .delete_file(token, path, sha, message, user, author_email)
+            .await
+        {
+            Ok(()) => return Ok(WriteResult::direct(path)),
+            Err(error) if should_fallback_to_pr(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    let plan = prepare_pr_write(
+        storage,
+        token,
+        user,
+        target,
+        "delete",
+        path,
+        permissions.push,
+    )
+    .await?;
+    plan.storage
+        .delete_file(token, path, sha, message, user, author_email)
+        .await?;
+    let pr = open_write_pr(
+        storage,
+        token,
+        &plan,
+        &format!("Propose deleting {path} via Brain UI"),
+        &format!("Brain UI could not delete `{path}` directly from `{}` and proposed the deletion through a pull request instead.", target.branch),
+    )
+    .await?;
+    Ok(WriteResult::pull_request(
+        path,
+        plan.branch,
+        pr.number,
+        pr.html_url,
+    ))
+}
+
+#[cfg(feature = "ssr")]
+fn should_fallback_to_pr(error: &BrainError) -> bool {
+    match error {
+        BrainError::GitHub(message) => {
+            message.contains("403")
+                || message.to_lowercase().contains("protected")
+                || message.to_lowercase().contains("resource not accessible")
+        }
+        _ => false,
+    }
+}
+
+#[cfg(feature = "ssr")]
+struct PrWritePlan {
+    storage: brain_storage::GithubStorage,
+    branch: String,
+    head: String,
+}
+
+#[cfg(feature = "ssr")]
+async fn prepare_pr_write(
+    upstream_storage: &brain_storage::GithubStorage,
+    token: &str,
+    user: &str,
+    target: &TargetConfig,
+    action: &str,
+    path: &str,
+    can_push_upstream: bool,
+) -> Result<PrWritePlan, BrainError> {
+    let base_sha = upstream_storage.head_sha(token).await?;
+    let branch = pr_branch_name(user, action, path);
+
+    if can_push_upstream {
+        upstream_storage
+            .create_branch_from_sha(token, &branch, &base_sha)
+            .await?;
+        let branch_target = TargetConfig {
+            org: target.org.clone(),
+            repo: target.repo.clone(),
+            branch: branch.clone(),
+        };
+        return Ok(PrWritePlan {
+            storage: brain_storage::GithubStorage::new(
+                upstream_storage.http().clone(),
+                branch_target,
+            ),
+            branch: branch.clone(),
+            head: branch,
+        });
+    }
+
+    upstream_storage.ensure_fork(token, user).await?;
+    let fork_target = TargetConfig {
+        org: user.to_string(),
+        repo: target.repo.clone(),
+        branch: branch.clone(),
+    };
+    let fork_storage =
+        brain_storage::GithubStorage::new(upstream_storage.http().clone(), fork_target);
+    create_branch_with_retry(&fork_storage, token, &branch, &base_sha).await?;
+    Ok(PrWritePlan {
+        storage: fork_storage,
+        branch: branch.clone(),
+        head: format!("{user}:{branch}"),
+    })
+}
+
+#[cfg(feature = "ssr")]
+async fn create_branch_with_retry(
+    storage: &brain_storage::GithubStorage,
+    token: &str,
+    branch: &str,
+    sha: &str,
+) -> Result<(), BrainError> {
+    let delays = [
+        std::time::Duration::from_millis(0),
+        std::time::Duration::from_millis(1_000),
+        std::time::Duration::from_millis(2_000),
+        std::time::Duration::from_millis(4_000),
+    ];
+    let mut last_error = None;
+    for delay in delays {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        match storage.create_branch_from_sha(token, branch, sha).await {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| BrainError::github("branch create failed")))
+}
+
+#[cfg(feature = "ssr")]
+async fn open_write_pr(
+    upstream_storage: &brain_storage::GithubStorage,
+    token: &str,
+    plan: &PrWritePlan,
+    title: &str,
+    body: &str,
+) -> Result<brain_storage::PullRequestOutcome, BrainError> {
+    upstream_storage
+        .open_pull_request(
+            token,
+            &plan.head,
+            &upstream_storage.target().branch,
+            title,
+            body,
+        )
+        .await
+}
+
+#[cfg(feature = "ssr")]
+fn pr_branch_name(user: &str, action: &str, path: &str) -> String {
+    let ts = time::OffsetDateTime::now_utc().unix_timestamp();
+    let user = slugify(user);
+    let path = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".md");
+    let path = slugify(path);
+    format!("patch/{user}/{ts}-{action}-{path}")
+}
+
+#[cfg(feature = "ssr")]
 async fn rebuild_projection_after_write(
     storage: &brain_storage::GithubStorage,
     target: &TargetConfig,
@@ -921,10 +1348,17 @@ async fn rebuild_projection_after_write(
 /// targets a single YAML field so the patch stays surgical — other custom
 /// frontmatter keys are preserved verbatim.
 #[cfg(feature = "ssr")]
+#[derive(Clone)]
 enum WorkItemMutation {
     State(WorkItemState),
     Assignees(Vec<String>),
     Binding(Option<ExternalWorkItemBinding>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkItemMutationResult {
+    pub item: WorkItem,
+    pub write: WriteResult,
 }
 
 #[cfg(feature = "ssr")]
@@ -954,7 +1388,7 @@ impl WorkItemMutation {
 async fn apply_work_item_mutation(
     brain_id: String,
     mutation: WorkItemMutation,
-) -> Result<WorkItem, BrainError> {
+) -> Result<WorkItemMutationResult, BrainError> {
     use crate::server::session;
 
     let (s, token) = session::require_session_and_token().await?;
@@ -962,7 +1396,80 @@ async fn apply_work_item_mutation(
     let target = session::target_cfg()?;
     let storage = session::storage()?;
 
-    apply_work_item_mutation_inner(&token, &user, &target, &storage, brain_id, mutation, true).await
+    let permissions = storage.repository_permissions(&token).await?;
+    if permissions.push {
+        match apply_work_item_mutation_inner(
+            &token,
+            &user,
+            &target,
+            &storage,
+            brain_id.clone(),
+            mutation.clone(),
+            true,
+            true,
+            true,
+        )
+        .await
+        {
+            Ok(item) => {
+                let path = item.content_path.clone().unwrap_or_default();
+                return Ok(WorkItemMutationResult {
+                    item,
+                    write: WriteResult::direct(path),
+                });
+            }
+            Err(error) if should_fallback_to_pr(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    let current = crate::server::projection::load_work_item_by_brain_id(&target, &brain_id)
+        .await?
+        .ok_or_else(|| BrainError::parse(format!("work item not found: {brain_id}")))?;
+    let path = current
+        .content_path
+        .clone()
+        .ok_or_else(|| BrainError::parse(format!("work item {brain_id} has no content path")))?;
+    let plan = prepare_pr_write(
+        &storage,
+        &token,
+        &user,
+        &target,
+        "work-item",
+        &path,
+        permissions.push,
+    )
+    .await?;
+    let item = apply_work_item_mutation_inner(
+        &token,
+        &user,
+        &target,
+        &plan.storage,
+        brain_id.clone(),
+        mutation,
+        false,
+        false,
+        false,
+    )
+    .await?;
+    let pr = open_write_pr(
+        &storage,
+        &token,
+        &plan,
+        &format!("Propose work item update {brain_id} via Brain UI"),
+        &format!("Brain UI could not update `{path}` directly on `{}` and proposed the work item change through a pull request instead.", target.branch),
+    )
+    .await?;
+    crate::server::audit::log(
+        "propose_work_item_mutation",
+        Some(&user),
+        &format!("{brain_id} via PR #{}", pr.number),
+    )
+    .await;
+    Ok(WorkItemMutationResult {
+        item,
+        write: WriteResult::pull_request(path, plan.branch, pr.number, pr.html_url),
+    })
 }
 
 /// Apply provider-originated issue changes to Brain's editorial file and
@@ -999,6 +1506,8 @@ pub(crate) async fn apply_provider_work_item_update(
                 brain_id.to_string(),
                 WorkItemMutation::State(state),
                 false,
+                true,
+                true,
             )
             .await?,
         );
@@ -1015,6 +1524,8 @@ pub(crate) async fn apply_provider_work_item_update(
                 brain_id.to_string(),
                 WorkItemMutation::Assignees(assignees),
                 false,
+                true,
+                true,
             )
             .await?,
         );
@@ -1024,6 +1535,7 @@ pub(crate) async fn apply_provider_work_item_update(
 }
 
 #[cfg(feature = "ssr")]
+#[allow(clippy::too_many_arguments)]
 async fn apply_work_item_mutation_inner(
     token: &str,
     user: &str,
@@ -1032,6 +1544,8 @@ async fn apply_work_item_mutation_inner(
     brain_id: String,
     mutation: WorkItemMutation,
     sync_provider: bool,
+    patch_projection: bool,
+    publish_event: bool,
 ) -> Result<WorkItem, BrainError> {
     use brain_storage::Storage;
     use serde_yaml::Value;
@@ -1045,7 +1559,7 @@ async fn apply_work_item_mutation_inner(
         .clone()
         .ok_or_else(|| BrainError::parse(format!("work item {brain_id} has no content path")))?;
 
-    let (content, sha) = storage.read_file(&token, &path).await?;
+    let (content, sha) = storage.read_file(token, &path).await?;
     let (front_raw, body) = brain_domain::split_frontmatter(&content);
 
     // Empty frontmatter would mean either a non-work-item file or a malformed
@@ -1117,23 +1631,25 @@ async fn apply_work_item_mutation_inner(
 
     crate::server::audit::log(mutation.audit_kind(), Some(user), &path).await;
 
-    // Patch the local projection so the same response can carry the fresh
-    // record without waiting on a full rebuild.
-    match &mutation {
-        WorkItemMutation::State(state) => {
-            crate::server::projection::update_work_item_state(target, &brain_id, state).await?;
-        }
-        WorkItemMutation::Assignees(assignees) => {
-            crate::server::projection::update_work_item_assignees(target, &brain_id, assignees)
+    if patch_projection {
+        // Patch the local projection so the same response can carry the fresh
+        // record without waiting on a full rebuild.
+        match &mutation {
+            WorkItemMutation::State(state) => {
+                crate::server::projection::update_work_item_state(target, &brain_id, state).await?;
+            }
+            WorkItemMutation::Assignees(assignees) => {
+                crate::server::projection::update_work_item_assignees(target, &brain_id, assignees)
+                    .await?;
+            }
+            WorkItemMutation::Binding(binding) => {
+                crate::server::projection::upsert_work_item_binding(
+                    target,
+                    &brain_id,
+                    binding.as_ref(),
+                )
                 .await?;
-        }
-        WorkItemMutation::Binding(binding) => {
-            crate::server::projection::upsert_work_item_binding(
-                target,
-                &brain_id,
-                binding.as_ref(),
-            )
-            .await?;
+            }
         }
     }
 
@@ -1152,7 +1668,7 @@ async fn apply_work_item_mutation_inner(
         }
     }
 
-    if let Some(bus) = crate::server::sse::global() {
+    if publish_event && let Some(bus) = crate::server::sse::global() {
         let event = if mutation.is_binding() {
             crate::server::sse::BrainEvent::BindingUpdated {
                 brain_id: brain_id.clone(),
@@ -1167,9 +1683,23 @@ async fn apply_work_item_mutation_inner(
         bus.send(event);
     }
 
-    crate::server::projection::load_work_item_by_brain_id(target, &brain_id)
-        .await?
-        .ok_or_else(|| BrainError::other("work item disappeared after mutation"))
+    if patch_projection {
+        crate::server::projection::load_work_item_by_brain_id(target, &brain_id)
+            .await?
+            .ok_or_else(|| BrainError::other("work item disappeared after mutation"))
+    } else {
+        Ok(work_item_with_mutation(work_item, &mutation))
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn work_item_with_mutation(mut item: WorkItem, mutation: &WorkItemMutation) -> WorkItem {
+    match mutation {
+        WorkItemMutation::State(state) => item.state = state.clone(),
+        WorkItemMutation::Assignees(assignees) => item.assignees = assignees.clone(),
+        WorkItemMutation::Binding(binding) => item.external_binding = binding.clone(),
+    }
+    item
 }
 
 #[cfg(feature = "ssr")]

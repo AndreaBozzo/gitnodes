@@ -3,7 +3,7 @@ use leptos::prelude::*;
 use super::components::TagBadge;
 use super::types::{Edge, EditMode, EditPrefill, Node};
 use crate::api::{
-    AppConfig, BrainFile, assign_work_item, bind_work_item, load_work_item_by_path,
+    AppConfig, BrainFile, WriteMode, assign_work_item, bind_work_item, load_work_item_by_path,
     read_brain_file, transition_work_item,
 };
 #[cfg(not(feature = "ssr"))]
@@ -139,9 +139,20 @@ pub fn DetailPanel(
             delete_msg.set(String::new());
             leptos::task::spawn_local(async move {
                 match delete_brain_file(path_for_task, sha, msg).await {
-                    Ok(()) => {
-                        selected_path.set(None);
-                        graph_version.update(|v| *v += 1);
+                    Ok(result) => {
+                        if result.mode == WriteMode::Direct {
+                            selected_path.set(None);
+                            graph_version.update(|v| *v += 1);
+                        } else {
+                            delete_error.set(format!(
+                                "Proposed deletion via PR #{}.",
+                                result
+                                    .pr_number
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| "?".to_string())
+                            ));
+                            deleting.set(false);
+                        }
                     }
                     Err(e) => {
                         delete_error.set(format!("Delete failed: {e}"));
@@ -334,17 +345,32 @@ pub fn DetailPanel(
                                                                 leptos::task::spawn_local(async move {
                                                                     match rename_brain_file(old_p, target.clone(), sha, msg).await {
                                                                         Ok(r) => {
-                                                                            rename_status.set(format!(
-                                                                                "Renamed to {} · rewrote {} referrer{}.",
-                                                                                r.new_path,
-                                                                                r.updated_referrers.len(),
-                                                                                if r.updated_referrers.len() == 1 { "" } else { "s" },
-                                                                            ));
-                                                                            selected_path.set(Some(r.new_path.clone()));
+                                                                            match r.write.mode {
+                                                                                WriteMode::Direct => {
+                                                                                    rename_status.set(format!(
+                                                                                        "Renamed to {} · rewrote {} referrer{}.",
+                                                                                        r.new_path,
+                                                                                        r.updated_referrers.len(),
+                                                                                        if r.updated_referrers.len() == 1 { "" } else { "s" },
+                                                                                    ));
+                                                                                    selected_path.set(Some(r.new_path.clone()));
+                                                                                    graph_version.update(|v| *v += 1);
+                                                                                }
+                                                                                WriteMode::PullRequest => {
+                                                                                    rename_status.set(format!(
+                                                                                        "Proposed rename via PR #{} · would rewrite {} referrer{}.",
+                                                                                        r.write
+                                                                                            .pr_number
+                                                                                            .map(|n| n.to_string())
+                                                                                            .unwrap_or_else(|| "?".to_string()),
+                                                                                        r.updated_referrers.len(),
+                                                                                        if r.updated_referrers.len() == 1 { "" } else { "s" },
+                                                                                    ));
+                                                                                }
+                                                                            }
                                                                             rename_input.set(None);
                                                                             rename_msg.set(String::new());
                                                                             renaming.set(false);
-                                                                            graph_version.update(|v| *v += 1);
                                                                         }
                                                                         Err(e) => {
                                                                             rename_error.set(format!("Rename failed: {e}"));
@@ -635,20 +661,30 @@ fn WorkItemControls(
         async move { bind_work_item(id, binding).await }
     });
 
-    // Bump graph_version whenever any action lands a result so the parent
-    // resources refetch the canonical record.
+    // Bump graph_version only for direct writes. PR fallback writes a branch,
+    // not the live target, so the projection should remain anchored to the
+    // current default branch until the PR is merged.
     Effect::new(move |_| {
-        if state_action.value().get().is_some() {
+        if matches!(
+            state_action.value().get(),
+            Some(Ok(result)) if result.write.mode == WriteMode::Direct
+        ) {
             graph_version.update(|v| *v += 1);
         }
     });
     Effect::new(move |_| {
-        if assign_action.value().get().is_some() {
+        if matches!(
+            assign_action.value().get(),
+            Some(Ok(result)) if result.write.mode == WriteMode::Direct
+        ) {
             graph_version.update(|v| *v += 1);
         }
     });
     Effect::new(move |_| {
-        if bind_action.value().get().is_some() {
+        if matches!(
+            bind_action.value().get(),
+            Some(Ok(result)) if result.write.mode == WriteMode::Direct
+        ) {
             graph_version.update(|v| *v += 1);
         }
     });
@@ -695,6 +731,28 @@ fn WorkItemControls(
         let a = assign_action.value().get().and_then(|r| r.err());
         let b = bind_action.value().get().and_then(|r| r.err());
         s.or(a).or(b).map(|e| e.to_string())
+    };
+
+    let any_notice = move || {
+        [
+            state_action.value().get(),
+            assign_action.value().get(),
+            bind_action.value().get(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .find(|result| result.write.mode == WriteMode::PullRequest)
+        .map(|result| {
+            format!(
+                "Proposed via PR #{}.",
+                result
+                    .write
+                    .pr_number
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".to_string())
+            )
+        })
     };
 
     view! {
@@ -877,6 +935,11 @@ fn WorkItemControls(
                 {move || any_error().map(|err| view! {
                     <div class="rounded-md border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
                         {err}
+                    </div>
+                })}
+                {move || any_notice().map(|notice| view! {
+                    <div class="rounded-md border border-teal-400/30 bg-teal-500/10 px-3 py-2 text-[11px] text-teal-200">
+                        {notice}
                     </div>
                 })}
             </div>

@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use super::components::RemovableBadge;
 use super::draft::{self, Draft};
 use super::types::EditMode;
+#[cfg(not(feature = "ssr"))]
+use crate::api::WriteMode;
 use crate::api::{AppConfig, get_current_user, load_brain_template};
 
 /// Smart editor form that enforces Brain templates programmatically.
@@ -370,17 +372,33 @@ pub fn EditorPanel(
             let draft_key_snapshot = draft_key.get_untracked();
             leptos::task::spawn_local(async move {
                 match save_brain_file(_payload).await {
-                    Ok(path) => {
-                        status_msg.set(if updating {
-                            format!("Updated: {path}")
-                        } else {
-                            format!("Created: {path}")
+                    Ok(result) => {
+                        status_msg.set(match result.mode {
+                            WriteMode::Direct => {
+                                if updating {
+                                    format!("Updated: {}", result.path)
+                                } else {
+                                    format!("Created: {}", result.path)
+                                }
+                            }
+                            WriteMode::PullRequest => {
+                                format!(
+                                    "Proposed via PR #{}: {}",
+                                    result
+                                        .pr_number
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| "?".to_string()),
+                                    result.path
+                                )
+                            }
                         });
                         saving.set(false);
                         if let Some(key) = draft_key_snapshot {
                             draft::clear(&key);
                         }
-                        graph_version.update(|v| *v += 1);
+                        if result.mode == WriteMode::Direct {
+                            graph_version.update(|v| *v += 1);
+                        }
                     }
                     Err(e) => {
                         status_msg.set(format!("Error: {e}"));
@@ -446,12 +464,22 @@ pub fn EditorPanel(
             leptos::task::spawn_local(async move {
                 match rename_brain_file(old_path, new_path.clone(), sha, None).await {
                     Ok(res) => {
-                        edit_path.set(Some(res.new_path.clone()));
-                        // sha is stale after the move (create + delete commits);
-                        // exit edit mode so the user reopens with a fresh sha.
-                        edit_mode.set(EditMode::Closed);
+                        if res.write.mode == WriteMode::Direct {
+                            edit_path.set(Some(res.new_path.clone()));
+                            // sha is stale after the move (create + delete commits);
+                            // exit edit mode so the user reopens with a fresh sha.
+                            edit_mode.set(EditMode::Closed);
+                            graph_version.update(|v| *v += 1);
+                        } else {
+                            move_error.set(format!(
+                                "Move proposed via PR #{}.",
+                                res.write
+                                    .pr_number
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| "?".to_string())
+                            ));
+                        }
                         moving.set(false);
-                        graph_version.update(|v| *v += 1);
                     }
                     Err(e) => {
                         move_error.set(format!("Move failed: {e}"));

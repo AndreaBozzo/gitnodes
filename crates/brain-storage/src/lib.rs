@@ -245,6 +245,26 @@ pub struct GithubIssuePatch {
     pub labels: Option<Vec<String>>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RepositoryPermissions {
+    #[serde(default)]
+    pub pull: bool,
+    #[serde(default)]
+    pub push: bool,
+    #[serde(default)]
+    pub admin: bool,
+    #[serde(default)]
+    pub maintain: bool,
+    #[serde(default)]
+    pub triage: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PullRequestOutcome {
+    pub number: u64,
+    pub html_url: String,
+}
+
 /// Combination of target-agnostic HTTP transport + target-bound URL builder.
 /// Built per-call from whatever target the caller actually wants to talk to.
 /// Use [`GithubStorage::new`] in production; its inputs make the target
@@ -294,12 +314,26 @@ impl GithubStorage {
         TargetKey::from(self.gh.target())
     }
 
-    /// Fetch every markdown file that participates in the Brain graph from the
-    /// current target repository.
-    pub async fn fetch_raw_files(&self, token: &str) -> Result<Vec<RawFile>, BrainError> {
-        // Resolve the branch name to a commit SHA. GitHub's tree API works more
-        // reliably with commit SHAs than branch names (avoids edge cases with
-        // recently created / renamed branches or race conditions).
+    pub async fn repository_permissions(
+        &self,
+        token: &str,
+    ) -> Result<RepositoryPermissions, BrainError> {
+        #[derive(Deserialize)]
+        struct RepoResponse {
+            #[serde(default)]
+            permissions: RepositoryPermissions,
+        }
+
+        let url = format!(
+            "https://api.github.com/repos/{}/{}",
+            self.gh.target().org,
+            self.gh.target().repo
+        );
+        let repo: RepoResponse = GithubHttp::send_json(self.http.get(&url, token), "repo").await?;
+        Ok(repo.permissions)
+    }
+
+    pub async fn head_sha(&self, token: &str) -> Result<String, BrainError> {
         let ref_url = self.gh.git_ref_url();
         #[derive(Deserialize)]
         struct RefResponse {
@@ -311,7 +345,122 @@ impl GithubStorage {
         }
         let ref_resp: RefResponse =
             GithubHttp::send_json(self.http.get(&ref_url, token), "git_ref").await?;
-        let commit_sha = ref_resp.object.sha;
+        Ok(ref_resp.object.sha)
+    }
+
+    pub async fn create_branch_from_sha(
+        &self,
+        token: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<(), BrainError> {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/git/refs",
+            self.gh.target().org,
+            self.gh.target().repo
+        );
+        let body = serde_json::json!({
+            "ref": format!("refs/heads/{branch}"),
+            "sha": sha,
+        });
+        let resp = self
+            .http
+            .post(&url, token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("git_ref_create fetch: {e}")))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(BrainError::github(format!(
+            "git_ref_create status {status}: {}",
+            body.chars().take(512).collect::<String>()
+        )))
+    }
+
+    pub async fn ensure_fork(&self, token: &str, owner: &str) -> Result<(), BrainError> {
+        let repo_url = format!(
+            "https://api.github.com/repos/{}/{}",
+            owner,
+            self.gh.target().repo
+        );
+        let existing = self
+            .http
+            .get(&repo_url, token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("fork_repo_probe fetch: {e}")))?;
+        if existing.status().is_success() {
+            return Ok(());
+        }
+
+        let fork_url = format!(
+            "https://api.github.com/repos/{}/{}/forks",
+            self.gh.target().org,
+            self.gh.target().repo
+        );
+        let resp = self
+            .http
+            .post(&fork_url, token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("fork_create fetch: {e}")))?;
+        let status = resp.status();
+        if status.is_success() || status.as_u16() == 202 {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(BrainError::github(format!(
+            "fork_create status {status}: {}",
+            body.chars().take(512).collect::<String>()
+        )))
+    }
+
+    pub async fn open_pull_request(
+        &self,
+        token: &str,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<PullRequestOutcome, BrainError> {
+        #[derive(Deserialize)]
+        struct PullResponse {
+            number: u64,
+            html_url: String,
+        }
+
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/pulls",
+            self.gh.target().org,
+            self.gh.target().repo
+        );
+        let payload = serde_json::json!({
+            "title": title,
+            "head": head,
+            "base": base,
+            "body": body,
+            "maintainer_can_modify": true,
+        });
+        let pr: PullResponse =
+            GithubHttp::send_json(self.http.post(&url, token).json(&payload), "pull_create")
+                .await?;
+        Ok(PullRequestOutcome {
+            number: pr.number,
+            html_url: pr.html_url,
+        })
+    }
+
+    /// Fetch every markdown file that participates in the Brain graph from the
+    /// current target repository.
+    pub async fn fetch_raw_files(&self, token: &str) -> Result<Vec<RawFile>, BrainError> {
+        // Resolve the branch name to a commit SHA. GitHub's tree API works more
+        // reliably with commit SHAs than branch names (avoids edge cases with
+        // recently created / renamed branches or race conditions).
+        let commit_sha = self.head_sha(token).await?;
 
         // Now fetch the tree using the resolved commit SHA instead of the branch name.
         let tree_url = format!(
