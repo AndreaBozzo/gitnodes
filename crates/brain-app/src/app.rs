@@ -1,13 +1,14 @@
 use leptos::prelude::*;
 use leptos_meta::{MetaTags, Stylesheet, Title, provide_meta_context};
 use leptos_router::{
-    StaticSegment,
+    ParamSegment, StaticSegment,
     components::{Route, Router, Routes},
 };
 
 use crate::admin::AdminPage;
 use crate::api::get_app_config;
 use crate::knowledge::KnowledgePage;
+use crate::knowledge::brain_switcher::KnowledgePageForTarget;
 use crate::knowledge::live_sync::{LiveSync, SyncStatus, SyncStatusBanner};
 use crate::landing::Landing;
 
@@ -67,8 +68,18 @@ pub fn App() -> impl IntoView {
         <Router>
             <Routes fallback=|| "Page not found.".into_view()>
                 <Route path=StaticSegment("") view=Landing/>
+                // Legacy single-target routes (compat layer, still backed by boot env).
                 <Route path=StaticSegment("knowledge") view=KnowledgePage/>
                 <Route path=StaticSegment("admin") view=AdminPage/>
+                // Multi-tenant routes: /{org}/{repo}/knowledge and /{org}/{repo}/admin.
+                <Route
+                    path=(ParamSegment("org"), ParamSegment("repo"), StaticSegment("knowledge"))
+                    view=KnowledgePageForTarget
+                />
+                <Route
+                    path=(ParamSegment("org"), ParamSegment("repo"), StaticSegment("admin"))
+                    view=AdminPage
+                />
             </Routes>
         </Router>
     }

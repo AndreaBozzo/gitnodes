@@ -2,12 +2,16 @@ use std::collections::HashSet;
 
 use leptos::prelude::*;
 
+use crate::knowledge::brain_switcher::BrainSwitcher;
+
 #[component]
 pub fn FilterPanel(
     all_tags: Vec<String>,
     active_tags: RwSignal<HashSet<String>>,
     active_types: RwSignal<HashSet<String>>,
     config: brain_domain::BrainConfig,
+    #[prop(optional)] current_org: String,
+    #[prop(optional)] current_repo: String,
 ) -> impl IntoView {
     let type_buttons = config.node_types
         .iter()
@@ -81,6 +85,10 @@ pub fn FilterPanel(
 
     view! {
         <aside class="w-64 shrink-0 border-r border-slate-800 bg-slate-900/40 p-5 space-y-6 overflow-y-auto">
+            <BrainSwitcher
+                current_org=(!current_org.is_empty()).then(|| current_org.clone())
+                current_repo=(!current_repo.is_empty()).then(|| current_repo.clone())
+            />
             <section>
                 <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-3">"Type"</h2>
                 <div class="flex flex-wrap gap-2">{type_buttons}</div>

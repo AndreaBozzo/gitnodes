@@ -167,12 +167,16 @@ async fn main() {
     // reconnect-loop forever.
     async fn protect_knowledge(session: Session, request: Request<Body>, next: Next) -> Response {
         let path = request.uri().path();
+        // Static legacy paths plus assets/SSE.
         let needs_auth = path == "/knowledge"
             || path.starts_with("/knowledge/")
             || path == "/admin"
             || path.starts_with("/admin/")
             || path.starts_with("/assets/")
-            || path.starts_with("/sse/");
+            || path.starts_with("/sse/")
+            // Multi-tenant: /{org}/{repo}/knowledge and /{org}/{repo}/admin.
+            // A valid multi-tenant path has exactly 3 segments: /org/repo/page.
+            || is_multi_tenant_protected(path);
         if needs_auth && !auth::is_authenticated(&session).await {
             if path.starts_with("/sse/") {
                 axum::http::StatusCode::UNAUTHORIZED.into_response()
@@ -182,6 +186,15 @@ async fn main() {
         } else {
             next.run(request).await
         }
+    }
+
+    fn is_multi_tenant_protected(path: &str) -> bool {
+        // Match /{org}/{repo}/knowledge or /{org}/{repo}/admin (no trailing slash needed).
+        let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
+        matches!(
+            segments.as_slice(),
+            [_, _, "knowledge"] | [_, _, "admin"] | [_, _, "knowledge", _] | [_, _, "admin", _]
+        )
     }
 
     let options_for_ssr = leptos_options.clone();

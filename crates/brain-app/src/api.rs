@@ -57,6 +57,9 @@ const SERVER_FNS: &[&str] = &[
     "UploadAsset",
     "ListBrainFolders",
     "RefreshBrainGraph",
+    "ListAccessibleTargets",
+    "LoadBrainGraphForTarget",
+    "LoadBrainConfigForTarget",
 ];
 
 #[cfg(feature = "ssr")]
@@ -82,6 +85,9 @@ pub fn register_server_functions() {
     register_explicit::<UploadAsset>();
     register_explicit::<ListBrainFolders>();
     register_explicit::<RefreshBrainGraph>();
+    register_explicit::<ListAccessibleTargets>();
+    register_explicit::<LoadBrainGraphForTarget>();
+    register_explicit::<LoadBrainConfigForTarget>();
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1399,6 +1405,144 @@ mod rewrite_links_tests {
         );
         assert!(out.is_none());
     }
+}
+
+/// One entry in the Brain Switcher's target list.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AccessibleTarget {
+    pub org: String,
+    pub repo: String,
+    /// Whether `.brain-config.yml` was found at the repo root.
+    pub has_brain_config: bool,
+}
+
+/// Discover repos accessible to the current user that might host a Brain
+/// knowledge base. Queries `GET /user/repos` (up to 100, sorted by pushed)
+/// then checks each for `.brain-config.yml` existence via a lightweight HEAD
+/// request on the raw URL. Repos where the user has no read access are
+/// filtered out by the GitHub API automatically.
+///
+/// This is intentionally best-effort: a failed per-repo config check is
+/// recorded as `has_brain_config: false` rather than bubbling an error.
+#[server(ListAccessibleTargets, "/api", endpoint = "list_accessible_targets")]
+pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFnError> {
+    use crate::server::session;
+
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let http = session::github_http().map_err(sfe)?;
+
+    // Fetch up to 100 repos the user can access, sorted by most-recently pushed.
+    let repos_url = "https://api.github.com/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member";
+    #[derive(serde::Deserialize)]
+    struct GhRepo {
+        full_name: String,
+        default_branch: String,
+        #[serde(default)]
+        archived: bool,
+    }
+
+    let repos: Vec<GhRepo> = http
+        .get(repos_url, &token)
+        .send()
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    let mut targets: Vec<AccessibleTarget> = Vec::new();
+    for r in repos.into_iter().filter(|r| !r.archived) {
+        let parts: Vec<&str> = r.full_name.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            continue;
+        }
+        let (org, repo) = (parts[0].to_string(), parts[1].to_string());
+        let raw_url = format!(
+            "https://raw.githubusercontent.com/{}/{}/{}/.brain-config.yml",
+            org, repo, r.default_branch
+        );
+        let has_brain_config = check_url_exists(&http, &token, &raw_url).await;
+        targets.push(AccessibleTarget {
+            org,
+            repo,
+            has_brain_config,
+        });
+    }
+    Ok(targets)
+}
+
+#[cfg(feature = "ssr")]
+async fn check_url_exists(http: &brain_storage::GithubHttp, token: &str, url: &str) -> bool {
+    http.get(url, token)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Load the brain graph for an explicit `org/repo` target (used by the
+/// multi-tenant `/{org}/{repo}/knowledge` route). The `branch` parameter
+/// defaults to the server-configured branch when empty.
+#[server(
+    LoadBrainGraphForTarget,
+    "/api",
+    endpoint = "load_brain_graph_for_target"
+)]
+pub async fn load_brain_graph_for_target(
+    org: String,
+    repo: String,
+    branch: String,
+) -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
+    use crate::server::session;
+    use brain_domain::TargetConfig;
+
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let fallback = session::target_cfg().map_err(sfe)?;
+    let resolved_branch = if branch.is_empty() {
+        fallback.branch.clone()
+    } else {
+        branch
+    };
+    let target = TargetConfig {
+        org,
+        repo,
+        branch: resolved_branch,
+    };
+    let storage = session::storage_for(target.clone()).map_err(sfe)?;
+    let config = crate::knowledge::config_loader::load(&target, &token).await;
+    crate::server::projection::load_graph(&storage, &token, &config)
+        .await
+        .map_err(sfe)
+}
+
+/// Load the brain config for an explicit `org/repo` target.
+#[server(
+    LoadBrainConfigForTarget,
+    "/api",
+    endpoint = "load_brain_config_for_target"
+)]
+pub async fn load_brain_config_for_target(
+    org: String,
+    repo: String,
+    branch: String,
+) -> Result<BrainConfig, ServerFnError> {
+    use crate::server::session;
+    use brain_domain::TargetConfig;
+
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let fallback = session::target_cfg().map_err(sfe)?;
+    let resolved_branch = if branch.is_empty() {
+        fallback.branch.clone()
+    } else {
+        branch
+    };
+    let target = TargetConfig {
+        org,
+        repo,
+        branch: resolved_branch,
+    };
+    let cfg = crate::knowledge::config_loader::load(&target, &token).await;
+    Ok((*cfg).clone())
 }
 
 /// Regression guard for caveat #9: `lto = true` strips Leptos's
