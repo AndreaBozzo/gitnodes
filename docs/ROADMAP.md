@@ -146,10 +146,12 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Success criterion: un contributor senza write access può usare Brain UI normalmente; il sistema devia automaticamente su branch+PR senza perdere atomicità o metadata di autore.
 - [ ] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
     - Portare `.brain-config.yml` fuori dall'editor raw con una GUI admin-only che copra i casi reali emersi: node types, directory mapping, accent colors, `work_item_kind`, `label_taxonomy`, binding provider e impostazioni visuali del grafo.
+    - La copertura include anche un nuovo blocco `views` (saved filter sets) nel `.brain-config.yml`. Le view sono per-target, validate dallo stesso parser YAML del runtime, e renderizzate dalla sidebar Knowledge come scorciatoie ai filtri già URL-persistenti (`?tags=`, `?types=`). Niente nuove dimensioni di filtro: ogni view è un named tuple di filtri esistenti. La UI "create view from current filters" resta fuori scope per la v1 della 3.4 e va rivalutata dopo che la GUI dimostra stabilità.
     - Il backend continua a serializzare YAML con `serde_yaml`, ma il save deve transitare dallo stesso orchestratore permission-aware della 3.3: commit diretto per admin con write access, PR proposta negli altri casi approvati.
     - La validazione deve riutilizzare il parser runtime del config, non uno schema parallelo nel frontend, per evitare drift tra editor visuale e loader server-side.
 - [ ] **3.5 Rate-Limit Shielding e Background Reconciliation**
     - Una volta introdotte mutazioni work item e discovery multi-repo, spostare le chiamate GitHub più costose dietro job/reconcile espliciti e usare SQLite come cache operativa interrogabile dal frontend.
+    - La query layer SQLite esposta al frontend deve essere parametrica (`list_nodes(target, filters)`, `list_work_items(target, filters)`, `read_node(target, path)`) invece di server fn bespoke per schermata: stessa shape che servirà a un futuro endpoint MCP in Fase 5, senza commitarsi al protocollo ora.
     - Questo asse non è l'entry point della fase, ma diventa necessario appena la UI smette di leggere solo il repo attivo e comincia a scansionare repo, issue e PR per utente.
 - [ ] **3.6 Graph Canvas Polish (zoom, transitions, edge framing)**
     - Promuovere il viewBox SVG da `"0 0 100 100"` hardcodato a un signal `(cx, cy, scale)` guidato da wheel/pinch/`+`/`-`/reset, per uscire dal "scale fisso 100×100" attuale.
@@ -182,6 +184,11 @@ Sfruttare la maturazione del backend GitHub-first per standardizzare il boundary
     - La Fase 2B ha introdotto il banner `Stale Data`; con collaborazione reale e fallback via PR non basta più.
     - Quando webhook o ref update rivelano divergenze rispetto al draft locale o al branch corrente, servono diff e merge espliciti: vista side-by-side, scelta hunk-based o almeno `local / remote / apply anyway`.
     - Questo asse è particolarmente importante se la 3.3 porta davvero contributor multipli e branch temporanei: il conflitto non sarà più eccezione, ma percorso operativo ordinario.
+- [ ] **4.5 Multi-Tab Detail/Editor Workspace**
+    - Sostituire `selected_path: RwSignal<Option<String>>` con uno stato a tabs (`Vec<TabState>` + active index), così l'utente può aprire più nodi simultaneamente senza perdere contesto durante cross-reference.
+    - Le tab vivono nel pannello destro esistente (no two-pane split): cambia il modello di stato, non il layout. Esc cascade (caveat #13) si estende al close della tab attiva prima del clear della selezione.
+    - URL contract: `?tabs=path1,path2&active=1` sopra il routing multi-tenant già introdotto in 3.1.
+    - Prerequisito reale: 4.2 Temporal Graph View, che già introduce un secondo "modo" del detail panel (live vs historical SHA). Disegnare tabs dopo 4.2 evita di astrarre nel buio.
 
 ---
 
@@ -192,6 +199,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 - [ ] **AI Assistant Proxy (Copilot Integration)**
     - Assistente AI nell'editor Leptos: generazione markdown, autocompletamento, summarization, tagging.
     - Proxy sicuro in Axum che usa l'OAuth token dell'utente per le API AI di GitHub/Copilot (RBAC + accounting corretto).
+    - L'esposizione read-side della projection (graph, work_items, nodi per tag/tipo) avviene via endpoint MCP-compliant (SSE/HTTP) sopra l'infra SSE già in [crates/brain-app/src/server/sse.rs](../crates/brain-app/src/server/sse.rs) e l'OAuth in [crates/brain-app/src/server/auth.rs](../crates/brain-app/src/server/auth.rs), riutilizzando le query parametriche introdotte in 3.5. Auth via PAT/scoped token (separato dalle session OAuth), così tool MCP-compatibili (Cursor, Claude Desktop, ecc.) possono interrogare la knowledge base puntando a Brain UI senza riusare la sessione browser. Design rinviato a quando RBAC di 3.3 è stabile.
 - [ ] **Outbound Webhooks Engine**
     - Motore di eventi in background per inviare webhook a sistemi esterni (GitHub Actions, Zapier, CI/CD).
     - Trigger configurabili in `.brain-config.yml` (es. `on_work_item_done: https://...`).
