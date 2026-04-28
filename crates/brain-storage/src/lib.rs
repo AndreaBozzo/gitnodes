@@ -21,7 +21,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub mod atomic_rename;
-pub use atomic_rename::{BackoffPolicy, RenameMutation, RenameOutcome};
+pub mod git_transaction;
+pub use git_transaction::{
+    BackoffPolicy, GitTransaction, GitTransactionOutcome, RenameMutation, RenameOutcome,
+};
 
 pub trait Storage: Send + Sync {
     async fn load_template(&self, token: &str, filename: &str) -> Result<String, BrainError>;
@@ -435,19 +438,55 @@ impl GithubStorage {
         Ok(files)
     }
 
-    /// Apply a rename as a single Git Data API commit. See
-    /// [`crate::atomic_rename`] for the pipeline; this wrapper invalidates the
-    /// per-target graph cache on success so the next read reflects the new
-    /// tree.
+    /// Commit a Git Data API transaction and invalidate the per-target graph
+    /// cache on success so the next read reflects the new tree.
+    pub async fn commit_transaction(
+        &self,
+        token: &str,
+        transaction: GitTransaction,
+    ) -> Result<GitTransactionOutcome, BrainError> {
+        let outcome = transaction.commit(&self.http, &self.gh, token).await?;
+        invalidate(&self.target_key());
+        Ok(outcome)
+    }
+
+    /// Apply a rename as a single Git Data API commit. Kept as a compatibility
+    /// wrapper while callers migrate to [`GitTransaction`].
     pub async fn atomic_rename(
         &self,
         token: &str,
         mutation: RenameMutation,
         policy: BackoffPolicy,
     ) -> Result<RenameOutcome, BrainError> {
-        let outcome = atomic_rename::run(&self.http, &self.gh, token, mutation, policy).await?;
-        invalidate(&self.target_key());
-        Ok(outcome)
+        let transaction = GitTransaction::new(
+            mutation.message,
+            mutation.author_name,
+            mutation.author_email,
+        )
+        .with_policy(policy);
+
+        let transaction = mutation
+            .upserts
+            .into_iter()
+            .fold(transaction, |tx, (path, content)| {
+                tx.upsert_text(path, content)
+            });
+        let transaction = mutation
+            .deletes
+            .into_iter()
+            .fold(transaction, |tx, path| tx.delete(path));
+        let transaction = mutation
+            .expect_absent
+            .into_iter()
+            .fold(transaction, |tx, path| tx.expect_absent(path));
+        let transaction = mutation
+            .expected_shas
+            .into_iter()
+            .fold(transaction, |tx, (path, sha)| tx.expect_sha(path, sha));
+
+        self.commit_transaction(token, transaction)
+            .await
+            .map(Into::into)
     }
 
     /// Read the current label names for a GitHub issue. The sync layer uses
@@ -736,45 +775,15 @@ impl Storage for GithubStorage {
         author_name: &str,
         author_email: &str,
     ) -> Result<String, BrainError> {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
-
-        let mut body = serde_json::json!({
-            "message": message,
-            "content": encoded,
-            "branch": self.branch(),
-            "committer": {
-                "name": author_name,
-                "email": author_email,
-            }
-        });
-
-        if let Some(s) = sha
-            && !s.is_empty()
-        {
-            body["sha"] = serde_json::json!(s);
-        }
-
-        let url = self.contents_url(path);
-        let response = self
-            .http
-            .put(&url, token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("PUT: {e}")))?;
-
-        if response.status().is_success() {
-            invalidate(&self.target_key());
-            Ok(path.to_string())
+        let mut transaction =
+            GitTransaction::new(message, author_name, author_email).upsert_text(path, content);
+        if let Some(s) = sha.filter(|s| !s.is_empty()) {
+            transaction = transaction.expect_sha(path, s);
         } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            Err(BrainError::github(format!(
-                "API error {} — {}",
-                status,
-                body.chars().take(200).collect::<String>()
-            )))
+            transaction = transaction.expect_absent(path);
         }
+        self.commit_transaction(token, transaction).await?;
+        Ok(path.to_string())
     }
 
     async fn delete_file(
@@ -786,37 +795,11 @@ impl Storage for GithubStorage {
         author_name: &str,
         author_email: &str,
     ) -> Result<(), BrainError> {
-        let body = serde_json::json!({
-            "message": message,
-            "sha": sha,
-            "branch": self.branch(),
-            "committer": {
-                "name": author_name,
-                "email": author_email,
-            }
-        });
-
-        let url = self.contents_url(path);
-        let response = self
-            .http
-            .delete(&url, token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("DELETE: {e}")))?;
-
-        if response.status().is_success() {
-            invalidate(&self.target_key());
-            Ok(())
-        } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            Err(BrainError::github(format!(
-                "API error {} — {}",
-                status,
-                body.chars().take(200).collect::<String>()
-            )))
-        }
+        let transaction = GitTransaction::new(message, author_name, author_email)
+            .delete(path)
+            .expect_sha(path, sha);
+        self.commit_transaction(token, transaction).await?;
+        Ok(())
     }
 
     async fn create_folder(

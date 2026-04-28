@@ -208,21 +208,19 @@ async fn perform_rename_on_storage(
         }
     });
 
-    storage
-        .atomic_rename(
-            token,
-            brain_storage::RenameMutation {
-                upserts,
-                deletes: vec![old_path.to_string()],
-                expect_absent: vec![new_path.to_string()],
-                expected_shas,
-                message,
-                author_name: user.to_string(),
-                author_email: author_email.to_string(),
-            },
-            brain_storage::BackoffPolicy::default(),
-        )
-        .await?;
+    let transaction = brain_storage::GitTransaction::new(message, user, author_email)
+        .expect_absent(new_path)
+        .delete(old_path);
+    let transaction = upserts
+        .into_iter()
+        .fold(transaction, |tx, (path, content)| {
+            tx.upsert_text(path, content)
+        });
+    let transaction = expected_shas
+        .into_iter()
+        .fold(transaction, |tx, (path, sha)| tx.expect_sha(path, sha));
+
+    storage.commit_transaction(token, transaction).await?;
 
     Ok(updated_referrers)
 }
