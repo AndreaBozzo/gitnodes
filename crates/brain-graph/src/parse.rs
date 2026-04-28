@@ -1,6 +1,7 @@
 //! Parsing helpers: markdown file → internal `Parsed` intermediate.
 
 use brain_domain::split_frontmatter;
+use serde_yaml::Value;
 
 /// A typed Brain doc parsed out of raw markdown. Internal to the graph build;
 /// not exposed as a public API surface.
@@ -38,33 +39,13 @@ pub fn parse_file(raw: &str, rel: &str, sha: &str) -> Option<Parsed> {
         return None;
     }
 
-    let mut node_type: Option<String> = None;
-    let mut topic = String::new();
-    let mut tags: Vec<String> = Vec::new();
-
-    for line in front.lines() {
-        let line = line.trim_end();
-        if let Some(rest) = line.strip_prefix("type:") {
-            let v = rest.trim().trim_matches('"');
-            node_type = Some(v.to_string());
-        } else if let Some(rest) = line.strip_prefix("topic:") {
-            topic = rest.trim().trim_matches('"').to_string();
-        } else if let Some(rest) = line.strip_prefix("tags:") {
-            let v = rest.trim();
-            if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-                tags = inner
-                    .split(',')
-                    .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
-                    .filter(|t| !t.is_empty())
-                    .collect();
-            }
-        }
-    }
-
-    let node_type = node_type?;
+    let frontmatter = serde_yaml::from_str::<Value>(front).ok()?;
+    let node_type = yaml_string(&frontmatter, "type")?;
+    let topic = yaml_string(&frontmatter, "topic").unwrap_or_default();
+    let tags = yaml_string_sequence(&frontmatter, "tags");
 
     let title = if !topic.is_empty() {
-        title_case(&topic)
+        title_case(topic.as_str())
     } else {
         first_heading(body).unwrap_or_else(|| {
             std::path::Path::new(rel)
@@ -86,6 +67,30 @@ pub fn parse_file(raw: &str, rel: &str, sha: &str) -> Option<Parsed> {
         tags,
         links,
     })
+}
+
+fn yaml_string(root: &Value, key: &str) -> Option<String> {
+    root.as_mapping()?
+        .get(Value::String(key.to_string()))?
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn yaml_string_sequence(root: &Value, key: &str) -> Vec<String> {
+    root.as_mapping()
+        .and_then(|map| map.get(Value::String(key.to_string())))
+        .and_then(Value::as_sequence)
+        .map(|seq| {
+            seq.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn first_heading(body: &str) -> Option<String> {
@@ -256,6 +261,20 @@ mod tests {
         .unwrap();
         assert_eq!(p.title, "Alpha Beta");
         assert_eq!(p.node_type, "concept".to_string());
+    }
+
+    #[test]
+    fn parse_extracts_block_sequence_tags() {
+        let raw = "---\ntype: task\ntopic: Brain_UI Development\ntags:\n- Brain\n- brain-ui\n- rustlang\n---\nbody";
+        let p = parse_file(raw, "tasks/BrainUI-Development-.md", "sha").unwrap();
+        assert_eq!(p.tags, vec!["Brain", "brain-ui", "rustlang"]);
+    }
+
+    #[test]
+    fn parse_extracts_inline_sequence_tags() {
+        let raw = "---\ntype: runbook\ntags: [\"Brain\", \"brain-ui\", workflow]\n---\nbody";
+        let p = parse_file(raw, "runbooks/usage.md", "sha").unwrap();
+        assert_eq!(p.tags, vec!["Brain", "brain-ui", "workflow"]);
     }
 
     #[test]

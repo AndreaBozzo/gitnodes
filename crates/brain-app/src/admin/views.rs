@@ -123,6 +123,7 @@ fn ViewsEditor(
     });
 
     let pending = save.pending();
+    let draft_count = Memo::new(move |_| drafts.with(Vec::len));
 
     let on_add = move |_| {
         drafts.update(|list| {
@@ -144,6 +145,15 @@ fn ViewsEditor(
 
     view! {
         <div class="space-y-4">
+            <Show when=move || draft_count.get() == 0>
+                <div class="rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+                    "No saved views. Saving now will remove the "
+                    <code class="font-mono">"views"</code>
+                    " block from "
+                    <code class="font-mono">".brain-config.yml"</code>
+                    "."
+                </div>
+            </Show>
             <For
                 each=move || drafts.with(|list| list.iter().map(|d| d.id).collect::<Vec<_>>())
                 key=|id| *id
@@ -170,7 +180,15 @@ fn ViewsEditor(
                     on:click=on_save
                     prop:disabled=move || pending.get()
                 >
-                    {move || if pending.get() { "saving…" } else { "save views" }}
+                    {move || {
+                        if pending.get() {
+                            "saving…"
+                        } else if draft_count.get() == 0 {
+                            "save deletion"
+                        } else {
+                            "save views"
+                        }
+                    }}
                 </button>
             </div>
         </div>
@@ -247,10 +265,11 @@ fn ViewDraftCard(
             <div class="flex items-center gap-3">
                 <span class="text-[11px] uppercase tracking-widest text-slate-500">{move || format!("view #{}", display_idx.get() + 1)}</span>
                 <button
-                    class="ml-auto text-[11px] text-rose-300 hover:text-rose-200"
+                    class="ml-auto rounded border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-200 hover:bg-rose-500/20"
                     on:click=on_remove
+                    title="Delete this saved view from the draft list. Click save views to persist the deletion."
                 >
-                    "remove"
+                    "delete view"
                 </button>
             </div>
 

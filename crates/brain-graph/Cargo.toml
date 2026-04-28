@@ -7,3 +7,4 @@ description = "Pure graph building + force-directed layout for brain_ui. No I/O.
 
 [dependencies]
 brain-domain = { path = "../brain-domain" }
+serde_yaml = "0.9"
