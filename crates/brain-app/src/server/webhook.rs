@@ -8,6 +8,7 @@ use sha2::Sha256;
 
 use super::sse::EventBus;
 use crate::server::sse::BrainEvent;
+use brain_domain::{BrainConfig, WorkItem, WorkItemState, WorkItemSystemOfRecord};
 
 /// Axum state threaded into the webhook handler.
 #[derive(Clone)]
@@ -62,6 +63,22 @@ pub async fn handle(
         let state_clone = state.clone();
         tokio::spawn(async move {
             handle_push(state_clone).await;
+        });
+    } else if event_type == "issues" || event_type == "pull_request" {
+        let Some(payload) = parse_item_payload(&body, event_type) else {
+            tracing::debug!(
+                event_type,
+                "webhook item event: payload not parseable — ignored"
+            );
+            return StatusCode::ACCEPTED;
+        };
+        if !item_matches_target(&payload, &state.target) {
+            return StatusCode::ACCEPTED;
+        }
+        let state_clone = state.clone();
+        let payload_clone = payload;
+        tokio::spawn(async move {
+            handle_item_event(state_clone, payload_clone).await;
         });
     }
 
@@ -140,6 +157,245 @@ async fn handle_push(state: WebhookState) {
                 ),
             });
         }
+    }
+}
+
+/// Minimal payload shared by `issues` and `pull_request` webhook events: we
+/// only need the repository (to gate cross-repo deliveries) and the item
+/// number (to look up the bound work item). The rest of the payload is
+/// authoritative on GitHub — we never trust it as the source of truth, we use
+/// it only as a *trigger* to rebuild the projection from the forge.
+#[derive(Clone, Debug)]
+struct ItemEventPayload {
+    repo_full_name: String,
+    item_key: String,
+    provider_state: Option<String>,
+    labels: Vec<String>,
+    assignees: Vec<String>,
+    /// `issues` → `"issue"`. `pull_request` → `"pull_request"`. Currently
+    /// unused by the handler but kept for future log/observability tagging.
+    #[allow(dead_code)]
+    item_kind: &'static str,
+}
+
+#[derive(serde::Deserialize)]
+struct IssuesEnvelope {
+    repository: PushRepository,
+    issue: ItemPayload,
+}
+
+#[derive(serde::Deserialize)]
+struct PullRequestEnvelope {
+    repository: PushRepository,
+    pull_request: ItemPayload,
+}
+
+#[derive(serde::Deserialize)]
+struct ItemPayload {
+    number: u64,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    labels: Vec<ItemLabel>,
+    #[serde(default)]
+    assignees: Vec<ItemAssignee>,
+}
+
+#[derive(serde::Deserialize)]
+struct ItemLabel {
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ItemAssignee {
+    login: String,
+}
+
+fn parse_item_payload(body: &[u8], event_type: &str) -> Option<ItemEventPayload> {
+    match event_type {
+        "issues" => {
+            let env: IssuesEnvelope = serde_json::from_slice(body).ok()?;
+            Some(ItemEventPayload {
+                repo_full_name: env.repository.full_name,
+                item_key: env.issue.number.to_string(),
+                provider_state: env.issue.state,
+                labels: env
+                    .issue
+                    .labels
+                    .into_iter()
+                    .map(|label| label.name)
+                    .collect(),
+                assignees: env
+                    .issue
+                    .assignees
+                    .into_iter()
+                    .map(|assignee| assignee.login)
+                    .collect(),
+                item_kind: "issue",
+            })
+        }
+        "pull_request" => {
+            let env: PullRequestEnvelope = serde_json::from_slice(body).ok()?;
+            Some(ItemEventPayload {
+                repo_full_name: env.repository.full_name,
+                item_key: env.pull_request.number.to_string(),
+                provider_state: env.pull_request.state,
+                labels: env
+                    .pull_request
+                    .labels
+                    .into_iter()
+                    .map(|label| label.name)
+                    .collect(),
+                assignees: env
+                    .pull_request
+                    .assignees
+                    .into_iter()
+                    .map(|assignee| assignee.login)
+                    .collect(),
+                item_kind: "pull_request",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn item_matches_target(payload: &ItemEventPayload, target: &brain_domain::TargetConfig) -> bool {
+    payload.repo_full_name == format!("{}/{}", target.org, target.repo)
+}
+
+async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
+    use brain_domain::TargetKey;
+    use brain_storage::GithubStorage;
+
+    // The binding lookup uses the project as `{org}/{repo}` to stay
+    // forge-agnostic with how `WorkItemControls` writes it from the UI.
+    let project = format!("{}/{}", state.target.org, state.target.repo);
+    let bound = match crate::server::projection::find_work_item_by_external(
+        &state.target,
+        "github",
+        &project,
+        &payload.item_key,
+    )
+    .await
+    {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            tracing::debug!(
+                repo = %payload.repo_full_name,
+                item_key = %payload.item_key,
+                "webhook item event: no bound work item — ignored"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "webhook item event: binding lookup failed");
+            return;
+        }
+    };
+
+    let token = match std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("TARGET_GITHUB_TOKEN"))
+    {
+        Ok(t) => t,
+        Err(_) => {
+            tracing::warn!(
+                "webhook item event: no GITHUB_TOKEN — emitting cache-bump event without rebuild"
+            );
+            state.bus.send(BrainEvent::WorkItemUpdated {
+                brain_id: bound.0,
+                content_path: bound.1,
+            });
+            return;
+        }
+    };
+
+    let storage = GithubStorage::new(state.http, state.target.clone());
+    let key = TargetKey::from(storage.target());
+    brain_storage::invalidate(&key);
+    brain_storage::invalidate_template(&key);
+    crate::knowledge::config_loader::invalidate(&key);
+
+    let config = crate::knowledge::config_loader::load(storage.target(), &token).await;
+    if let Err(error) =
+        crate::server::projection::rebuild(&storage, &token, &config, "webhook_item").await
+    {
+        tracing::warn!(target = %key, error = %error, "webhook item event: projection rebuild failed");
+        // Still emit so the UI bumps and refetches — the next manual refresh
+        // or push event will reconcile.
+    }
+
+    match crate::server::projection::load_work_item_by_brain_id(&state.target, &bound.0).await {
+        Ok(Some(item)) => {
+            let next_state = provider_state_for_item(&item, &payload, &config);
+            let next_assignees = (item.system_of_record != WorkItemSystemOfRecord::Brain)
+                .then(|| payload.assignees.clone());
+            if let Err(error) = crate::api::apply_provider_work_item_update(
+                &token,
+                "github-webhook",
+                &state.target,
+                &storage,
+                &bound.0,
+                next_state,
+                next_assignees,
+            )
+            .await
+            {
+                tracing::warn!(
+                    target = %key,
+                    brain_id = %bound.0,
+                    error = %error,
+                    "webhook item event: failed to apply provider update to Brain file"
+                );
+                crate::server::audit::log(
+                    "work_item_provider_reconcile_error",
+                    Some("github-webhook"),
+                    &format!("{}: {error}", bound.0),
+                )
+                .await;
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                target = %key,
+                brain_id = %bound.0,
+                error = %error,
+                "webhook item event: failed to load bound work item after rebuild"
+            );
+        }
+    }
+
+    state.bus.send(BrainEvent::WorkItemUpdated {
+        brain_id: bound.0,
+        content_path: bound.1,
+    });
+}
+
+fn provider_state_for_item(
+    item: &WorkItem,
+    payload: &ItemEventPayload,
+    config: &BrainConfig,
+) -> Option<WorkItemState> {
+    if item.system_of_record == WorkItemSystemOfRecord::Brain {
+        return None;
+    }
+
+    if let Some(spec) = config.labels_for_kind(&item.kind) {
+        for (state, label) in &spec.state_labels {
+            if payload.labels.iter().any(|candidate| candidate == label) {
+                return Some(state.clone());
+            }
+        }
+    }
+
+    match payload.provider_state.as_deref() {
+        Some("closed") if !matches!(item.state, WorkItemState::Done | WorkItemState::Cancelled) => {
+            Some(WorkItemState::Done)
+        }
+        Some("open") if matches!(item.state, WorkItemState::Done | WorkItemState::Cancelled) => {
+            Some(WorkItemState::Todo)
+        }
+        _ => None,
     }
 }
 
@@ -266,5 +522,109 @@ mod tests {
             "not-sha256-prefixed".parse().unwrap(),
         );
         assert!(!verify_signature(b"secret", &headers, b"body"));
+    }
+
+    #[test]
+    fn issues_payload_parses_repo_and_number() {
+        let body = br#"{"action":"labeled","issue":{"number":42,"state":"open","labels":[{"name":"brain:blocked"}],"assignees":[{"login":"alice"}]},"repository":{"full_name":"acme/brain"}}"#;
+        let payload = parse_item_payload(body, "issues").unwrap();
+        assert_eq!(payload.repo_full_name, "acme/brain");
+        assert_eq!(payload.item_key, "42");
+        assert_eq!(payload.provider_state.as_deref(), Some("open"));
+        assert_eq!(payload.labels, vec!["brain:blocked".to_string()]);
+        assert_eq!(payload.assignees, vec!["alice".to_string()]);
+        assert_eq!(payload.item_kind, "issue");
+    }
+
+    #[test]
+    fn pull_request_payload_parses_repo_and_number() {
+        let body = br#"{"action":"opened","pull_request":{"number":7},"repository":{"full_name":"acme/brain"}}"#;
+        let payload = parse_item_payload(body, "pull_request").unwrap();
+        assert_eq!(payload.item_key, "7");
+        assert_eq!(payload.item_kind, "pull_request");
+    }
+
+    #[test]
+    fn item_payload_for_unrelated_repo_is_rejected() {
+        let payload = ItemEventPayload {
+            repo_full_name: "evil/elsewhere".to_string(),
+            item_key: "1".to_string(),
+            provider_state: None,
+            labels: vec![],
+            assignees: vec![],
+            item_kind: "issue",
+        };
+        assert!(!item_matches_target(
+            &payload,
+            &target("acme", "brain", "main")
+        ));
+    }
+
+    #[test]
+    fn item_payload_for_target_repo_is_accepted() {
+        let payload = ItemEventPayload {
+            repo_full_name: "acme/brain".to_string(),
+            item_key: "1".to_string(),
+            provider_state: None,
+            labels: vec![],
+            assignees: vec![],
+            item_kind: "issue",
+        };
+        assert!(item_matches_target(
+            &payload,
+            &target("acme", "brain", "main")
+        ));
+    }
+
+    #[test]
+    fn provider_state_prefers_brain_state_label() {
+        let item = WorkItem {
+            brain_id: "task-1".to_string(),
+            kind: brain_domain::WorkItemKind::Task,
+            title: "Task".to_string(),
+            state: WorkItemState::Todo,
+            labels: vec![],
+            assignees: vec![],
+            content_path: Some("tasks/task.md".to_string()),
+            external_binding: None,
+            system_of_record: WorkItemSystemOfRecord::Split,
+        };
+        let payload = ItemEventPayload {
+            repo_full_name: "acme/brain".to_string(),
+            item_key: "1".to_string(),
+            provider_state: Some("open".to_string()),
+            labels: vec!["brain:blocked".to_string()],
+            assignees: vec![],
+            item_kind: "issue",
+        };
+
+        let state = provider_state_for_item(&item, &payload, &BrainConfig::default());
+        assert_eq!(state, Some(WorkItemState::Blocked));
+    }
+
+    #[test]
+    fn provider_closed_state_falls_back_to_done() {
+        let item = WorkItem {
+            brain_id: "task-1".to_string(),
+            kind: brain_domain::WorkItemKind::Task,
+            title: "Task".to_string(),
+            state: WorkItemState::InProgress,
+            labels: vec![],
+            assignees: vec![],
+            content_path: Some("tasks/task.md".to_string()),
+            external_binding: None,
+            system_of_record: WorkItemSystemOfRecord::External,
+        };
+        let payload = ItemEventPayload {
+            repo_full_name: "acme/brain".to_string(),
+            item_key: "1".to_string(),
+            provider_state: Some("closed".to_string()),
+            labels: vec![],
+            assignees: vec![],
+            item_kind: "issue",
+        };
+
+        let state = provider_state_for_item(&item, &payload, &BrainConfig::default());
+        assert_eq!(state, Some(WorkItemState::Done));
     }
 }

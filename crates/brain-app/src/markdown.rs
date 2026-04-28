@@ -121,7 +121,9 @@ fn rewrite_link_destination(
     // Images under `assets/` go through our authenticated proxy so private-repo
     // bytes reach the browser without needing an OAuth token on `<img>`.
     if is_image && resolved.starts_with("assets/") {
-        let mut url = format!("/{}", resolved);
+        let mut url = cfg
+            .map(|cfg| format!("/{}/{}/{}", cfg.org, cfg.repo, resolved))
+            .unwrap_or_else(|| format!("/{}", resolved));
         if let Some(fragment) = fragment {
             url.push('#');
             url.push_str(fragment);
@@ -273,7 +275,7 @@ mod tests {
             &test_cfg(),
         );
         assert!(
-            html.contains(r#"src="/assets/2026/04/foo-abc.png""#),
+            html.contains(r#"src="/Dritara-Digital/Brain/assets/2026/04/foo-abc.png""#),
             "got: {html}"
         );
     }

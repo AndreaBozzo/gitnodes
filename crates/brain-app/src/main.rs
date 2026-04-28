@@ -121,6 +121,7 @@ async fn main() {
     brain_app::server::projection::init(pool.clone());
 
     let event_bus = brain_app::server::sse::EventBus::new();
+    brain_app::server::sse::init(event_bus.clone());
 
     let webhook_secret = std::env::var("WEBHOOK_SECRET").ok();
     if webhook_secret.is_none() {
@@ -167,12 +168,15 @@ async fn main() {
     // reconnect-loop forever.
     async fn protect_knowledge(session: Session, request: Request<Body>, next: Next) -> Response {
         let path = request.uri().path();
+        // Static legacy paths plus assets/SSE.
         let needs_auth = path == "/knowledge"
             || path.starts_with("/knowledge/")
             || path == "/admin"
             || path.starts_with("/admin/")
             || path.starts_with("/assets/")
-            || path.starts_with("/sse/");
+            || path.starts_with("/sse/")
+            // Multi-tenant: /{org}/{repo}/knowledge, /admin, and /assets.
+            || is_multi_tenant_protected(path);
         if needs_auth && !auth::is_authenticated(&session).await {
             if path.starts_with("/sse/") {
                 axum::http::StatusCode::UNAUTHORIZED.into_response()
@@ -182,6 +186,76 @@ async fn main() {
         } else {
             next.run(request).await
         }
+    }
+
+    fn is_multi_tenant_protected(path: &str) -> bool {
+        // Match /{org}/{repo}/knowledge, /admin, or /assets (no trailing slash needed).
+        let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
+        matches!(
+            segments.as_slice(),
+            [_, _, "knowledge"]
+                | [_, _, "admin"]
+                | [_, _, "assets"]
+                | [_, _, "knowledge", _]
+                | [_, _, "admin", _]
+                | [_, _, "assets", _]
+        )
+    }
+
+    fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
+        let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
+        match segments.as_slice() {
+            [org, repo, "knowledge"] | [org, repo, "admin"] | [org, repo, "assets"]
+                if !org.is_empty() && !repo.is_empty() =>
+            {
+                Some(TargetConfig {
+                    org: (*org).to_string(),
+                    repo: (*repo).to_string(),
+                    branch: fallback.branch.clone(),
+                })
+            }
+            [org, repo, "knowledge", _] | [org, repo, "admin", _] | [org, repo, "assets", _]
+                if !org.is_empty() && !repo.is_empty() =>
+            {
+                Some(TargetConfig {
+                    org: (*org).to_string(),
+                    repo: (*repo).to_string(),
+                    branch: fallback.branch.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn path_from_same_origin_referer(request: &Request<Body>) -> Option<String> {
+        let raw = request
+            .headers()
+            .get(axum::http::header::REFERER)?
+            .to_str()
+            .ok()?;
+        if raw.starts_with('/') {
+            return Some(raw.to_string());
+        }
+        let without_scheme = raw.split_once("://").map(|(_, rest)| rest)?;
+        let path_start = without_scheme.find('/')?;
+        let referer_host = &without_scheme[..path_start];
+        let request_host = request
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|value| value.to_str().ok())?;
+        if referer_host != request_host {
+            return None;
+        }
+        Some(without_scheme[path_start..].to_string())
+    }
+
+    fn target_for_request(request: &Request<Body>, fallback: &TargetConfig) -> TargetConfig {
+        target_from_path(request.uri().path(), fallback)
+            .or_else(|| {
+                path_from_same_origin_referer(request)
+                    .and_then(|path| target_from_path(&path, fallback))
+            })
+            .unwrap_or_else(|| fallback.clone())
     }
 
     let options_for_ssr = leptos_options.clone();
@@ -200,7 +274,8 @@ async fn main() {
         });
 
     let app = Router::new()
-        .nest("/assets", asset_router)
+        .nest("/assets", asset_router.clone())
+        .nest("/{org}/{repo}/assets", asset_router)
         .route("/auth/login", axum::routing::get(auth::login))
         .route("/auth/logout", axum::routing::get(auth::logout))
         .route("/auth/callback", axum::routing::get(auth::oauth_callback))
@@ -221,7 +296,7 @@ async fn main() {
                 let brand_for_api = brand_cfg.clone();
                 let http_for_api = gh_http.clone();
                 move |session: Session, request: Request<Body>| {
-                    let target = target_for_api.clone();
+                    let target = target_for_request(&request, &target_for_api);
                     let brand = brand_for_api.clone();
                     let http = http_for_api.clone();
                     async move {
@@ -247,7 +322,7 @@ async fn main() {
             let http_for_ssr = gh_http.clone();
             move |session: Session, request: Request<Body>| {
                 let options = options_for_ssr.clone();
-                let target = target_for_ssr.clone();
+                let target = target_for_request(&request, &target_for_ssr);
                 let brand = brand_for_ssr.clone();
                 let http = http_for_ssr.clone();
                 async move {

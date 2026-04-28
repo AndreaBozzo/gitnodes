@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use brain_domain::{BrainError, Edge, GithubClient, Node, TargetConfig, TargetKey};
 use brain_graph::{RawFile, build_graph, is_included_md};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 pub mod atomic_rename;
 pub use atomic_rename::{BackoffPolicy, RenameMutation, RenameOutcome};
@@ -163,6 +163,36 @@ impl GithubHttp {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct GithubIssuePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignees: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RepositoryPermissions {
+    #[serde(default)]
+    pub pull: bool,
+    #[serde(default)]
+    pub push: bool,
+    #[serde(default)]
+    pub admin: bool,
+    #[serde(default)]
+    pub maintain: bool,
+    #[serde(default)]
+    pub triage: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PullRequestOutcome {
+    pub number: u64,
+    pub html_url: String,
+}
+
 /// Combination of target-agnostic HTTP transport + target-bound URL builder.
 /// Built per-call from whatever target the caller actually wants to talk to.
 /// Use [`GithubStorage::new`] in production; its inputs make the target
@@ -212,10 +242,136 @@ impl GithubStorage {
         TargetKey::from(self.gh.target())
     }
 
+    pub async fn repository_permissions(
+        &self,
+        token: &str,
+    ) -> Result<RepositoryPermissions, BrainError> {
+        #[derive(Deserialize)]
+        struct RepoResponse {
+            #[serde(default)]
+            permissions: RepositoryPermissions,
+        }
+
+        let url = self.gh.target_repo_url();
+        let repo: RepoResponse = GithubHttp::send_json(self.http.get(&url, token), "repo").await?;
+        Ok(repo.permissions)
+    }
+
+    pub async fn head_sha(&self, token: &str) -> Result<String, BrainError> {
+        let ref_url = self.gh.git_ref_url();
+        #[derive(Deserialize)]
+        struct RefResponse {
+            object: RefObject,
+        }
+        #[derive(Deserialize)]
+        struct RefObject {
+            sha: String,
+        }
+        let ref_resp: RefResponse =
+            GithubHttp::send_json(self.http.get(&ref_url, token), "git_ref").await?;
+        Ok(ref_resp.object.sha)
+    }
+
+    pub async fn create_branch_from_sha(
+        &self,
+        token: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<(), BrainError> {
+        let url = self.gh.git_refs_url();
+        let body = serde_json::json!({
+            "ref": format!("refs/heads/{branch}"),
+            "sha": sha,
+        });
+        let resp = self
+            .http
+            .post(&url, token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("git_ref_create fetch: {e}")))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(BrainError::github(format!(
+            "git_ref_create status {status}: {}",
+            body.chars().take(512).collect::<String>()
+        )))
+    }
+
+    pub async fn ensure_fork(&self, token: &str, owner: &str) -> Result<(), BrainError> {
+        let repo_url = self.gh.repo_url(owner, &self.gh.target().repo);
+        let existing = self
+            .http
+            .get(&repo_url, token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("fork_repo_probe fetch: {e}")))?;
+        if existing.status().is_success() {
+            return Ok(());
+        }
+
+        let fork_url = self.gh.forks_url();
+        let resp = self
+            .http
+            .post(&fork_url, token)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("fork_create fetch: {e}")))?;
+        let status = resp.status();
+        if status.is_success() || status.as_u16() == 202 {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(BrainError::github(format!(
+            "fork_create status {status}: {}",
+            body.chars().take(512).collect::<String>()
+        )))
+    }
+
+    pub async fn open_pull_request(
+        &self,
+        token: &str,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<PullRequestOutcome, BrainError> {
+        #[derive(Deserialize)]
+        struct PullResponse {
+            number: u64,
+            html_url: String,
+        }
+
+        let url = self.gh.pulls_url();
+        let payload = serde_json::json!({
+            "title": title,
+            "head": head,
+            "base": base,
+            "body": body,
+            "maintainer_can_modify": true,
+        });
+        let pr: PullResponse =
+            GithubHttp::send_json(self.http.post(&url, token).json(&payload), "pull_create")
+                .await?;
+        Ok(PullRequestOutcome {
+            number: pr.number,
+            html_url: pr.html_url,
+        })
+    }
+
     /// Fetch every markdown file that participates in the Brain graph from the
     /// current target repository.
     pub async fn fetch_raw_files(&self, token: &str) -> Result<Vec<RawFile>, BrainError> {
-        let tree_url = self.gh.tree_url();
+        // Resolve the branch name to a commit SHA. GitHub's tree API works more
+        // reliably with commit SHAs than branch names (avoids edge cases with
+        // recently created / renamed branches or race conditions).
+        let commit_sha = self.head_sha(token).await?;
+
+        // Now fetch the tree using the resolved commit SHA instead of the branch name.
+        let tree_url = self.gh.git_tree_by_sha_url(&commit_sha);
         let tree: TreeResponse =
             GithubHttp::send_json(self.http.get(&tree_url, token), "tree").await?;
 
@@ -277,6 +433,63 @@ impl GithubStorage {
         let outcome = atomic_rename::run(&self.http, &self.gh, token, mutation, policy).await?;
         invalidate(&self.target_key());
         Ok(outcome)
+    }
+
+    /// Read the current label names for a GitHub issue. The sync layer uses
+    /// this before replacing only Brain-managed state labels, preserving any
+    /// unrelated labels maintained directly on GitHub.
+    pub async fn issue_labels(
+        &self,
+        token: &str,
+        project: &str,
+        item_key: &str,
+    ) -> Result<Vec<String>, BrainError> {
+        #[derive(Deserialize)]
+        struct IssueResponse {
+            #[serde(default)]
+            labels: Vec<IssueLabel>,
+        }
+
+        #[derive(Deserialize)]
+        struct IssueLabel {
+            name: String,
+        }
+
+        let url = self.gh.issue_url(project, item_key)?;
+        let issue: IssueResponse =
+            GithubHttp::send_json(self.http.get(&url, token), "issue_get").await?;
+        Ok(issue.labels.into_iter().map(|label| label.name).collect())
+    }
+
+    /// Patch a GitHub issue. `labels` replaces the issue label set when
+    /// present, matching GitHub's REST API semantics; callers should read and
+    /// merge existing labels first when they only own a subset.
+    pub async fn patch_issue(
+        &self,
+        token: &str,
+        project: &str,
+        item_key: &str,
+        patch: &GithubIssuePatch,
+    ) -> Result<(), BrainError> {
+        let url = self.gh.issue_url(project, item_key)?;
+        let resp = self
+            .http
+            .patch(&url, token)
+            .json(patch)
+            .send()
+            .await
+            .map_err(|e| BrainError::github(format!("issue_patch fetch: {e}")))?;
+        let status = resp.status();
+        tracing::debug!(%status, project, item_key, "github issue patch response");
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(512).collect();
+            tracing::warn!(%status, project, item_key, body = %snippet, "github issue patch failed");
+            return Err(BrainError::github(format!(
+                "issue_patch status {status}: {snippet}"
+            )));
+        }
+        Ok(())
     }
 }
 

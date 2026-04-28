@@ -122,21 +122,26 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
 **Principio guida:** il backend ha già le primitive giuste (`TargetKey`, projection SQLite per target, `brain_id` stabile, write path GitHub centralizzato). La Fase 3 deve evitare nuove scorciatoie single-target e introdurre ogni nuova capability come target-aware fin dal primo commit.
 
-- [ ] **3.1 Multi-Tenant Workspace Routing**
+- [x] **3.1 Multi-Tenant Workspace Routing**
     - Evolvere il router Leptos da path statici (`/knowledge`, `/admin`) a path dinamici `/{org}/{repo}/knowledge` e `/{org}/{repo}/admin`, mantenendo eventuali redirect dal target di default solo come compat layer temporaneo.
     - Spostare la risoluzione del `TargetConfig` dal boot statico del server al contesto della request/pagina. `GithubHttp` pooled è già target-agnostic; ciò che manca è togliere l'assunzione che asset proxy, SSR context e webhook state puntino a un solo repo definito da env.
     - Introdurre il **Brain Switcher** nella sidebar: discovery via token OAuth dei repo accessibili all'utente che contengono `.brain-config.yml`, con stato esplicito per `accessible / missing-config / forbidden`.
     - Success criterion: la stessa istanza Brain UI può navigare più repo/target senza restart né collisioni di cache/projection, e l'URL diventa l'identificatore canonico del target attivo.
-- [ ] **3.2 Work Items Interattivi e Bidirectional Sync**
-    - Promuovere il modello `WorkItem` da read model/editorial overlay a workflow operativo completo. Aggiornare `state`, `assignees`, label taxonomiche e binding esterno deve poter mutare il provider quando `system_of_record` lo richiede.
-    - Aggiungere server fn mutate-only dedicate (`transition_work_item`, `assign_work_item`, `bind_work_item`, ecc.) invece di sovraccaricare il save markdown generico: il salvataggio editoriale del file e la mutazione del provider hanno failure mode, audit trail e policy diverse.
-    - Usare l'access token OAuth dell'utente per le mutazioni GitHub Issue/PR; in ingresso, estendere la pipeline webhook oltre `push` per intercettare eventi `issues`, `issue_comment`, `pull_request`, `labeled`, `assigned` quando afferenti a item bindati, e propagare SSE mirate (`work_item_updated`, `binding_updated`) oltre al generico `graph_updated`.
-    - Formalizzare una policy di coerenza per `system_of_record`:
-      - `brain`: mutate solo frontmatter/projection locale.
-      - `split`: mutare sia Brain che provider con riconciliazione esplicita.
-      - `external`: UI Brain come control plane/read-through cache di un item nato altrove.
-    - Success criterion: un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band rientra in projection/UI senza refresh manuale.
-- [ ] **3.3 RBAC e Save Orchestration Permission-Aware**
+- [x] **3.2 Work Items Interattivi e Bidirectional Sync** _(α+β landed 2026-04-27)_
+    - **3.2-α (landed)** — UI → file → projection → SSE loop chiuso, sempre con `system_of_record = brain` lato write:
+      - `BrainEvent::WorkItemUpdated { brain_id, content_path }` e `BindingUpdated { ... }` aggiunti al bus tipato; `LiveSync` ora sottoscrive entrambi gli event name.
+      - `EventBus::init()` / `global()` espone il bus come singleton process-wide così le server fn possono pubblicare senza prendere il bus in firma.
+      - Mutazioni projection single-row: `update_work_item_state`, `update_work_item_assignees`, `upsert_work_item_binding`, `find_work_item_by_external` in `server::projection`.
+      - Tre server fn mutate-only: `TransitionWorkItem`, `AssignWorkItem`, `BindWorkItem`. Pattern condiviso in `apply_work_item_mutation`: load file → patch frontmatter mirato (overlay del singolo campo, custom keys preservate) → singolo commit via `GithubStorage::save_file` → patch projection → publish SSE → return record refreshed. Audit log per ogni kind (`work_item_transition`/`assign`/`bind`).
+      - UI controls inline nel `DetailPanel::WorkItemCard`: `<details>` collapsible con state dropdown, assignees CSV input, binding form (system/project/item_key/url) + Unbind. Action separate per kind di mutazione, errori scoped, `graph_version` bumpato su success per refetch.
+      - Webhook pipeline esteso a `issues`/`pull_request`: parsing minimale (repo + number), gate sul target repo, lookup binding via `find_work_item_by_external`. Item non bindati → silently 202; bindati → rebuild projection + emit `WorkItemUpdated { brain_id }` con il `brain_id` reale del documento.
+    - **3.2-β (landed)** — bidirectional sync sopra la base α:
+      - Provider-side push delle mutazioni quando `system_of_record` è `split` o `external`: `GithubHttp::issue_labels` + `patch_issue` leggono le label correnti, preservano le label non-Brain, applicano lo stato GitHub (`done/cancelled → closed`, altri stati → `open`), sincronizzano gli assignee e auditano i failure provider-side senza rollback dell'editorial save.
+      - Coerenza `system_of_record` esplicita: `brain` = no-op provider; `split`/`external` = commit editoriale Brain + push provider quando il binding è GitHub. Le mutazioni provider-originated rientrano senza echo di ritorno.
+      - Webhook `issues`/`pull_request`: per item bindati legge state/labels/assignees dal payload, mappa le label `label_taxonomy` allo stato Brain, aggiorna il file Markdown/projection con `GITHUB_TOKEN` e pubblica `WorkItemUpdated`.
+    - Success criterion chiuso: un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band su item già bindato rientra in projection/UI senza refresh manuale.
+    - Follow-up non bloccanti: `issue_comment` come timeline event SSE e sync incrementale puro dell'evento webhook restano da valutare in 3.5 insieme alla query layer parametrica/rate-limit shielding. Il percorso corrente usa ancora rebuild target-scoped + patch file mirata, che è accettabile per i target attuali.
+- [x] **3.3 RBAC e Save Orchestration Permission-Aware** _(landed 2026-04-27)_
     - Smettere di modellare RBAC come semplice flag admin/non-admin. Il controllo reale è una capability matrix per target: `can_read`, `can_write_default_branch`, `can_review_via_pr`, `can_admin_config`, derivata da sessione OAuth + permessi repo/branch.
     - Riutilizzare la logica di tree commit atomico già introdotta per i rename, generalizzandola in un write path capace di scegliere tra:
       - commit diretto sul branch target se l'utente ha write access;
@@ -144,16 +149,44 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Tutte le azioni di scrittura ad alto livello (`save`, `rename`, `config update`, future work item mutations che toccano file) devono passare per questo orchestratore, così il fallback PR non diventa un caso speciale fragile.
     - La UI deve rendere esplicito l'esito: `Saved to main`, `Proposed via PR`, `Blocked by permissions`, con link a branch/PR e audit coerente.
     - Success criterion: un contributor senza write access può usare Brain UI normalmente; il sistema devia automaticamente su branch+PR senza perdere atomicità o metadata di autore.
-- [ ] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
-    - Portare `.brain-config.yml` fuori dall'editor raw con una GUI admin-only che copra i casi reali emersi: node types, directory mapping, accent colors, `work_item_kind`, `label_taxonomy`, binding provider e impostazioni visuali del grafo.
-    - La copertura include anche un nuovo blocco `views` (saved filter sets) nel `.brain-config.yml`. Le view sono per-target, validate dallo stesso parser YAML del runtime, e renderizzate dalla sidebar Knowledge come scorciatoie ai filtri già URL-persistenti (`?tags=`, `?types=`). Niente nuove dimensioni di filtro: ogni view è un named tuple di filtri esistenti. La UI "create view from current filters" resta fuori scope per la v1 della 3.4 e va rivalutata dopo che la GUI dimostra stabilità.
-    - Il backend continua a serializzare YAML con `serde_yaml`, ma il save deve transitare dallo stesso orchestratore permission-aware della 3.3: commit diretto per admin con write access, PR proposta negli altri casi approvati.
-    - La validazione deve riutilizzare il parser runtime del config, non uno schema parallelo nel frontend, per evitare drift tra editor visuale e loader server-side.
-- [ ] **3.5 Rate-Limit Shielding e Background Reconciliation**
+    - Implementazione corrente:
+      - `GetWriteCapabilities` espone la capability matrix per target (`read`, `write default branch`, `review via PR`, `admin config`) dai permessi repo GitHub.
+      - Save, delete, rename atomico e mutazioni work item passano dal write orchestrator: direct commit quando possibile; fallback a branch temporaneo + PR quando il branch target rifiuta la scrittura o quando serve un fork utente.
+      - I fallback PR non mutano la projection locale del branch target finché la PR non viene mergiata; la UI mostra `Proposed via PR #...` invece di simulare un save live.
+      - Audit dedicato per `propose_write`, `propose_delete`, `propose_rename`, `propose_work_item_mutation`.
+    - Follow-up non bloccanti:
+      - Il futuro Visual Configuration Editor di 3.4 deve riusare lo stesso orchestratore.
+      - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; va ripensato insieme al fallback PR UX per immagini/draft.
+- [x] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
+
+    **Realignment 2026-04-27:** la fase viene spezzata in slice verticali (α → β → γ) invece di un singolo drop visual editor completo. Razionale: la roundtrip GUI ↔ YAML ↔ orchestratore di scrittura è il vero rischio architetturale; isolarlo sulla dimensione di config più piccola consente di iterare sui feedback prima di estendere la GUI all'intera superficie di `BrainConfig`. Ogni slice è indipendentemente shippabile e dogfoodabile.
+
+    Vincoli condivisi (validi per α/β/γ):
+    - Il backend continua a serializzare YAML con `serde_yaml` (no schema parallelo frontend); ogni save passa dall'orchestratore permission-aware della 3.3 (`save_file_permission_aware`) → commit diretto per admin con write access, PR proposta altrimenti, blocked se nessuna delle due opzioni è permessa.
+    - Validazione = parser runtime esistente (`BrainConfig::parse/validate`), esteso quando serve. Niente regex client-side che possano divergere.
+    - Save = re-serialize del file intero a partire da `BrainConfig` in memoria; le sezioni non toccate dalla slice corrente devono sopravvivere round-trip senza riformattazione lossy.
+    - GUI sotto `/{org}/{repo}/admin/...`, gated su `can_admin_config` dalla capability matrix.
+
+    - **3.4-α Saved Views (vertical slice)** _(scope minimo per validare il pattern)_
+        - Nuovo blocco `views` in `BrainConfig`: `Vec<ViewSpec { name, slug, tags, types }>`. Ogni view è un named tuple di filtri già URL-persistenti (`?tags=`, `?types=`); niente nuove dimensioni di filtro. Slug auto-generato da `name` con fallback a override esplicito quando l'utente vuole controllarlo o risolvere collisioni.
+        - Validazione estesa: slug univoci nel target, tags lowercase, ogni `type` referenziato deve esistere in `node_types`. Round-trip YAML deve preservare gli altri campi del file invariati.
+        - Server fn nuove: `ListViews(target)` (read da config cached), `SaveViews(target, Vec<ViewSpec>) → SaveOutcome` (riusa l'orchestratore 3.3, audit `update_views` / `propose_views_update`, invalidate config cache su direct commit).
+        - Route admin dedicata `/{org}/{repo}/admin/views` (separata dall'admin esistente, coerente col routing multi-tenant 3.1): form add/edit/delete con tag chips + type chips, banner outcome (`Saved` / `Proposed via PR #...` / `Blocked by permissions`).
+        - Sidebar Knowledge: render delle view come chip cliccabili che impostano `?tags=&types=`. Implementazione triviale perché i filtri sono già URL-persistenti — niente nuovo state management.
+        - Esplicitamente fuori da α: "create view from current filters" (rivalutato dopo dogfooding), per-view ordering UI oltre l'ordine array, view-scoped permissions.
+        - Success criterion: un admin crea/modifica una view dalla GUI, il file `.brain-config.yml` viene aggiornato con un singolo commit (o PR), il banner della Knowledge sidebar mostra la nuova view senza refresh manuale, gli altri campi del file restano byte-identici alla sezione esterna a `views`.
+
+    - **3.4-β Editorial config (post-feedback expansion)** _(da pianificare dopo che α è in produzione e raccoglie feedback)_
+        - Estendere la GUI a `node_types` (name, directory, accent, frontmatter_seed minimo) e `label_taxonomy` (`work_item_kind` mapping + state labels), che sono le dimensioni più toccate dopo le views.
+        - Forma esatta dei form e granularità dei campi vanno disegnate alla luce di cosa emerge dall'uso reale di α; pianificarle ora produrrebbe quasi certamente la forma sbagliata.
+
+    - **3.4-γ Brand & long-tail config** _(deferred — raw YAML resta accettabile finché α/β non maturano)_
+        - `brand`, asset settings, eventuali futuri `graph_visual_settings`. Bassa frequenza di edit, l'escape hatch raw YAML copre il caso fino a che β non dimostra che il pattern scala su più dimensioni.
+- [x] **3.5 Rate-Limit Shielding e Background Reconciliation**
     - Una volta introdotte mutazioni work item e discovery multi-repo, spostare le chiamate GitHub più costose dietro job/reconcile espliciti e usare SQLite come cache operativa interrogabile dal frontend.
     - La query layer SQLite esposta al frontend deve essere parametrica (`list_nodes(target, filters)`, `list_work_items(target, filters)`, `read_node(target, path)`) invece di server fn bespoke per schermata: stessa shape che servirà a un futuro endpoint MCP in Fase 5, senza commitarsi al protocollo ora.
     - Questo asse non è l'entry point della fase, ma diventa necessario appena la UI smette di leggere solo il repo attivo e comincia a scansionare repo, issue e PR per utente.
-- [ ] **3.6 Graph Canvas Polish (zoom, transitions, edge framing)**
+- [x] **3.6 Graph Canvas Polish (zoom, transitions, edge framing)**
     - Promuovere il viewBox SVG da `"0 0 100 100"` hardcodato a un signal `(cx, cy, scale)` guidato da wheel/pinch/`+`/`-`/reset, per uscire dal "scale fisso 100×100" attuale.
     - Sostituire lo snap istantaneo del viewBox sulla selezione con un tween RAF-driven (~300ms) — `viewBox` non è transitionable via CSS, va animato esplicitamente.
     - Reframing dei nodi vicini al bordo del data space (oggi mostrano area vuota) e opzionale recentering anche su hover, non solo su selezione.
@@ -237,3 +270,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 12. ~~Filters are not URL-persisted~~ — **DONE 2026-04-26**. `active_tags` and `active_types` round-trip through `?tags=` and `?types=` query params alongside the existing `?path=`. Refresh and link-share both restore the filtered view. Navigation uses `replace: true` so toggling filters doesn't pollute history. Tags are normalized lowercase in both directions; types preserve case (they map to `BrainConfig.node_types[].name`).
 
 13. ~~No keyboard dismissal~~ — **DONE 2026-04-26**. Esc cascade in `KnowledgeView` (hydrate-only `keydown` listener on `window`): closes the editor first if open, otherwise clears the selected node. Skipped while focus is in `input`/`textarea`/`select`/`contenteditable` so Esc doesn't fight IME or form-local handlers. Listener is cleaned up via `on_cleanup` on route change.
+
+14. **`Stale Data` banner can flash before login** — `SyncStatusBanner` lives above `<Routes>` (caveat #10) and its signal is hydrated on app boot, so unauthenticated users hitting the public landing or the OAuth redirect path can briefly see the banner before the session resolves. The banner should be gated on auth state (or at least on having an active target), not just on `sync_status`. Likely fix: thread an `is_authenticated` / `has_active_target` derived signal into `SyncStatusBanner` and short-circuit render when false. Low priority but unpolished — first impression for new users.
+
+15. **Node hover flicker on graph canvas** — Hovering some nodes produces a visible flicker / re-trigger of the hover state instead of the smooth crossfade introduced in caveat #11. Likely causes to investigate, in order: (a) hover state owned by a parent that re-renders on `pointermove`, recreating the `<circle>` and restarting the CSS transition; (b) overlapping SVG elements (label `<text>`, halo, edge endpoints) intercepting `pointerleave`/`pointerenter` events and toggling state; (c) the CSS transition targeting a property that also changes due to layout (e.g. `r` recomputed from a signal on every frame). Reproduce with slow `pointermove` near node edges before deciding the fix.

@@ -47,7 +47,7 @@ pub fn KnowledgePage() -> impl IntoView {
                 let c = config.get();
                 match (g, c) {
                     (Some(Ok((nodes, edges))), Some(Ok(cfg))) => {
-                        KnowledgeView(KnowledgeViewProps { nodes, edges, config: cfg, graph_version, sync_status }).into_any()
+                        KnowledgeView(KnowledgeViewProps { nodes, edges, config: cfg, graph_version, sync_status, org: None, repo: None }).into_any()
                     }
                     (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
                         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
@@ -61,13 +61,23 @@ pub fn KnowledgePage() -> impl IntoView {
     }
 }
 
+/// Public so `KnowledgePageForTarget` in `brain_switcher.rs` can reuse the
+/// same view with a different data source. All URL navigation is rooted at
+/// `base_path` so the multi-tenant route gets correct `/{org}/{repo}/knowledge`
+/// links instead of `/knowledge`.
 #[component]
-fn KnowledgeView(
+pub(crate) fn KnowledgeView(
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     config: brain_domain::BrainConfig,
     graph_version: RwSignal<u64>,
     sync_status: RwSignal<SyncStatus>,
+    /// Set to `Some(org)` when serving `/{org}/{repo}/knowledge`.
+    #[prop(optional)]
+    org: Option<String>,
+    /// Set to `Some(repo)` when serving `/{org}/{repo}/knowledge`.
+    #[prop(optional)]
+    repo: Option<String>,
 ) -> impl IntoView {
     let query = use_query_map();
     let nodes = StoredValue::new(nodes);
@@ -163,11 +173,19 @@ fn KnowledgeView(
         }
     });
 
+    // Canonical base path for this view: `/knowledge` for the legacy route,
+    // `/{org}/{repo}/knowledge` for the multi-tenant route.
+    let base_path = match (&org, &repo) {
+        (Some(o), Some(r)) => format!("/{}/{}/knowledge", o, r),
+        _ => "/knowledge".to_string(),
+    };
+
     // Push filter changes back to the URL so refresh and link sharing both
     // round-trip through the same query string. `replace=true` keeps filter
     // toggling out of the back/forward history (one filter change = one nav
     // event would make Back unusable on this page).
     let navigate = use_navigate();
+    let base_path_nav = base_path.clone();
     Effect::new(move |_| {
         let tags = active_tags.get();
         let types = active_types.get();
@@ -183,9 +201,9 @@ fn KnowledgeView(
             parts.push(format!("types={}", url_encode(&join_sorted(&types))));
         }
         let target = if parts.is_empty() {
-            "/knowledge".to_string()
+            base_path_nav.clone()
         } else {
-            format!("/knowledge?{}", parts.join("&"))
+            format!("{}?{}", base_path_nav, parts.join("&"))
         };
         // Avoid feedback loop: only navigate if the URL actually differs.
         let current = query.get_untracked();
@@ -295,6 +313,15 @@ fn KnowledgeView(
             .collect()
     });
 
+    let admin_href = match (&org, &repo) {
+        (Some(o), Some(r)) => format!("/{}/{}/admin", o, r),
+        _ => "/admin".to_string(),
+    };
+    let target_label = match (&org, &repo) {
+        (Some(o), Some(r)) => format!("{}/{}", o, r),
+        _ => String::new(),
+    };
+
     view! {
         <div class="h-screen flex flex-col bg-slate-950 text-slate-100">
             <header class="px-6 py-4 border-b border-slate-800 flex items-center gap-3">
@@ -302,9 +329,12 @@ fn KnowledgeView(
                 <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300">
                     "Brain · Knowledge"
                 </h1>
-                <span class="text-xs text-slate-500 ml-2">"admin · /knowledge"</span>
+                {(!target_label.is_empty()).then(|| view! {
+                    <span class="text-xs text-slate-500 font-mono">{target_label.clone()}</span>
+                })}
                 <a
-                    href="/admin"
+                    href=admin_href
+                    rel="external"
                     class="text-xs text-slate-500 hover:text-slate-300 ml-2"
                 >
                     "· /admin"
@@ -348,6 +378,8 @@ fn KnowledgeView(
                     active_tags=active_tags
                     active_types=active_types
                     config=config.get_value()
+                    current_org=org.clone().unwrap_or_default()
+                    current_repo=repo.clone().unwrap_or_default()
                 />
                 <Show when=move || editing.get()>
                     <EditorPanel

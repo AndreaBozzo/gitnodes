@@ -1,3 +1,4 @@
+pub mod brain_switcher;
 pub mod components;
 #[cfg(feature = "ssr")]
 pub mod config_loader;
@@ -9,7 +10,7 @@ mod filter_panel;
 mod graph_canvas;
 pub mod live_sync;
 mod orphan_banner;
-mod page;
+pub mod page;
 #[cfg(feature = "ssr")]
 pub mod runtime;
 pub mod types;

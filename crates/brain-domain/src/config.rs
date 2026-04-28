@@ -84,6 +84,14 @@ impl GithubClient {
         )
     }
 
+    pub fn repo_url(&self, owner: &str, repo: &str) -> String {
+        format!("{}/repos/{owner}/{repo}", self.api_base)
+    }
+
+    pub fn target_repo_url(&self) -> String {
+        self.repo_url(&self.target.org, &self.target.repo)
+    }
+
     pub fn tree_url(&self) -> String {
         format!(
             "{}/repos/{}/{}/git/trees/{}?recursive=1",
@@ -154,6 +162,45 @@ impl GithubClient {
             "{}/repos/{}/{}/git/refs/heads/{}",
             self.api_base, self.target.org, self.target.repo, self.target.branch
         )
+    }
+
+    pub fn git_refs_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/git/refs",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn forks_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/forks",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn pulls_url(&self) -> String {
+        format!(
+            "{}/repos/{}/{}/pulls",
+            self.api_base, self.target.org, self.target.repo
+        )
+    }
+
+    pub fn issue_url(&self, project: &str, item_key: &str) -> Result<String, crate::BrainError> {
+        let (owner, repo) = project.split_once('/').ok_or_else(|| {
+            crate::BrainError::parse(format!("invalid GitHub project: {project}"))
+        })?;
+        if owner.trim().is_empty() || repo.trim().is_empty() || repo.contains('/') {
+            return Err(crate::BrainError::parse(format!(
+                "invalid GitHub project: {project}"
+            )));
+        }
+        let number = item_key.parse::<u64>().map_err(|_| {
+            crate::BrainError::parse(format!("invalid GitHub issue number: {item_key}"))
+        })?;
+        Ok(format!(
+            "{}/repos/{owner}/{repo}/issues/{number}",
+            self.api_base
+        ))
     }
 }
 
@@ -284,6 +331,29 @@ pub struct BrainConfig {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub label_taxonomy: Vec<WorkItemLabelSpec>,
+    /// Saved filter sets for the Knowledge sidebar. Each view is a named tuple
+    /// of existing URL-persisted filters (`?tags=`, `?types=`); no new filter
+    /// dimensions are introduced.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<ViewSpec>,
+}
+
+/// A named, target-scoped saved filter set. Each view maps to the same
+/// URL-persisted filter parameters used by the Knowledge sidebar (`?tags=`,
+/// `?types=`), so a view click is equivalent to navigating to that URL.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ViewSpec {
+    /// Human-readable label rendered in the sidebar.
+    pub name: String,
+    /// URL-safe identifier, unique within the target. Auto-derived from
+    /// `name` when the GUI omits it.
+    pub slug: String,
+    /// Tag values to apply (lowercase). Empty = no tag filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Type names to apply. Each must reference an existing `node_types[].name`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
 }
 
 /// Reserved names that clash with known repo paths. A node type cannot use
@@ -313,6 +383,16 @@ pub enum ConfigError {
     },
     #[error("node_types is empty")]
     Empty,
+    #[error("duplicate view slug: {0}")]
+    DuplicateViewSlug(String),
+    #[error("view {view:?} references unknown type {type_name:?}")]
+    UnknownViewType { view: String, type_name: String },
+    #[error("view name is empty")]
+    EmptyViewName,
+    #[error("invalid view slug {0:?} (expected lowercase alnum, '-', '_')")]
+    InvalidViewSlug(String),
+    #[error("view tag {tag:?} in view {view:?} must be lowercase")]
+    NonLowercaseViewTag { view: String, tag: String },
 }
 
 impl BrainConfig {
@@ -354,6 +434,7 @@ impl BrainConfig {
         if !names.contains(&self.default_type) {
             return Err(ConfigError::UnknownDefault(self.default_type.clone()));
         }
+        validate_views(&self.views, &names)?;
         Ok(())
     }
 
@@ -433,6 +514,75 @@ fn default_label_taxonomy() -> Vec<WorkItemLabelSpec> {
         ),
         entry(Change, "brain:change", &[(Done, "brain:done")]),
     ]
+}
+
+fn validate_views(
+    views: &[ViewSpec],
+    type_names: &std::collections::HashSet<String>,
+) -> Result<(), ConfigError> {
+    let mut slugs = std::collections::HashSet::new();
+    for view in views {
+        if view.name.trim().is_empty() {
+            return Err(ConfigError::EmptyViewName);
+        }
+        if !is_valid_view_slug(&view.slug) {
+            return Err(ConfigError::InvalidViewSlug(view.slug.clone()));
+        }
+        if !slugs.insert(view.slug.clone()) {
+            return Err(ConfigError::DuplicateViewSlug(view.slug.clone()));
+        }
+        for tag in &view.tags {
+            if tag.chars().any(|c| c.is_uppercase()) {
+                return Err(ConfigError::NonLowercaseViewTag {
+                    view: view.slug.clone(),
+                    tag: tag.clone(),
+                });
+            }
+        }
+        for type_name in &view.types {
+            if !type_names.contains(type_name) {
+                return Err(ConfigError::UnknownViewType {
+                    view: view.slug.clone(),
+                    type_name: type_name.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_view_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// Auto-derive a URL-safe slug from a human-readable view name. The GUI uses
+/// this as the default value of the `slug` field; users can override it
+/// explicitly when they want to control the URL or resolve a collision.
+///
+/// Behavior: lowercase, ASCII alphanumerics + `-`/`_` kept, every other run of
+/// characters collapses to a single `-`. Leading/trailing `-` stripped.
+/// Empty or all-non-alnum input yields an empty string — callers should treat
+/// that as "user must enter an explicit slug".
+pub fn slugify_view_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = true;
+    for c in name.chars() {
+        let lc = c.to_ascii_lowercase();
+        if lc.is_ascii_alphanumeric() || lc == '_' {
+            out.push(lc);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 fn is_valid_hex_color(s: &str) -> bool {
@@ -603,6 +753,7 @@ impl Default for BrainConfig {
             ],
             default_type: "concept".into(),
             label_taxonomy: default_label_taxonomy(),
+            views: Vec::new(),
         }
     }
 }
@@ -768,6 +919,225 @@ node_types:
         let yaml = serde_yaml::to_string(&cfg).unwrap();
         let parsed = BrainConfig::parse(&yaml).unwrap();
         assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn views_default_is_empty_and_omitted_from_yaml() {
+        let cfg = BrainConfig::default();
+        assert!(cfg.views.is_empty());
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        assert!(
+            !yaml.contains("views:"),
+            "empty views should not be serialized:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn views_roundtrip_yaml_preserves_order_and_fields() {
+        let mut cfg = BrainConfig::default();
+        cfg.views = vec![
+            ViewSpec {
+                name: "Open tasks".into(),
+                slug: "open-tasks".into(),
+                tags: vec!["urgent".into()],
+                types: vec!["concept".into()],
+            },
+            ViewSpec {
+                name: "All ADRs".into(),
+                slug: "adrs".into(),
+                tags: vec![],
+                types: vec!["adr".into()],
+            },
+        ];
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        let parsed = BrainConfig::parse(&yaml).unwrap();
+        assert_eq!(cfg.views, parsed.views);
+    }
+
+    /// Simulates the `SaveViews` server fn round-trip: start from an existing
+    /// non-trivial config, mutate ONLY the `views` block, re-serialize, reparse,
+    /// and verify everything else came back identical. Guards against the most
+    /// likely regression mode — a non-views field silently dropped or
+    /// reshaped during the save path.
+    #[test]
+    fn save_views_roundtrip_preserves_other_fields() {
+        let original = BrainConfig::default();
+        let yaml_before = serde_yaml::to_string(&original).unwrap();
+
+        let mut cfg = BrainConfig::parse(&yaml_before).unwrap();
+        cfg.views = vec![
+            ViewSpec {
+                name: "Active tasks".into(),
+                slug: "active-tasks".into(),
+                tags: vec!["urgent".into(), "blocked".into()],
+                types: vec!["concept".into(), "adr".into()],
+            },
+            ViewSpec {
+                name: "Recent decisions".into(),
+                slug: "recent-decisions".into(),
+                tags: vec![],
+                types: vec!["adr".into()],
+            },
+        ];
+        cfg.validate().expect("post-mutation config must validate");
+
+        let yaml_after = serde_yaml::to_string(&cfg).unwrap();
+        let reparsed = BrainConfig::parse(&yaml_after).unwrap();
+
+        assert_eq!(reparsed.node_types, original.node_types);
+        assert_eq!(reparsed.default_type, original.default_type);
+        assert_eq!(reparsed.label_taxonomy, original.label_taxonomy);
+        assert_eq!(reparsed.views, cfg.views);
+
+        // Clearing views again must drop the block from YAML (so configs that
+        // never had views go back to byte-equivalent with the original).
+        let mut cleared = reparsed.clone();
+        cleared.views.clear();
+        let yaml_cleared = serde_yaml::to_string(&cleared).unwrap();
+        assert!(
+            !yaml_cleared.contains("views:"),
+            "cleared views should not appear in YAML:\n{yaml_cleared}"
+        );
+        assert_eq!(yaml_cleared, yaml_before);
+    }
+
+    /// Real-world shape closer to what a SaveViews call sees: a target with a
+    /// custom `node_types` list (not the built-in default), a non-default
+    /// `label_taxonomy`, AND existing views that get extended. Ensures the
+    /// round-trip works against a config a target author actually wrote.
+    #[test]
+    fn save_views_roundtrip_with_custom_config_and_existing_views() {
+        let yaml_before = r##"
+default_type: note
+node_types:
+  - name: note
+    label: Note
+    directory: notes
+    accent: "#abcdef"
+    creatable: true
+  - name: task
+    label: Task
+    directory: tasks
+    accent: "#123456"
+    creatable: true
+    work_item_kind: task
+label_taxonomy:
+  - kind: task
+    kind_label: "team:task"
+    state_labels:
+      done: "team:done"
+views:
+  - { name: Pinned, slug: pinned, tags: [pinned] }
+"##;
+        let original = BrainConfig::parse(yaml_before).unwrap();
+        assert_eq!(original.views.len(), 1);
+
+        let mut cfg = original.clone();
+        cfg.views.push(ViewSpec {
+            name: "Open tasks".into(),
+            slug: "open-tasks".into(),
+            tags: vec![],
+            types: vec!["task".into()],
+        });
+        cfg.validate().unwrap();
+
+        let yaml_after = serde_yaml::to_string(&cfg).unwrap();
+        let reparsed = BrainConfig::parse(&yaml_after).unwrap();
+
+        assert_eq!(reparsed.node_types, original.node_types);
+        assert_eq!(reparsed.default_type, original.default_type);
+        assert_eq!(reparsed.label_taxonomy, original.label_taxonomy);
+        assert_eq!(reparsed.views.len(), 2);
+        assert_eq!(reparsed.views[0].slug, "pinned");
+        assert_eq!(reparsed.views[1].slug, "open-tasks");
+        assert_eq!(reparsed.views[1].types, vec!["task"]);
+    }
+
+    #[test]
+    fn views_validation_rejects_duplicate_slug() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233" }
+views:
+  - { name: One, slug: same }
+  - { name: Two, slug: same }
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::DuplicateViewSlug(_))
+        ));
+    }
+
+    #[test]
+    fn views_validation_rejects_unknown_type_reference() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233" }
+views:
+  - { name: Ghosts, slug: ghosts, types: [ghost] }
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::UnknownViewType { .. })
+        ));
+    }
+
+    #[test]
+    fn views_validation_rejects_uppercase_tag() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233" }
+views:
+  - { name: Bad, slug: bad, tags: [URGENT] }
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::NonLowercaseViewTag { .. })
+        ));
+    }
+
+    #[test]
+    fn views_validation_rejects_invalid_slug() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233" }
+views:
+  - { name: Bad, slug: "Has Space" }
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::InvalidViewSlug(_))
+        ));
+    }
+
+    #[test]
+    fn views_validation_rejects_empty_name() {
+        let yaml = r##"
+default_type: concept
+node_types:
+  - { name: concept, label: Concept, directory: concepts, accent: "#112233" }
+views:
+  - { name: "", slug: empty }
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::EmptyViewName)
+        ));
+    }
+
+    #[test]
+    fn slugify_handles_common_inputs() {
+        assert_eq!(slugify_view_name("Open Tasks"), "open-tasks");
+        assert_eq!(slugify_view_name("  Trim & Split  "), "trim-split");
+        assert_eq!(slugify_view_name("ADRs"), "adrs");
+        assert_eq!(slugify_view_name("Café résumé"), "caf-r-sum");
+        assert_eq!(slugify_view_name("under_score"), "under_score");
+        assert_eq!(slugify_view_name("---"), "");
+        assert_eq!(slugify_view_name(""), "");
     }
 
     #[test]

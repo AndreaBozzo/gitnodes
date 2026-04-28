@@ -10,7 +10,7 @@
 //! arbitrary repo files through the proxy.
 
 use axum::{
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -34,6 +34,7 @@ pub struct AssetProxyState {
 pub async fn serve_asset(
     State(state): State<AssetProxyState>,
     session: Session,
+    OriginalUri(uri): OriginalUri,
     Path(path): Path<String>,
 ) -> Response {
     if !auth::is_authenticated(&session).await {
@@ -50,12 +51,10 @@ pub async fn serve_asset(
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
 
-    let gh = GithubClient::new(state.target.clone());
-    let url = format!(
-        "{}?ref={}",
-        gh.contents_url(&repo_path),
-        state.target.branch
-    );
+    let target =
+        target_from_path(uri.path(), &state.target).unwrap_or_else(|| state.target.clone());
+    let gh = GithubClient::new(target.clone());
+    let url = format!("{}?ref={}", gh.contents_url(&repo_path), target.branch);
     let resp = match state.http.get(&url, &token).send().await {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_GATEWAY, "upstream fetch").into_response(),
@@ -94,6 +93,23 @@ pub async fn serve_asset(
         HeaderValue::from_static("private, max-age=60"),
     );
     (StatusCode::OK, headers, bytes).into_response()
+}
+
+fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
+    let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
+    match segments.as_slice() {
+        [org, repo, "assets"] if !org.is_empty() && !repo.is_empty() => Some(TargetConfig {
+            org: (*org).to_string(),
+            repo: (*repo).to_string(),
+            branch: fallback.branch.clone(),
+        }),
+        [org, repo, "assets", _] if !org.is_empty() && !repo.is_empty() => Some(TargetConfig {
+            org: (*org).to_string(),
+            repo: (*repo).to_string(),
+            branch: fallback.branch.clone(),
+        }),
+        _ => None,
+    }
 }
 
 fn mime_for(path: &str) -> &'static str {
