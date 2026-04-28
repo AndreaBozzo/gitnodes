@@ -145,13 +145,13 @@ fn ViewsEditor(
     view! {
         <div class="space-y-4">
             <For
-                each=move || drafts.with(|list| list.iter().enumerate().map(|(i, d)| (i, d.id)).collect::<Vec<_>>())
-                key=|(_, id)| *id
-                children=move |(idx, _id)| {
+                each=move || drafts.with(|list| list.iter().map(|d| d.id).collect::<Vec<_>>())
+                key=|id| *id
+                children=move |id| {
                     let type_options = type_options.clone();
                     view! {
                         <ViewDraftCard
-                            idx=idx
+                            draft_id=id
                             drafts=drafts
                             type_options=type_options
                         />
@@ -179,34 +179,65 @@ fn ViewsEditor(
 
 #[component]
 fn ViewDraftCard(
-    idx: usize,
+    draft_id: u64,
     drafts: RwSignal<Vec<ViewDraft>>,
     type_options: Vec<String>,
 ) -> impl IntoView {
+    // Position of this card's draft in the live list. Resolved on every read so
+    // it stays correct after siblings are removed or reordered.
+    let position =
+        Memo::new(move |_| drafts.with(|list| list.iter().position(|d| d.id == draft_id)));
+    let display_idx = Memo::new(move |_| position.get().unwrap_or(0));
     let name_value = Memo::new(move |_| {
-        drafts.with(|list| list.get(idx).map(|d| d.name.clone()).unwrap_or_default())
+        drafts.with(|list| {
+            position
+                .get()
+                .and_then(|i| list.get(i))
+                .map(|d| d.name.clone())
+                .unwrap_or_default()
+        })
     });
     let slug_value = Memo::new(move |_| {
         drafts.with(|list| {
-            list.get(idx)
+            position
+                .get()
+                .and_then(|i| list.get(i))
                 .map(|d| d.effective_slug())
                 .unwrap_or_default()
         })
     });
     let slug_overridden = Memo::new(move |_| {
-        drafts.with(|list| list.get(idx).map(|d| d.slug_overridden).unwrap_or(false))
+        drafts.with(|list| {
+            position
+                .get()
+                .and_then(|i| list.get(i))
+                .map(|d| d.slug_overridden)
+                .unwrap_or(false)
+        })
     });
     let tags_csv = Memo::new(move |_| {
-        drafts.with(|list| list.get(idx).map(|d| d.tags.join(", ")).unwrap_or_default())
+        drafts.with(|list| {
+            position
+                .get()
+                .and_then(|i| list.get(i))
+                .map(|d| d.tags.join(", "))
+                .unwrap_or_default()
+        })
     });
     let selected_types: Memo<Vec<String>> = Memo::new(move |_| {
-        drafts.with(|list| list.get(idx).map(|d| d.types.clone()).unwrap_or_default())
+        drafts.with(|list| {
+            position
+                .get()
+                .and_then(|i| list.get(i))
+                .map(|d| d.types.clone())
+                .unwrap_or_default()
+        })
     });
 
     let on_remove = move |_| {
         drafts.update(|list| {
-            if idx < list.len() {
-                list.remove(idx);
+            if let Some(i) = list.iter().position(|d| d.id == draft_id) {
+                list.remove(i);
             }
         });
     };
@@ -214,7 +245,7 @@ fn ViewDraftCard(
     view! {
         <div class="border border-slate-800 rounded-md p-4 bg-slate-900/40 space-y-3">
             <div class="flex items-center gap-3">
-                <span class="text-[11px] uppercase tracking-widest text-slate-500">{format!("view #{}", idx + 1)}</span>
+                <span class="text-[11px] uppercase tracking-widest text-slate-500">{move || format!("view #{}", display_idx.get() + 1)}</span>
                 <button
                     class="ml-auto text-[11px] text-rose-300 hover:text-rose-200"
                     on:click=on_remove
@@ -231,7 +262,11 @@ fn ViewDraftCard(
                     on:input=move |ev| {
                         let val = event_target_value(&ev);
                         drafts.update(|list| {
-                            if let Some(d) = list.get_mut(idx) { d.name = val; }
+                            if let Some(i) = list.iter().position(|d| d.id == draft_id)
+                                && let Some(d) = list.get_mut(i)
+                            {
+                                d.name = val;
+                            }
                         });
                     }
                     placeholder="Open tasks"
@@ -248,7 +283,9 @@ fn ViewDraftCard(
                         class="ml-auto text-[10px] text-slate-400 hover:text-slate-200"
                         on:click=move |_| {
                             drafts.update(|list| {
-                                if let Some(d) = list.get_mut(idx) {
+                                if let Some(i) = list.iter().position(|d| d.id == draft_id)
+                                    && let Some(d) = list.get_mut(i)
+                                {
                                     d.slug_overridden = !d.slug_overridden;
                                     if !d.slug_overridden {
                                         d.slug_manual.clear();
@@ -269,7 +306,11 @@ fn ViewDraftCard(
                     on:input=move |ev| {
                         let val = event_target_value(&ev);
                         drafts.update(|list| {
-                            if let Some(d) = list.get_mut(idx) { d.slug_manual = val; }
+                            if let Some(i) = list.iter().position(|d| d.id == draft_id)
+                                && let Some(d) = list.get_mut(i)
+                            {
+                                d.slug_manual = val;
+                            }
                         });
                     }
                 />
@@ -288,7 +329,11 @@ fn ViewDraftCard(
                             .filter(|s| !s.is_empty())
                             .collect();
                         drafts.update(|list| {
-                            if let Some(d) = list.get_mut(idx) { d.tags = parsed; }
+                            if let Some(i) = list.iter().position(|d| d.id == draft_id)
+                                && let Some(d) = list.get_mut(i)
+                            {
+                                d.tags = parsed;
+                            }
                         });
                     }
                     placeholder="urgent, customer"
@@ -318,7 +363,9 @@ fn ViewDraftCard(
                                 on:click=move |_| {
                                     let t = t_for_toggle.clone();
                                     drafts.update(|list| {
-                                        if let Some(d) = list.get_mut(idx) {
+                                        if let Some(i) = list.iter().position(|d| d.id == draft_id)
+                                            && let Some(d) = list.get_mut(i)
+                                        {
                                             if let Some(pos) = d.types.iter().position(|x| x == &t) {
                                                 d.types.remove(pos);
                                             } else {
