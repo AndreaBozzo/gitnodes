@@ -113,20 +113,27 @@ async fn handle_push(state: WebhookState) {
     use brain_domain::TargetKey;
     use brain_storage::GithubStorage;
 
-    let storage = GithubStorage::new(state.http, state.target.clone());
+    let storage = GithubStorage::new(state.http.clone(), state.target.clone());
 
     // We need a token for the GitHub API calls. Webhooks arrive without a user
-    // session, so we use the server-side bot token (GITHUB_TOKEN env var).
-    // If it is absent we skip the rebuild — the client's next manual refresh or
-    // page load will reconcile.
-    let token = match std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("TARGET_GITHUB_TOKEN"))
-    {
-        Ok(t) => t,
-        Err(_) => {
-            tracing::warn!("webhook push: no GITHUB_TOKEN — skipping projection rebuild");
+    // session, so we authenticate as the GitHub App (preferred) or fall back to
+    // a server-side PAT. If neither is configured we skip the rebuild — the
+    // client's next manual refresh or page load will reconcile.
+    let token = match crate::server::installation_token::get(&state.http).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            tracing::warn!(
+                "webhook push: no GitHub App or PAT credentials — skipping projection rebuild"
+            );
             state.bus.send(BrainEvent::SyncFailed {
-                    message: "Background sync skipped: GITHUB_TOKEN is not configured on the server. Showing the last known snapshot until a manual refresh succeeds.".to_string(),
+                    message: "Background sync skipped: no GitHub credentials configured on the server. Showing the last known snapshot until a manual refresh succeeds.".to_string(),
+                });
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "webhook push: token resolution failed — skipping projection rebuild");
+            state.bus.send(BrainEvent::SyncFailed {
+                    message: format!("Background sync skipped: failed to obtain a GitHub token ({error}). Showing the last known snapshot until a manual refresh succeeds."),
                 });
             return;
         }
@@ -293,14 +300,20 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
         }
     };
 
-    let token = match std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("TARGET_GITHUB_TOKEN"))
-    {
-        Ok(t) => t,
-        Err(_) => {
+    let token = match crate::server::installation_token::get(&state.http).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
             tracing::warn!(
-                "webhook item event: no GITHUB_TOKEN — emitting cache-bump event without rebuild"
+                "webhook item event: no GitHub credentials — emitting cache-bump event without rebuild"
             );
+            state.bus.send(BrainEvent::WorkItemUpdated {
+                brain_id: bound.0,
+                content_path: bound.1,
+            });
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "webhook item event: token resolution failed — emitting cache-bump only");
             state.bus.send(BrainEvent::WorkItemUpdated {
                 brain_id: bound.0,
                 content_path: bound.1,
@@ -309,7 +322,7 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
         }
     };
 
-    let storage = GithubStorage::new(state.http, state.target.clone());
+    let storage = GithubStorage::new(state.http.clone(), state.target.clone());
     let key = TargetKey::from(storage.target());
     brain_storage::invalidate(&key);
     brain_storage::invalidate_template(&key);

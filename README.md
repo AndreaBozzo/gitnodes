@@ -89,7 +89,11 @@ Optional:
 | `SESSION_COOKIE_SECURE`   | `0`                    | Set to `1` in HTTPS prod                         |
 | `RUST_LOG`                | `brain_ui=info,warn`   | tracing-subscriber env filter                    |
 | `WEBHOOK_SECRET`          | _(unset)_              | HMAC-SHA256 secret matching the GitHub webhook config; if unset the `/webhook/github` endpoint accepts unsigned payloads (dev only) |
-| `GITHUB_TOKEN`            | _(unset)_              | Server-side token used by the webhook handler to rebuild the projection on `push`. Without it inbound pushes are signalled as stale and reconciled on next manual refresh |
+| `GITHUB_APP_ID`           | _(unset)_              | GitHub App ID. With `GITHUB_APP_INSTALLATION_ID` and a private key, webhooks authenticate as the App (preferred over PAT). |
+| `GITHUB_APP_INSTALLATION_ID` | _(unset)_           | Installation ID from the App's `…/settings/installations/<id>` URL after installing on the target org. |
+| `GITHUB_APP_PRIVATE_KEY`  | _(unset)_              | Inline PEM of the App's private key. Newlines may be encoded as `\n` for single-line `.env` values. |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | _(unset)_          | Alternative to `GITHUB_APP_PRIVATE_KEY` — path to a `.pem` file on disk. Preferred for k8s-style secret mounts. |
+| `GITHUB_TOKEN`            | _(unset)_              | Fine-grained PAT used as a fallback when `GITHUB_APP_*` is unset or the App-token mint fails. Without any credential, inbound pushes are signalled as stale and reconciled on next manual refresh. |
 
 Branding is also required at runtime:
 
