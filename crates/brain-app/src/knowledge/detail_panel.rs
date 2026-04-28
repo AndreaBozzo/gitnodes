@@ -2,9 +2,10 @@ use leptos::prelude::*;
 
 use super::components::TagBadge;
 use super::types::{Edge, EditMode, EditPrefill, Node};
+use crate::api::load_work_item_comments;
 use crate::api::{
-    AppConfig, BrainFile, WriteMode, assign_work_item, bind_work_item, load_work_item_by_path,
-    read_brain_file, transition_work_item,
+    AppConfig, BrainFile, WorkItemComment, WriteMode, assign_work_item, bind_work_item,
+    load_work_item_by_path, read_brain_file, transition_work_item,
 };
 #[cfg(not(feature = "ssr"))]
 use crate::api::{delete_brain_file, rename_brain_file};
@@ -624,6 +625,11 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
                 {labels_view}
                 {binding_view}
             </dl>
+            <WorkItemComments
+                brain_id=item.brain_id.clone()
+                binding=item.external_binding.clone()
+                graph_version=graph_version
+            />
             <WorkItemControls
                 brain_id=brain_id
                 current_state=item.state.clone()
@@ -632,6 +638,84 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
                 graph_version=graph_version
             />
         </section>
+    }
+}
+
+#[component]
+fn WorkItemComments(
+    brain_id: String,
+    binding: Option<ExternalWorkItemBinding>,
+    graph_version: RwSignal<u64>,
+) -> impl IntoView {
+    let is_github_bound = binding
+        .as_ref()
+        .is_some_and(|b| b.system == ExternalWorkItemSystem::Github);
+    if !is_github_bound {
+        return ().into_any();
+    }
+
+    let comments = Resource::new(
+        move || (brain_id.clone(), graph_version.get()),
+        |(brain_id, _)| async move { load_work_item_comments(brain_id).await },
+    );
+
+    view! {
+        <details class="mt-4 border-t border-slate-800 pt-3">
+            <summary class="cursor-pointer text-xs uppercase tracking-widest text-slate-400 hover:text-slate-200">
+                "Comments"
+            </summary>
+            <Suspense fallback=|| view! {
+                <p class="mt-3 text-xs text-slate-500">"Loading comments..."</p>
+            }>
+                {move || match comments.get() {
+                    None => ().into_any(),
+                    Some(Err(error)) => view! {
+                        <div class="mt-3 rounded-md border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                            {format!("Failed to load comments: {error}")}
+                        </div>
+                    }.into_any(),
+                    Some(Ok(comments)) if comments.is_empty() => view! {
+                        <p class="mt-3 text-xs text-slate-500">"No comments yet."</p>
+                    }.into_any(),
+                    Some(Ok(comments)) => view! {
+                        <ol class="mt-3 space-y-3">
+                            {comments.into_iter().map(comment_card).collect_view()}
+                        </ol>
+                    }.into_any(),
+                }}
+            </Suspense>
+        </details>
+    }
+    .into_any()
+}
+
+fn comment_card(comment: WorkItemComment) -> impl IntoView {
+    view! {
+        <li class="rounded-md border border-slate-800 bg-slate-950/40 p-3">
+            <div class="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                <a
+                    href=comment.author_url
+                    target="_blank"
+                    rel="noreferrer"
+                    class="font-semibold text-slate-300 hover:text-slate-100"
+                >
+                    {comment.author}
+                </a>
+                <span>{comment.created_at}</span>
+                <a
+                    href=comment.url
+                    target="_blank"
+                    rel="noreferrer"
+                    class="text-teal-300 hover:text-teal-200"
+                >
+                    "Open"
+                </a>
+            </div>
+            <div
+                class="prose prose-invert prose-sm max-w-none text-slate-200"
+                inner_html=comment.body_html
+            ></div>
+        </li>
     }
 }
 

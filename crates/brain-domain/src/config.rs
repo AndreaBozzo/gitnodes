@@ -202,6 +202,17 @@ impl GithubClient {
             self.api_base
         ))
     }
+
+    pub fn issue_comments_url(
+        &self,
+        project: &str,
+        item_key: &str,
+    ) -> Result<String, crate::BrainError> {
+        Ok(format!(
+            "{}/comments?per_page=100",
+            self.issue_url(project, item_key)?
+        ))
+    }
 }
 
 impl From<TargetConfig> for GithubClient {
@@ -1209,6 +1220,15 @@ node_types:
         assert_eq!(
             c.git_ref_url(),
             "https://api.github.com/repos/o/r/git/refs/heads/feat/x"
+        );
+    }
+
+    #[test]
+    fn issue_comments_url_targets_external_project() {
+        let c = gh("app", "runtime", "main").with_api_base("https://example.test/api/");
+        assert_eq!(
+            c.issue_comments_url("acme/kb", "42").unwrap(),
+            "https://example.test/api/repos/acme/kb/issues/42/comments?per_page=100"
         );
     }
 }

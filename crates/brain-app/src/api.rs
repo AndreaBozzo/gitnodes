@@ -58,6 +58,7 @@ const SERVER_FNS: &[&str] = &[
     "ReadNode",
     "LoadBrainGraph",
     "LoadWorkItemByPath",
+    "LoadWorkItemComments",
     "ReadBrainFile",
     "SaveBrainFile",
     "DeleteBrainFile",
@@ -95,6 +96,7 @@ pub fn register_server_functions() {
     register_explicit::<ReadNode>();
     register_explicit::<LoadBrainGraph>();
     register_explicit::<LoadWorkItemByPath>();
+    register_explicit::<LoadWorkItemComments>();
     register_explicit::<ReadBrainFile>();
     register_explicit::<SaveBrainFile>();
     register_explicit::<DeleteBrainFile>();
@@ -553,6 +555,67 @@ pub async fn load_work_item_by_path(path: String) -> Result<Option<WorkItem>, Se
     crate::server::projection::load_work_item_by_path(&target, &path)
         .await
         .map_err(sfe)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkItemComment {
+    pub author: String,
+    pub author_url: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub body_markdown: String,
+    pub body_html: String,
+    pub url: String,
+}
+
+/// Load comments for the GitHub issue bound to a work item. Non-bound or
+/// non-GitHub work items return an empty list so the UI can render one
+/// collapsible "Comments" surface without provider-specific branching.
+#[server(LoadWorkItemComments, "/api", endpoint = "load_work_item_comments")]
+pub async fn load_work_item_comments(
+    brain_id: String,
+) -> Result<Vec<WorkItemComment>, ServerFnError> {
+    load_work_item_comments_inner(brain_id).await.map_err(sfe)
+}
+
+#[cfg(feature = "ssr")]
+async fn load_work_item_comments_inner(
+    brain_id: String,
+) -> Result<Vec<WorkItemComment>, BrainError> {
+    use crate::server::session;
+
+    let (_s, token) = session::require_session_and_token().await?;
+    let target = session::target_cfg()?;
+    let storage = session::storage()?;
+    let Some(item) =
+        crate::server::projection::load_work_item_by_brain_id(&target, &brain_id).await?
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(binding) = item.external_binding else {
+        return Ok(Vec::new());
+    };
+    if binding.system != ExternalWorkItemSystem::Github {
+        return Ok(Vec::new());
+    }
+
+    storage
+        .issue_comments(&token, &binding.project, &binding.item_key)
+        .await
+        .map(|comments| {
+            comments
+                .into_iter()
+                .map(|comment| WorkItemComment {
+                    author: comment.user.login,
+                    author_url: comment.user.html_url,
+                    created_at: comment.created_at,
+                    updated_at: comment.updated_at,
+                    body_html: crate::markdown::render(&comment.body),
+                    body_markdown: comment.body,
+                    url: comment.html_url,
+                })
+                .collect()
+        })
 }
 
 /// Transition a work item to a new state. Updates frontmatter on the forge in

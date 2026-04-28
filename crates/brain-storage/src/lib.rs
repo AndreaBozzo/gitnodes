@@ -173,6 +173,21 @@ pub struct GithubIssuePatch {
     pub labels: Option<Vec<String>>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct GithubIssueComment {
+    pub html_url: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub user: GithubIssueCommentUser,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GithubIssueCommentUser {
+    pub login: String,
+    pub html_url: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct RepositoryPermissions {
     #[serde(default)]
@@ -459,6 +474,19 @@ impl GithubStorage {
         let issue: IssueResponse =
             GithubHttp::send_json(self.http.get(&url, token), "issue_get").await?;
         Ok(issue.labels.into_iter().map(|label| label.name).collect())
+    }
+
+    /// Read issue comments for a GitHub-bound work item. This is deliberately
+    /// a provider read, not part of the SQLite projection yet; callers can
+    /// later cache the same shape behind a reconciliation job.
+    pub async fn issue_comments(
+        &self,
+        token: &str,
+        project: &str,
+        item_key: &str,
+    ) -> Result<Vec<GithubIssueComment>, BrainError> {
+        let url = self.gh.issue_comments_url(project, item_key)?;
+        GithubHttp::send_json(self.http.get(&url, token), "issue_comments").await
     }
 
     /// Patch a GitHub issue. `labels` replaces the issue label set when

@@ -140,7 +140,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
       - Coerenza `system_of_record` esplicita: `brain` = no-op provider; `split`/`external` = commit editoriale Brain + push provider quando il binding è GitHub. Le mutazioni provider-originated rientrano senza echo di ritorno.
       - Webhook `issues`/`pull_request`: per item bindati legge state/labels/assignees dal payload, mappa le label `label_taxonomy` allo stato Brain, aggiorna il file Markdown/projection con `GITHUB_TOKEN` e pubblica `WorkItemUpdated`.
     - Success criterion chiuso: un cambio di stato fatto in UI aggiorna l'Issue GitHub corrispondente con il token dell'utente; un update GitHub out-of-band su item già bindato rientra in projection/UI senza refresh manuale.
-    - Follow-up non bloccanti: `issue_comment` come timeline event SSE e sync incrementale puro dell'evento webhook restano da valutare in 3.5 insieme alla query layer parametrica/rate-limit shielding. Il percorso corrente usa ancora rebuild target-scoped + patch file mirata, che è accettabile per i target attuali.
+    - Follow-up residui: `issue_comment` come evento SSE incrementale puro resta da valutare insieme alla query layer parametrica/rate-limit shielding. Il read path dei commenti issue bindati è stato introdotto il 2026-04-28 con `LoadWorkItemComments(brain_id)` + sezione `Comments` nel work item detail panel; per ora legge live da GitHub con il token OAuth dell'utente e non persiste la timeline in SQLite.
 - [x] **3.3 RBAC e Save Orchestration Permission-Aware** _(landed 2026-04-27)_
     - Smettere di modellare RBAC come semplice flag admin/non-admin. Il controllo reale è una capability matrix per target: `can_read`, `can_write_default_branch`, `can_review_via_pr`, `can_admin_config`, derivata da sessione OAuth + permessi repo/branch.
     - Riutilizzare la logica di tree commit atomico già introdotta per i rename, generalizzandola in un write path capace di scegliere tra:
@@ -192,6 +192,15 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Reframing dei nodi vicini al bordo del data space (oggi mostrano area vuota) e opzionale recentering anche su hover, non solo su selezione.
     - Vincolo: niente D3 — ~30KB di JS aggiuntivi non si sposano con il bundle Leptos+WASM. La logica resta in Rust/SVG nativo.
     - Success criterion: zoom continuo 0.25×–4×, transizioni morbide tra stati di selezione, nessuna area vuota visibile sui bordi del grafo per repo realistici.
+
+### Post-Fase 3: Dogfooding collaborativo
+
+- [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_
+    - Creare una mini knowledge base Pokemon come target/sandbox config-driven, senza riusare la tassonomia del Brain principale: `.brain-config.yml` custom, tipi come `pokemon`/`trainer`/`gym`/`route`/`battle-report`/`quest`, template dedicati e saved view proprie.
+    - Esercitare le feature shippate in Fase 3: routing target-aware, config loader YAML, node types custom, work item mutations, binding a GitHub Issue, saved view/config flow quando permesso, direct-write vs branch+PR fallback, webhook/SSE reconciliation e graph canvas polish.
+    - Usare i commenti della GitHub Issue bindata come thread QA/collaborazione e validare la nuova sezione `Comments` del detail panel; eventuali gap rimasti vanno estratti come follow-up (`issue_comment` SSE/cache timeline).
+    - Vincolo operativo: `@JacoTube` lavora da contributor non-admin; `main` resta protetto e ogni modifica finale passa da PR review di Andrea/Matteo.
+    - Success criterion: PR aperta dal contributor con note QA su cosa ha funzionato, cosa e' stato confuso e quali follow-up vanno estratti prima della Fase 4.
 
 ---
 

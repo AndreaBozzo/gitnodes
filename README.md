@@ -8,9 +8,10 @@ no hardcoded types in the binary.
 
 Current architecture: Git remains the source of truth; SQLite now backs sessions,
 audit logs, and a target-scoped local projection for graph/work-item reads.
-The current Phase 3 objective is evolving the app from a single-target editor into
-a multi-tenant collaborative workspace with target-aware routing, bidirectional
-work-item sync, and permission-aware direct-write vs PR flows.
+Phase 3 has moved the app from a single-target editor into a multi-tenant
+collaborative workspace with target-aware routing, bidirectional work-item sync,
+and permission-aware direct-write vs PR flows. The current focus is post-ship
+dogfooding with a real limited contributor before starting Phase 4.
 
 ## Stack
 
@@ -146,15 +147,16 @@ Webhook-driven projection rebuilds need a server-side credential — set either 
 
 - **Phase 1 closed** — config-driven node types, frontmatter round-trip, `WorkItem` model, real `.brain-config.yml` dogfooding on the Brain repo.
 - **Phase 2A/2B closed** — pooled GitHub HTTP client, target-scoped caches, SQLite projection, webhook + SSE baseline, atomic rename via Git Data API, and work-item projection materialization.
-- **Current gap** — work items are already accessible in the UI as local operational fields and read models, but forge-bound mutations, multi-target routing, and permission-aware branch/PR orchestration are the next step.
+- **Phase 3 closed** — multi-tenant routing, Brain Switcher, bidirectional work-item sync, permission-aware branch/PR orchestration, saved views, rate-limit shielding, and graph canvas polish are landed.
+- **Current gap** — validate the collaborative workflow with a real limited contributor on the Brain repo before Phase 4 hardens forge abstraction, history, local mode, and conflict resolution.
 
 ## Known caveats & roadmap
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-04-26, Phase 3 is explicitly framed around:
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-04-28, post-Phase-3 dogfooding is explicitly framed around:
 
-- target-aware routing `/{org}/{repo}` and a Brain Switcher
-- bidirectional work-item sync via the user's OAuth token
-- RBAC/capability-aware save orchestration with direct-write vs branch+PR fallback
+- a limited contributor using Brain UI against the Brain repo
+- branch/PR contribution instead of direct writes to protected `main`
+- a Pokemon-themed mock knowledge base with its own `.brain-config.yml`, custom node types/templates, links, assets, work items, saved views, graph controls, and sync
 
 Phase 4 then standardizes the forge boundary (`ForgeAdapter`), temporal graph views, local/offline execution, and richer conflict resolution.
 
