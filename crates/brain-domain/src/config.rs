@@ -92,6 +92,13 @@ impl GithubClient {
         self.repo_url(&self.target.org, &self.target.repo)
     }
 
+    pub fn user_repos_url(&self) -> String {
+        format!(
+            "{}/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member",
+            self.api_base
+        )
+    }
+
     pub fn tree_url(&self) -> String {
         format!(
             "{}/repos/{}/{}/git/trees/{}?recursive=1",
@@ -1229,6 +1236,15 @@ node_types:
         assert_eq!(
             c.issue_comments_url("acme/kb", "42").unwrap(),
             "https://example.test/api/repos/acme/kb/issues/42/comments?per_page=100"
+        );
+    }
+
+    #[test]
+    fn user_repos_url_uses_configured_api_base() {
+        let c = gh("app", "runtime", "main").with_api_base("https://example.test/api/");
+        assert_eq!(
+            c.user_repos_url(),
+            "https://example.test/api/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member"
         );
     }
 }
