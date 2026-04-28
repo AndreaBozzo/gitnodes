@@ -934,21 +934,23 @@ node_types:
 
     #[test]
     fn views_roundtrip_yaml_preserves_order_and_fields() {
-        let mut cfg = BrainConfig::default();
-        cfg.views = vec![
-            ViewSpec {
-                name: "Open tasks".into(),
-                slug: "open-tasks".into(),
-                tags: vec!["urgent".into()],
-                types: vec!["concept".into()],
-            },
-            ViewSpec {
-                name: "All ADRs".into(),
-                slug: "adrs".into(),
-                tags: vec![],
-                types: vec!["adr".into()],
-            },
-        ];
+        let cfg = BrainConfig {
+            views: vec![
+                ViewSpec {
+                    name: "Open tasks".into(),
+                    slug: "open-tasks".into(),
+                    tags: vec!["urgent".into()],
+                    types: vec!["concept".into()],
+                },
+                ViewSpec {
+                    name: "All ADRs".into(),
+                    slug: "adrs".into(),
+                    tags: vec![],
+                    types: vec!["adr".into()],
+                },
+            ],
+            ..Default::default()
+        };
         let yaml = serde_yaml::to_string(&cfg).unwrap();
         let parsed = BrainConfig::parse(&yaml).unwrap();
         assert_eq!(cfg.views, parsed.views);

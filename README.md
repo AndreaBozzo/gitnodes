@@ -39,6 +39,7 @@ crates/
       server/projection.rs      # SQLite projection materialization + read model
       server/webhook.rs         # GitHub webhook entrypoint (push baseline)
       server/sse.rs             # Typed SSE event bus + stream endpoint
+      server/installation_token.rs # GitHub App JWT → installation token, cached + refreshed
       knowledge/
         page.rs                 # /knowledge route composition
         graph_canvas.rs         # SVG graph view
@@ -138,6 +139,8 @@ docker run -p 3000:3000 \
 ```
 
 Mount `/app/data` on a persistent volume so sessions survive restarts.
+
+Webhook-driven projection rebuilds need a server-side credential — set either the `GITHUB_APP_*` trio (preferred, auto-rotating) or `GITHUB_TOKEN` (PAT fallback). On hosts that store env vars as raw strings (Railway, Fly, k8s Secrets), paste the PEM with real newlines; the `\n` escape is only needed for `.env` files.
 
 ## Current status
 

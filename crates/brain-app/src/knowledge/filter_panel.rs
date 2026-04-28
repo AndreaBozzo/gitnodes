@@ -65,8 +65,13 @@ pub fn FilterPanel(
                 })
             };
             let apply = move |_| {
-                active_tags.set(view_tags.clone());
-                active_types.set(view_types.clone());
+                if is_on.get() {
+                    active_tags.update(|s| s.clear());
+                    active_types.update(|s| s.clear());
+                } else {
+                    active_tags.set(view_tags.clone());
+                    active_types.set(view_types.clone());
+                }
             };
             view! {
                 <button
@@ -125,6 +130,40 @@ pub fn FilterPanel(
     // --- Folder creation state ---
     // (Removed in favor of implicit folders)
 
+    let any_filter_active = Memo::new(move |_| {
+        active_tags.with(|t| !t.is_empty()) || active_types.with(|t| !t.is_empty())
+    });
+    let clear_all = move |_| {
+        active_tags.update(|s| s.clear());
+        active_types.update(|s| s.clear());
+    };
+
+    // Where the "clear" button lives depends on whether the Views row exists.
+    // We want at most one rendered, anchored to the topmost section header so
+    // the user always sees it without scrolling.
+    let clear_in_views_row = move || {
+        any_filter_active.get().then(|| view! {
+            <button
+                class="ml-auto text-[10px] uppercase tracking-widest text-slate-500 hover:text-slate-200"
+                on:click=clear_all
+                title="Clear all filters"
+            >
+                "clear"
+            </button>
+        })
+    };
+    let clear_in_type_row = move || {
+        (!has_views && any_filter_active.get()).then(|| view! {
+            <button
+                class="ml-auto text-[10px] uppercase tracking-widest text-slate-500 hover:text-slate-200"
+                on:click=clear_all
+                title="Clear all filters"
+            >
+                "clear"
+            </button>
+        })
+    };
+
     view! {
         <aside class="w-64 shrink-0 border-r border-slate-800 bg-slate-900/40 p-5 space-y-6 overflow-y-auto">
             <BrainSwitcher
@@ -133,12 +172,18 @@ pub fn FilterPanel(
             />
             {has_views.then(|| view! {
                 <section>
-                    <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-3">"Views"</h2>
+                    <div class="flex items-center mb-3">
+                        <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Views"</h2>
+                        {clear_in_views_row}
+                    </div>
                     <div class="flex flex-wrap gap-2">{view_buttons}</div>
                 </section>
             })}
             <section>
-                <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-3">"Type"</h2>
+                <div class="flex items-center mb-3">
+                    <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Type"</h2>
+                    {clear_in_type_row}
+                </div>
                 <div class="flex flex-wrap gap-2">{type_buttons}</div>
             </section>
             <section>
