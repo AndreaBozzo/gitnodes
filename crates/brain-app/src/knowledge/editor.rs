@@ -172,13 +172,15 @@ pub fn EditorPanel(
     // Key drafts by `<org>/<repo>:<path|new>` so drafts from a different
     // deployment target don't collide and each edited file keeps its own draft.
     let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
+    let app_config_for_scope = app_config.clone();
     let repo_scope = Memo::new(move |_| {
-        app_config
+        app_config_for_scope
             .and_then(|r| r.get())
             .and_then(|r| r.ok())
             .map(|c| format!("{}/{}", c.target.org, c.target.repo))
             .unwrap_or_default()
     });
+    let app_config_for_preview = app_config.clone();
     let draft_key = Memo::new(move |_| {
         let scope = repo_scope.get();
         if scope.is_empty() {
@@ -636,6 +638,7 @@ pub fn EditorPanel(
                 node_type=node_type.into()
                 body=body
                 file_path=markdown_file_path.into()
+                app_config=app_config_for_preview
                 config=config.get_value()
             />
             <RelatedLinksPicker selected_related=selected_related node_titles=node_titles_stored />
@@ -906,10 +909,21 @@ fn MarkdownPreview(
     node_type: Signal<String>,
     body: RwSignal<String>,
     file_path: Signal<Option<String>>,
+    app_config: Option<Resource<Result<AppConfig, ServerFnError>>>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     let show_preview = RwSignal::new(false);
-    let preview_html = Memo::new(move |_| crate::markdown::render(&body.get()));
+    let preview_html = Memo::new(move |_| {
+        let b = body.get();
+        let target_config = app_config
+            .and_then(|r| r.get())
+            .and_then(|r| r.ok())
+            .map(|c| c.target);
+        match (file_path.get(), target_config) {
+            (Some(path), Some(cfg)) => crate::markdown::render_for_file(&b, &path, &cfg),
+            _ => crate::markdown::render(&b),
+        }
+    });
     let upload_status = RwSignal::new(String::new());
     let dragging = RwSignal::new(false);
 
