@@ -193,6 +193,24 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Vincolo: niente D3 — ~30KB di JS aggiuntivi non si sposano con il bundle Leptos+WASM. La logica resta in Rust/SVG nativo.
     - Success criterion: zoom continuo 0.25×–4×, transizioni morbide tra stati di selezione, nessuna area vuota visibile sui bordi del grafo per repo realistici.
 
+- [ ] **3.7 Repo Structure Transparency**
+
+    Razionale: oggi Brain UI mostra il grafo logico (nodi/edge derivati dal frontmatter e dai wiki link) ma rende quasi opaca la struttura fisica del repo. Una save/rename può atterrare in `runbooks/`, `concepts/sub_folder/`, `concepts/bozza-manifesto/` o creare implicitamente una nuova cartella, e l'utente non ha un modo immediato di vedere cosa esiste già, dove sta cosa, quanti file ci sono per directory, quale path verrà davvero generato. Il `LocationPicker` attuale (`editor.rs:1195`) è un input testuale con datalist piatto delle cartelle esistenti — utile per autocomplete, inutile come mappa.
+
+    Obiettivo: rendere la struttura fisica di prima classe accanto a quella logica, **senza** trasformare Brain UI in un file explorer generico (non è un IDE) e **senza** introdurre un secondo modello — la projection SQLite ha già `files` e `nodes` con `content_path`, basta esporli con la forma giusta.
+
+    - **Tree view sidebar (read-only, opt-in)** — sotto il filter panel della Knowledge view, una sezione collapsible "Repository structure" con albero gerarchico costruito da `list_files(target)` (server fn parametrica già introdotta in 3.5, da estendere se necessario): cartelle espandibili, conteggio file per cartella, badge per cartelle che contengono solo work item o solo nodi di un certo tipo. Click su un file = stessa azione di click sul nodo del grafo (focus + detail panel). Stato espanso/collapsed persistito in localStorage per target.
+    - **Path preview live nell'editor** — sopra/sotto il `LocationPicker`, una riga "Will be saved as: `runbooks/2026/04/foo-bar.md`" che si ricalcola in tempo reale dal `folder` + `node_type.directory` + slug derivato dal title. Evidenziare visivamente quando il path implica la creazione di una cartella nuova (`new folder: drafts/q3/`) — oggi succede silenziosamente.
+    - **Detail panel: breadcrumb cliccabile** — il path stringa attuale diventa un breadcrumb `org/repo › concepts › sub_folder › TestbrainUI.md` dove ogni segmento, se cliccato, filtra il grafo sui nodi sotto quella cartella (riusando `?path_prefix=` da aggiungere alla query layer parametrica di 3.5). Il filename finale apre il blob su GitHub in nuova tab, coerente con il pattern già usato per il config file.
+    - **Filtro "by directory" parallelo a tag/type** — un terzo asse di filtro nella sidebar che usa la struttura cartelle reale come dimensione ortogonale a `tags`/`types`. URL-persistito come `?path_prefix=concepts/`. Niente nuovo state management — segue il pattern di 3.4-α.
+    - **Banner orphan strutturale** — oggi esiste il banner amber per tipi di nodo sconosciuti (Fase 1). Equivalente strutturale: file markdown nel repo che la projection ha indicizzato ma che non sono raggiungibili da nessun link wiki né da nessuna view (silos editoriali). Banner discreto con conteggio + link al filtro `is_orphan_in_graph: true`. Aiuta a vedere cosa c'è di "perso" nel repo.
+
+    Esplicitamente fuori da 3.7: drag-and-drop tra cartelle (è una move/rename — vive sotto Admin Node Control con `BranchTransaction` di 4.0), creazione cartella esplicita ex-nihilo (le cartelle restano implicite — caveat di design), upload di file binari arbitrari (non-markdown), preview anteprima file non-markdown.
+
+    Vincolo: niente nuova server fn per ogni nuova superficie — la query layer parametrica di 3.5 (`list_files`, `list_nodes` con filtri) deve coprire tutti i casi sopra. Se uno di questi richiede una nuova fn, è un segnale che 3.5 va completata prima.
+
+    Success criterion: un utente che apre per la prima volta un repo Brain capisce in <30 secondi quali cartelle esistono, quanti file contengono, dove finirà un nuovo documento e quali file sono "isolati" rispetto al grafo, senza dover aprire GitHub.
+
 ### Post-Fase 3: Dogfooding collaborativo
 
 - [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_
@@ -208,6 +226,13 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Aggiungere segnali visivi direttamente sul graph canvas: piccoli badge/ring/banner sui nodi work item per stato interno (`blocked`, `in-progress`, `done`), assignee presenti e binding esterno. Il segnale deve essere leggibile ma non trasformare il grafo in una board kanban.
     - Estendere la legenda/toolbar del grafo per spiegare questi segnali e permettere toggle rapidi (“show blocked”, “show mine”, “dim done”), mantenendo URL/localStorage coerenti con i filtri esistenti.
     - Success criterion MVP: un utente vede immediatamente quali task gli sono assegnate e quali nodi sono bloccati/in progress senza aprire uno per uno il detail panel.
+- [ ] **Repo structure: evoluzioni post-MVP** _(follow-up di 3.7, da pianificare dopo dogfooding)_
+    - **Heatmap strutturale** — overlay nel tree view che mostra densità di link entranti/uscenti per cartella o età media dei file. Distingue cartelle "vive" da cartelle stagnanti senza richiedere drill-down manuale. Da disegnare solo dopo aver visto come gli utenti usano il tree base di 3.7.
+    - **Vista "directory ↔ node type" come matrice** — diagnostica admin che mostra distribuzione: quali tipi di nodo finiscono in quali cartelle, quali cartelle hanno mix sospetti (es. `runbook` in `concepts/`). Utile per accorgersi di drift editoriale prima che diventi rumore.
+    - **Sezione `Recently created/modified` separata** — derivata da git log via projection già esistente (commit metadata in `files`), mostra gli ultimi N nodi toccati come lista temporale. Complementare al grafo che è atemporale per definizione.
+    - **Ristrutturazione bulk admin-only** — UI per move-by-pattern (es. "tutti i `runbook` di Q1 in `runbooks/2026/q1/`"), riusa `BranchTransaction` di 4.0 per atomicità + preview via `transaction.plan()`. Solo dopo che 4.0 è chiusa.
+    - **Path collision detection in edit mode** — durante rename/move, evidenziare in tempo reale se il path target collide con un file esistente, è soggetto a case-insensitive collision (rilevante su filesystem case-folding), o supera limiti di profondità ragionevoli. Reuse parziale della logica `expect_absent` di `GitTransaction`.
+    - Vincolo trasversale: ognuna di queste evoluzioni deve restare opt-in e non deve trasformare Brain UI in un file manager. Se l'utente vuole un file manager, ha GitHub.
 - [ ] **Admin Node Control / manutenzione nodi** _(riduzione frizione editoriale, 2026-04-29)_
     - Aggiungere una superficie admin-only per controllo completo dei nodi, distinta dall'editor standard: l'utente normale continua a modificare contenuto e campi sicuri, mentre admin/maintainer possono correggere struttura, metadati e path senza aprire GitHub o un editor locale.
     - MVP: pannello “Node maintenance” nel detail/editor con raw frontmatter editor validato, preview/diff prima del salvataggio, edit dei campi non esposti dal form standard e recovery dei frontmatter malformati che oggi bloccano il save.
