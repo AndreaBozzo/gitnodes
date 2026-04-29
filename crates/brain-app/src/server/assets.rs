@@ -1,10 +1,12 @@
 //! Authenticated passthrough for repo assets.
 //!
-//! `raw.githubusercontent.com` requires the same OAuth token the app uses for
-//! API calls when the backing repo is private, and the browser's `<img>` tag
-//! can't carry that token. This handler fetches via the Contents API with the
-//! session token, decodes, and serves bytes back with a mime type guessed from
-//! the extension.
+//! For private repos, `raw.githubusercontent.com` does not accept bearer auth
+//! on the `Authorization` header — it returns 404 silently. The Contents API
+//! (`/repos/{org}/{repo}/contents/{path}?ref={branch}`) does accept bearer
+//! tokens and is the only stable way to fetch private blobs from a server-side
+//! proxy. This handler uses the Contents API with `Accept: application/vnd.github.raw`
+//! to receive the raw bytes directly (no base64 round-trip) and serves them
+//! back to the browser with a mime type guessed from the extension.
 //!
 //! Only paths under `assets/` are allowed so a compromised client can't read
 //! arbitrary repo files through the proxy.
@@ -53,12 +55,18 @@ pub async fn serve_asset(
     let target =
         target_from_path(uri.path(), &state.target).unwrap_or_else(|| state.target.clone());
     let gh = GithubClient::new(target.clone());
-    let url = format!("{}/{}", gh.raw_base(), repo_path);
+    // Use Contents API with `Accept: application/vnd.github.raw` rather than
+    // raw.githubusercontent.com. For private repos, raw.* silently 404s on
+    // bearer auth (only the legacy `?token=` query param works there), while
+    // the Contents API authenticates the same way as every other call we make.
+    let url = format!("{}?ref={}", gh.contents_url(&repo_path), target.branch);
     let resp = match state
         .http
         .client()
         .get(&url)
         .bearer_auth(&token)
+        .header(header::ACCEPT, "application/vnd.github.raw")
+        .header(header::USER_AGENT, "brain-ui")
         .send()
         .await
     {
