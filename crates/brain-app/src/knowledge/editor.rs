@@ -302,6 +302,35 @@ pub fn EditorPanel(
 
     let node_titles_stored = StoredValue::new(node_titles);
     let all_tags_stored = StoredValue::new(all_tags);
+    let markdown_file_path = Memo::new(move |_| {
+        if let Some(path) = edit_path.get() {
+            return Some(path);
+        }
+
+        let slug = slugify_title(&title.get());
+        if slug.is_empty() {
+            return None;
+        }
+
+        let selected_folder = folder.get();
+        let dir = selected_folder.trim().trim_matches('/').to_string();
+        let dir = if dir.is_empty() {
+            let nt = node_type.get();
+            config.with_value(|c| {
+                c.lookup(&nt)
+                    .map(|s| s.directory.trim_matches('/').to_string())
+                    .unwrap_or_default()
+            })
+        } else {
+            dir
+        };
+
+        Some(if dir.is_empty() {
+            format!("{slug}.md")
+        } else {
+            format!("{dir}/{slug}.md")
+        })
+    });
 
     let on_submit = move |_| {
         let updating = is_edit.get_untracked();
@@ -603,7 +632,12 @@ pub fn EditorPanel(
 
             <LocationPicker folder=folder node_type=node_type all_folders=all_folders is_edit=is_edit config=config.get_value() />
             <TagInput tags=tags all_tags=all_tags_stored />
-            <MarkdownPreview node_type=node_type.into() body=body config=config.get_value() />
+            <MarkdownPreview
+                node_type=node_type.into()
+                body=body
+                file_path=markdown_file_path.into()
+                config=config.get_value()
+            />
             <RelatedLinksPicker selected_related=selected_related node_titles=node_titles_stored />
 
             <div class="pt-2 border-t border-slate-800 space-y-2">
@@ -871,6 +905,7 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
 fn MarkdownPreview(
     node_type: Signal<String>,
     body: RwSignal<String>,
+    file_path: Signal<Option<String>>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     let show_preview = RwSignal::new(false);
@@ -918,9 +953,9 @@ fn MarkdownPreview(
                             ev.prevent_default();
                             dragging.set(false);
                             #[cfg(feature = "hydrate")]
-                            handle_image_drop(ev, body, upload_status);
+                            handle_image_drop(ev, body, upload_status, file_path.get_untracked());
                             #[cfg(not(feature = "hydrate"))]
-                            { let _ = (upload_status, &body); }
+                            { let _ = (upload_status, &body, file_path); }
                         }
                     />
                 }
@@ -954,7 +989,12 @@ fn MarkdownPreview(
 /// into the body for each one as it completes. Non-image files are skipped
 /// silently; per-file errors surface in `status` but don't abort siblings.
 #[cfg(feature = "hydrate")]
-fn handle_image_drop(ev: leptos::ev::DragEvent, body: RwSignal<String>, status: RwSignal<String>) {
+fn handle_image_drop(
+    ev: leptos::ev::DragEvent,
+    body: RwSignal<String>,
+    status: RwSignal<String>,
+    file_path: Option<String>,
+) {
     use crate::api::upload_asset;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -977,6 +1017,7 @@ fn handle_image_drop(ev: leptos::ev::DragEvent, body: RwSignal<String>, status: 
         }
         let filename = file.name();
         let file_for_task = file.clone();
+        let file_path_for_task = file_path.clone();
         status.set(format!("Uploading {filename}…"));
         leptos::task::spawn_local(async move {
             let buf_promise = file_for_task.array_buffer();
@@ -995,7 +1036,11 @@ fn handle_image_drop(ev: leptos::ev::DragEvent, body: RwSignal<String>, status: 
             let alt = strip_ext(&filename);
             match upload_asset(filename.clone(), bytes).await {
                 Ok(path) => {
-                    let snippet = format!("\n\n![{alt}](/{path})\n");
+                    let link = crate::markdown::repo_relative_link_target(
+                        file_path_for_task.as_deref(),
+                        &path,
+                    );
+                    let snippet = format!("\n\n![{alt}]({link})\n");
                     body.update(|b| b.push_str(&snippet));
                     status.set(format!("Uploaded {path}"));
                 }
@@ -1013,6 +1058,14 @@ fn strip_ext(filename: &str) -> String {
         Some((stem, _)) if !stem.is_empty() => stem.to_string(),
         _ => filename.to_string(),
     }
+}
+
+fn slugify_title(title: &str) -> String {
+    title
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect()
 }
 
 #[cfg(not(feature = "ssr"))]

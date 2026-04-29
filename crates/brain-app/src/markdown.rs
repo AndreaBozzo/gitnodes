@@ -186,6 +186,50 @@ fn resolve_repo_path(file_path: Option<&str>, dest: &str) -> String {
     normalize_repo_path(&joined)
 }
 
+/// Build a markdown link target from a repo-rooted file to a repo-rooted asset.
+///
+/// When the file path is unknown, fall back to the app's asset route so live
+/// preview can still display an uploaded image before a new note has a title.
+pub fn repo_relative_link_target(file_path: Option<&str>, target: &str) -> String {
+    let target = normalize_repo_path(target);
+    let Some(file_path) = file_path else {
+        return format!("/{target}");
+    };
+    let from_dir = Path::new(file_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let from_parts: Vec<String> = from_dir
+        .iter()
+        .filter_map(|p| p.to_str())
+        .filter(|p| !p.is_empty() && *p != ".")
+        .map(ToOwned::to_owned)
+        .collect();
+    let target_parts: Vec<&str> = target.split('/').filter(|s| !s.is_empty()).collect();
+
+    if target_parts.is_empty() {
+        return String::new();
+    }
+
+    let mut common = 0;
+    while common < from_parts.len()
+        && common < target_parts.len() - 1
+        && from_parts[common] == target_parts[common]
+    {
+        common += 1;
+    }
+
+    let ups = from_parts.len() - common;
+    let mut out = String::new();
+    for _ in 0..ups {
+        out.push_str("../");
+    }
+    if ups == 0 {
+        out.push_str("./");
+    }
+    out.push_str(&target_parts[common..].join("/"));
+    out
+}
+
 fn normalize_repo_path(path: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     for component in Path::new(path).components() {
@@ -220,7 +264,7 @@ fn encode_query_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render, render_for_file};
+    use super::{render, render_for_file, repo_relative_link_target};
     use brain_domain::TargetConfig;
 
     fn test_cfg() -> TargetConfig {
@@ -277,6 +321,25 @@ mod tests {
         assert!(
             html.contains(r#"src="/Dritara-Digital/Brain/assets/2026/04/foo-abc.png""#),
             "got: {html}"
+        );
+    }
+
+    #[test]
+    fn repo_relative_link_target_points_from_markdown_file_to_asset() {
+        assert_eq!(
+            repo_relative_link_target(Some("concepts/foo.md"), "assets/2026/04/foo-abc.png"),
+            "../assets/2026/04/foo-abc.png"
+        );
+        assert_eq!(
+            repo_relative_link_target(
+                Some("concepts/bozza-manifesto/foo.md"),
+                "assets/2026/04/foo-abc.png"
+            ),
+            "../../assets/2026/04/foo-abc.png"
+        );
+        assert_eq!(
+            repo_relative_link_target(Some("foo.md"), "assets/2026/04/foo-abc.png"),
+            "./assets/2026/04/foo-abc.png"
         );
     }
 }
