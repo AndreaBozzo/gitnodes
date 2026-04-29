@@ -172,7 +172,7 @@ pub fn EditorPanel(
     // Key drafts by `<org>/<repo>:<path|new>` so drafts from a different
     // deployment target don't collide and each edited file keeps its own draft.
     let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
-    let app_config_for_scope = app_config.clone();
+    let app_config_for_scope = app_config;
     let repo_scope = Memo::new(move |_| {
         app_config_for_scope
             .and_then(|r| r.get())
@@ -180,7 +180,7 @@ pub fn EditorPanel(
             .map(|c| format!("{}/{}", c.target.org, c.target.repo))
             .unwrap_or_default()
     });
-    let app_config_for_preview = app_config.clone();
+    let app_config_for_preview = app_config;
     let draft_key = Memo::new(move |_| {
         let scope = repo_scope.get();
         if scope.is_empty() {
