@@ -14,9 +14,8 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use base64::Engine;
 use brain_domain::{GithubClient, TargetConfig};
-use brain_storage::{ContentResponse, GithubHttp};
+use brain_storage::GithubHttp;
 use tower_sessions::Session;
 
 use super::auth;
@@ -54,8 +53,15 @@ pub async fn serve_asset(
     let target =
         target_from_path(uri.path(), &state.target).unwrap_or_else(|| state.target.clone());
     let gh = GithubClient::new(target.clone());
-    let url = format!("{}?ref={}", gh.contents_url(&repo_path), target.branch);
-    let resp = match state.http.get(&url, &token).send().await {
+    let url = format!("{}/{}", gh.raw_base(), repo_path);
+    let resp = match state
+        .http
+        .client()
+        .get(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(_) => return (StatusCode::BAD_GATEWAY, "upstream fetch").into_response(),
     };
@@ -67,18 +73,9 @@ pub async fn serve_asset(
         };
         return (code, "upstream non-success").into_response();
     }
-    let body: ContentResponse = match resp.json().await {
+    let bytes = match resp.bytes().await {
         Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_GATEWAY, "upstream parse").into_response(),
-    };
-    let cleaned: String = body
-        .content
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
-        Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_GATEWAY, "upstream decode").into_response(),
+        Err(_) => return (StatusCode::BAD_GATEWAY, "upstream read").into_response(),
     };
 
     let mut headers = HeaderMap::new();
@@ -92,7 +89,7 @@ pub async fn serve_asset(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=60"),
     );
-    (StatusCode::OK, headers, bytes).into_response()
+    (StatusCode::OK, headers, bytes.to_vec()).into_response()
 }
 
 fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
