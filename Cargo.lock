@@ -232,6 +232,7 @@ dependencies = [
  "gloo-timers",
  "hmac",
  "http",
+ "http-body-util",
  "js-sys",
  "jsonwebtoken",
  "leptos",
@@ -258,6 +259,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "wiremock",
 ]
 
 [[package]]
