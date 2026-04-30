@@ -211,6 +211,45 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     Success criterion: un utente che apre per la prima volta un repo Brain capisce in <30 secondi quali cartelle esistono, quanti file contengono, dove finirà un nuovo documento e quali file sono "isolati" rispetto al grafo, senza dover aprire GitHub.
 
+- [ ] **3.8 Embedded Analytics Views**
+
+    Razionale: Brain UI è un control plane su una knowledge base editoriale, ma una parte crescente del valore aziendale vive in dati operativi pesanti (Postgres/Supabase, ads Instagram via Airbyte, metriche prodotto) che non ha senso ingerire dentro la projection SQLite né renderizzare con charting library lato WASM. La via naturale è far convivere dashboard esterni (Metabase, Superset, PowerBI, Grafana) come *view* di prima classe accanto ai grafi/nodi, embeddati via iframe, configurati dallo stesso `.brain-config.yml` e gated dalla stessa RBAC. Brain UI resta agnostico rispetto al data source: non parla mai col DB, non sa cosa c'è dentro il dashboard, sa solo che esiste, chi può vederlo, e dove punta.
+
+    Obiettivo dichiarativo: usare il pattern `ViewSpec` introdotto da 3.4-α come superficie unificata per tutte le viste Brain (saved filter views *e* embedded analytics), evitando un secondo schema parallelo. Zero charting library aggiunte al bundle WASM. L'iframe è opaco per design.
+
+    **Realignment ex-ante:** la slice viene spezzata in α (whitelist statico, no JWT) → β (JWT signing per provider che lo supportano), coerente col precedente di 3.2/3.4. α deve essere end-to-end shippable da solo — niente "dummy server fn che ritorna URL hardcoded": un dashboard pubblico/whitelistato è già un caso reale.
+
+    Vincoli condivisi (validi per α/β):
+    - Lo schema `views` di 3.4-α viene esteso con un campo `type: filter | iframe` (default `filter` per backward compat); le `iframe` view portano `url`, opzionalmente `provider` (per la β), e `requires_role` riusa la capability matrix di 3.3.
+    - Allowlist domini embeddabili dichiarata in `.brain-config.yml` (`embed_allowed_origins: [metabase.example.com, ...]`). Validata server-side in fase di config parse e *ri-validata* dalla server fn che restituisce l'URL — il frontend non può aggirarla.
+    - CSP `frame-src` calcolato server-side dall'allowlist (non hardcoded), così aggiungere un dominio è un edit di config, non un deploy. Header `sandbox="allow-scripts allow-same-origin"` di default sull'iframe; override esplicito nel `ViewSpec` se il provider lo richiede.
+    - Zero charting/visualization library aggiunte al bundle WASM. Se uno use case sembra richiederlo, è il segnale che dovrebbe essere un dashboard esterno embeddato, non nativo.
+    - Editor visuale: il pattern `iframe` view va supportato esplicitamente in 3.4-β (o γ se si preferisce raggrupparlo coi long-tail), non lasciato a raw YAML, perché l'allowlist e il `requires_role` sono campi che gli admin devono poter modificare in UI.
+
+    - **3.8-α Whitelist-based iframe views** _(scope minimo per validare il pattern)_
+        - Estensione schema: `ViewSpec` accetta `type: iframe` con `url`, `requires_role`. Allowlist `embed_allowed_origins` a livello root del config. Validazione `BrainConfig::parse`: ogni `iframe` view deve avere `url` il cui host è in allowlist; slug unici come per 3.4-α.
+        - Server fn `GetEmbedUrl(target, slug) → Result<EmbedUrlResponse, ServerFnError>`: legge config cached, verifica esistenza view + match slug, verifica `requires_role` contro la capability matrix dell'utente, ri-valida il dominio contro allowlist (defense in depth), ritorna URL + eventuali sandbox flags. Audit log `embed_url_issued { slug, target }`.
+        - Componente `<EmbeddedAnalytics/>` in `brain-app/frontend`: `create_resource` su `GetEmbedUrl`, `<Suspense>` con skeleton, render `<iframe>` full-content-area al success. Errore esplicito (non blank) su `Blocked by permissions` / `Domain not allowlisted` / `View not found`.
+        - Router/sidebar: la sidebar dinamica di 3.4-α già renderizza le view; estendere il render per distinguere chip filter (set query params) da chip iframe (navigate a `/{org}/{repo}/views/{slug}`). Route nuova che monta `<EmbeddedAnalytics/>` con lo slug come param.
+        - Esplicitamente fuori da α: JWT signing, secret management, provider-specific (Metabase signed embeds, Superset guest tokens, ecc.), audit del *contenuto* visto dall'utente, multi-tenancy a livello dashboard (un dashboard Metabase per org).
+        - Success criterion: un admin aggiunge un dashboard Metabase pubblico (o un Grafana share link) all'allowlist e come `iframe` view, lo vede comparire nella sidebar con il giusto `requires_role`, l'utente target apre la view e il dashboard è renderizzato dentro Brain UI senza che il backend abbia mai parlato col data source.
+
+    - **3.8-β Signed embeds (provider-aware)** _(post-feedback expansion)_
+        - Estensione `ViewSpec` con `provider: metabase | superset | powerbi | grafana | none` e blocco `signing_config` per-view (resource id, embed type, scope params).
+        - Secret per-target in env var (`BRAIN_EMBED_SECRET_<TARGET_ID>` o equivalente — schema esatto da disegnare quando arriviamo qui). Mai nel config file, mai nel bundle WASM.
+        - `GetEmbedUrl` esteso: per provider che lo supportano, firma payload JWT/HMAC con TTL corto (≤ 10min), include user id e role per provider che fanno row-level security via embed params. URL firmato non cachato lato server (TTL applicato lato provider).
+        - Audit esteso: `embed_url_issued` include `provider`, `expires_at`, `signed: true`. Sufficiente per accountability senza loggare il contenuto visto.
+        - Forma esatta dei `signing_config` per-provider va disegnata alla luce di α in produzione e dei provider effettivamente richiesti dagli utenti, non pre-pianificata.
+
+    Esplicitamente fuori da 3.8 (entrambi gli slice):
+    - Charting nativo / visualizzazioni custom dentro Brain UI — anti-goal esplicito.
+    - Embed bidirezionale (iframe che pubblica eventi al parent Brain UI via `postMessage`) — superficie di sicurezza e UX troppo grande per questo scope.
+    - Auto-discovery dei dashboard disponibili sul provider (es. listing di tutti i dashboard Metabase visibili all'utente) — manuale via config.
+    - Auth federation Brain → provider (SSO, token exchange, OAuth delegation) — vive in fase 5 insieme all'AI Assistant Proxy se mai necessario.
+    - Pre-rendering server-side dei dashboard come immagini cachate — fuori scope, è un dominio diverso (snapshot/reporting, non control plane).
+
+    Vincolo trasversale: se l'iframe pattern non basta per uno use case (es. l'utente vuole filtri Brain UI che si propagano nel dashboard), la risposta di default è "documenta il limite" non "estendi Brain UI". L'integrazione cross-frame è una superficie di rischio sproporzionata rispetto al valore di un control plane.
+
 ### Post-Fase 3: Dogfooding collaborativo
 
 - [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_
