@@ -156,7 +156,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
       - Audit dedicato per `propose_write`, `propose_delete`, `propose_rename`, `propose_work_item_mutation`.
     - Follow-up non bloccanti:
       - Il futuro Visual Configuration Editor di 3.4 deve riusare lo stesso orchestratore.
-      - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; va ripensato insieme al fallback PR UX per immagini/draft.
+      - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; chiusura prevista in 3.9-α (BlobAdapter + R2 → la PR contiene solo diff Markdown, preview live funzionante).
 - [x] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
 
     **Realignment 2026-04-27:** la fase viene spezzata in slice verticali (α → β → γ) invece di un singolo drop visual editor completo. Razionale: la roundtrip GUI ↔ YAML ↔ orchestratore di scrittura è il vero rischio architetturale; isolarlo sulla dimensione di config più piccola consente di iterare sui feedback prima di estendere la GUI all'intera superficie di `BrainConfig`. Ogni slice è indipendentemente shippabile e dogfoodabile.
@@ -193,7 +193,9 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Vincolo: niente D3 — ~30KB di JS aggiuntivi non si sposano con il bundle Leptos+WASM. La logica resta in Rust/SVG nativo.
     - Success criterion: zoom continuo 0.25×–4×, transizioni morbide tra stati di selezione, nessuna area vuota visibile sui bordi del grafo per repo realistici.
 
-- [x] **3.7 Repo Structure Transparency** — **DONE 2026-04-30**. MVP shippato sopra la projection SQLite: `ListBrainFiles` espone `files` + metadata nodo/work-item/orphan senza leggere il forge; Knowledge UI ha tree read-only opt-in nella sidebar con cartelle espandibili, conteggi, badge e stato localStorage per target; `?path_prefix=` e `?orphan=true` filtrano il grafo insieme a tag/type; l'editor mostra preview live del path finale e segnala cartelle nuove implicite; il detail panel mostra breadcrumb cliccabile che filtra per directory e filename linkato al blob GitHub.
+- [x] **3.7 Repo Structure Transparency** — **DONE 2026-04-30**. MVP shippato sopra la projection SQLite: `list_files` (server fn parametrica introdotta come estensione della query layer di 3.5, vedi `crates/brain-app/src/api/files.rs`) espone `files` + metadata nodo/work-item/orphan senza leggere il forge; Knowledge UI ha tree read-only opt-in nella sidebar con cartelle espandibili, conteggi, badge per cartelle che contengono solo work item / solo nodi di un certo tipo, badge `isolated` per-cartella e toggle globale `N isolated markdown files` che attiva il filtro `?orphan=true`; stato espanso/collapsed persistito in localStorage per target; `?path_prefix=` e `?orphan=true` filtrano il grafo insieme a tag/type; l'editor mostra preview live del path finale e segnala cartelle nuove implicite; il detail panel mostra breadcrumb cliccabile che filtra per directory e filename linkato al blob GitHub.
+
+    Success criterion verificabile: il filtro `?path_prefix=` e `?orphan=true` sopravvivono a refresh; lo stato espanso del tree sopravvive a navigation tra target; breadcrumb del detail panel è clickable end-to-end (segmento → filtro grafo, filename → blob GitHub).
 
     Razionale: oggi Brain UI mostra il grafo logico (nodi/edge derivati dal frontmatter e dai wiki link) ma rende quasi opaca la struttura fisica del repo. Una save/rename può atterrare in `runbooks/`, `concepts/sub_folder/`, `concepts/bozza-manifesto/` o creare implicitamente una nuova cartella, e l'utente non ha un modo immediato di vedere cosa esiste già, dove sta cosa, quanti file ci sono per directory, quale path verrà davvero generato. Il `LocationPicker` attuale (`editor.rs:1195`) è un input testuale con datalist piatto delle cartelle esistenti — utile per autocomplete, inutile come mappa.
 
@@ -250,6 +252,47 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     Vincolo trasversale: se l'iframe pattern non basta per uno use case (es. l'utente vuole filtri Brain UI che si propagano nel dashboard), la risposta di default è "documenta il limite" non "estendi Brain UI". L'integrazione cross-frame è una superficie di rischio sproporzionata rispetto al valore di un control plane.
 
+- [ ] **3.9 BYOB (Bring Your Own Blob) & External Asset Strategy**
+
+    Razionale: Git è la Single Source of Truth perfetta per semantica, testo e metadati, ma è storicamente pessimo per i file binari. Oggi l'editor di Brain UI committa le immagini in `assets/YYYY/MM/`: questo gonfia il repository e — soprattutto — rompe l'esperienza della Fase 3.3 (follow-up esplicito a [ROADMAP.md:159](docs/ROADMAP.md#L159)): un asset caricato in un branch temporaneo via PR non è immediatamente referenziabile dal markdown live, quindi la preview del draft è rotta finché la PR non viene mergiata. In parallelo, il team ha bisogno di integrare nativamente documenti e spreadsheet ospitati su Google Workspace senza passarli per Git.
+
+    Obiettivo: separare il Data Plane (i blob binari) dal Control Plane (i file Markdown su Git). Introdurre l'astrazione `BlobAdapter` prima del `ForgeAdapter` di 4.1, garantendo che i commit contengano sempre e solo testo. Chiude il debito aperto da 3.3 sul fallback PR per asset.
+
+    **Realignment ex-ante:** la slice viene spezzata in α (R2/S3 + chiusura debito 3.3) → β (frontmatter agnostico + UI consumer) → γ (Google Workspace come provider redirect-only), coerente con il precedente di 3.2/3.4/3.8. α deve essere end-to-end shippabile da solo — la fix del fallback PR ha valore immediato anche senza UI dedicata e senza Google Workspace.
+
+    Vincoli condivisi (validi per α/β/γ):
+    - Secret di provider esclusivamente in env var (`BRAIN_BLOB_<PROVIDER_ID>_*` — schema esatto da disegnare in α). Mai nel `.brain-config.yml`, mai nel bundle WASM.
+    - `BlobAdapter` chiamato solo server-side: il frontend riceve URL già risolti via server fn dedicata, non chiama mai il provider direttamente. Defense in depth: il config dichiara *che* provider esistono, l'env var dice *come* autenticarsi.
+    - `resolve_url` ritorna URL a tempo (presigned R2/S3 o redirect link Google) ma **non** è cachato server-side: il TTL è applicato dal provider, l'auditability vive nel log.
+    - Audit `blob_url_issued { provider_id, ref_id, target, user, expires_at }` per ogni risoluzione, sufficiente per accountability senza loggare il contenuto.
+    - Capability gating coerente con 3.3: upload asset gated su `can_write_default_branch || can_review_via_pr`; risoluzione URL gated su `can_read`; admin del blocco `blob_providers` nel config gated su `can_admin_config` (fluisce dall'editor visuale di 3.4-γ quando arriva, raw YAML nel frattempo).
+    - Editor visuale: il blocco `blob_providers` è long-tail config — vive in 3.4-γ, non blocca 3.9. Raw YAML è l'escape hatch durante α/β.
+
+    - **3.9-α BlobAdapter trait + R2/S3 provider + fallback PR fix** _(scope minimo, chiude debito 3.3)_
+        - `BlobAdapter` trait in `brain-storage` con responsabilità iniziale singola: `resolve_url(provider_id, ref_id) → Result<ResolvedUrl, BlobError>` + `upload(provider_id, bytes, content_type) → Result<BlobRef, BlobError>`. Implementazione `S3Adapter` (Cloudflare R2 via API S3-compatibile) come unico provider di α.
+        - Estensione `BrainConfig`: blocco `blob_providers: [{ id, type: s3, bucket, region, public_base_url? }]`. Validazione in `BrainConfig::parse`: id univoci, `type` riconosciuto, env var corrispondenti presenti al boot (warning, non error, per non bloccare repo che non usano blob).
+        - Server fn `UploadAsset(target, provider_id, bytes, content_type) → Result<BlobRef, ServerFnError>`: gated su capability matrix, audita `blob_uploaded`, ritorna `{ provider_id, ref_id, url }` per riuso immediato lato editor.
+        - **Fix fallback PR**: l'orchestratore di scrittura permission-aware (3.3) intercetta gli asset upload prima del commit. Se il provider blob è configurato per il target, l'asset finisce su R2 con URL stabile; la PR generata contiene solo il diff Markdown che referenzia l'URL R2. Niente conflitti sui binari, preview live nel branch funzionante. Se nessun provider blob è configurato, fallback al comportamento attuale (commit binario, debito noto).
+        - Esplicitamente fuori da α: `external_assets` frontmatter (β), UI dedicata nel detail panel (β), Google Workspace (γ), migrazione asset vecchi.
+        - Success criterion: un utente senza write access carica un'immagine nell'editor; il blob finisce su R2 con URL stabile, la PR generata contiene solo il diff Markdown, la preview live nel branch funziona come per i file di testo. Audit `blob_uploaded` e `blob_url_issued` presenti.
+
+    - **3.9-β Frontmatter agnostico + UI consumer** _(post-α, abilita allegati strutturati)_
+        - Schema frontmatter: blocco `external_assets: [{ provider, ref_id, name, kind? }]` come campo first-class, non più link markdown crudi per gli allegati complessi (preventivi, task con report PDF, ecc.). Round-trip preservato dal save path esistente.
+        - Server fn `ResolveAssetUrl(target, provider_id, ref_id) → Result<ResolvedUrl, ServerFnError>` thin wrapper su `BlobAdapter::resolve_url`, gated su `can_read`, audita `blob_url_issued`.
+        - UI: sezione "External Assets" nel detail panel e nell'editor che legge il frontmatter, risolve gli URL in tempo reale via server fn, renderizza link diretti o — quando opportuno — iframe riusando l'allowlist di 3.8 (no schema parallelo: il dominio dell'URL risolto deve passare la validazione `embed_allowed_origins` se renderizzato come iframe).
+        - Success criterion: un documento con `external_assets: [...]` mostra gli allegati nel detail panel e nell'editor con URL freschi a ogni apertura; un asset con dominio non in allowlist viene reso come link aperto in nuova tab, non iframe; nessuna chiave di provider raggiunge il bundle frontend.
+
+    - **3.9-γ Google Workspace provider** _(redirect-only, no upload)_
+        - Estensione `BlobAdapter` con `GoogleWorkspaceAdapter`: `resolve_url` ritorna il link di redirect nativo Google Drive/Docs/Sheets per `ref_id` = file id; `upload` non implementato (Google Workspace non è uno store di blob owned, è un sistema esterno).
+        - Schema config: `blob_providers: [{ id, type: google_workspace, ... }]`. L'utente referenzia file via `external_assets: [{ provider: "gworkspace", ref_id: "<drive-file-id>", name: "Q3 Plan" }]`.
+        - Permessi: l'accesso al file Drive è governato dalle share policy di Google. Brain UI fornisce solo il link/iframe e non sincronizza nulla. Documentato come anti-goal esplicito.
+        - Forma esatta del flusso auth (service account vs OAuth delegato) va disegnata alla luce di α/β in produzione e dei requisiti effettivi del team, non pre-pianificata.
+
+    Esplicitamente fuori da 3.9 (tutti gli slice):
+    - Migrazione automatica dei vecchi asset in `assets/YYYY/MM/` verso i nuovi provider. I vecchi file restano serviti dal proxy Contents API esistente (caveat #16, già DONE 2026-04-29 — il proxy funziona, non c'è urgenza di migrare).
+    - Sincronizzazione permessi tra Brain UI e Google Drive (vedi γ, è anti-goal).
+    - Versioning custom dei blob (R2 ha le sue versioning policy, non duplicarle).
+    - Pre-rendering/thumbnail di asset binari server-side — fuori scope, vive eventualmente in un servizio separato.
 ### Post-Fase 3: Dogfooding collaborativo
 
 - [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_
