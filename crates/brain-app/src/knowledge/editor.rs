@@ -632,7 +632,14 @@ pub fn EditorPanel(
                 }
             </Show>
 
-            <LocationPicker folder=folder node_type=node_type all_folders=all_folders is_edit=is_edit config=config.get_value() />
+            <LocationPicker
+                folder=folder
+                node_type=node_type
+                all_folders=all_folders
+                path_preview=markdown_file_path.into()
+                is_edit=is_edit
+                config=config.get_value()
+            />
             <TagInput tags=tags all_tags=all_tags_stored />
             <MarkdownPreview
                 node_type=node_type.into()
@@ -1197,9 +1204,25 @@ fn LocationPicker(
     folder: RwSignal<String>,
     node_type: RwSignal<String>,
     all_folders: Resource<Vec<String>>,
+    path_preview: Signal<Option<String>>,
     is_edit: Memo<bool>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
+    let preview_folder = move || {
+        path_preview
+            .get()
+            .and_then(|path| path.rsplit_once('/').map(|(folder, _)| folder.to_string()))
+            .unwrap_or_default()
+    };
+    let new_folder = move || {
+        let folder = preview_folder();
+        if folder.is_empty() {
+            return None;
+        }
+        let existing = all_folders.get().unwrap_or_default();
+        (!existing.iter().any(|f| f.trim_matches('/') == folder)).then_some(folder)
+    };
+
     view! {
         <Show when=move || !is_edit.get()>
             <div>
@@ -1227,6 +1250,17 @@ fn LocationPicker(
                 <p class="text-[10px] text-slate-500 mt-1 leading-relaxed">
                     "Leave blank for default. Create new folders implicitly by typing a path like 'drafts/q3'."
                 </p>
+                <div class="mt-2 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]">
+                    <div class="text-slate-500 uppercase tracking-widest text-[9px]">"Will be saved as"</div>
+                    <div class="mt-1 font-mono text-slate-200 break-all">
+                        {move || path_preview.get().unwrap_or_else(|| "Choose a title to preview the path".to_string())}
+                    </div>
+                    <Show when=move || new_folder().is_some()>
+                        <div class="mt-1 text-amber-200">
+                            {move || format!("new folder: {}/", new_folder().unwrap_or_default())}
+                        </div>
+                    </Show>
+                </div>
             </div>
         </Show>
     }

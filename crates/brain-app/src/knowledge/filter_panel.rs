@@ -2,13 +2,19 @@ use std::collections::HashSet;
 
 use leptos::prelude::*;
 
+use crate::api::RepoFile;
 use crate::knowledge::brain_switcher::BrainSwitcher;
+use crate::knowledge::repo_structure::RepoStructureTree;
 
 #[component]
 pub fn FilterPanel(
     all_tags: Vec<String>,
     active_tags: RwSignal<HashSet<String>>,
     active_types: RwSignal<HashSet<String>>,
+    active_path_prefix: RwSignal<Option<String>>,
+    active_orphan_filter: RwSignal<bool>,
+    selected_path: RwSignal<Option<String>>,
+    repo_files: Vec<RepoFile>,
     config: brain_domain::BrainConfig,
     #[prop(optional)] current_org: String,
     #[prop(optional)] current_repo: String,
@@ -131,11 +137,16 @@ pub fn FilterPanel(
     // (Removed in favor of implicit folders)
 
     let any_filter_active = Memo::new(move |_| {
-        active_tags.with(|t| !t.is_empty()) || active_types.with(|t| !t.is_empty())
+        active_tags.with(|t| !t.is_empty())
+            || active_types.with(|t| !t.is_empty())
+            || active_path_prefix.with(|p| p.is_some())
+            || active_orphan_filter.get()
     });
     let clear_all = move |_| {
         active_tags.update(|s| s.clear());
         active_types.update(|s| s.clear());
+        active_path_prefix.set(None);
+        active_orphan_filter.set(false);
     };
 
     // Where the "clear" button lives depends on whether the Views row exists.
@@ -190,8 +201,15 @@ pub fn FilterPanel(
                 <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-3">"Tags"</h2>
                 <div class="flex flex-wrap gap-2">{tag_buttons}</div>
             </section>
-
-
+            <RepoStructureTree
+                files=repo_files
+                active_path_prefix=active_path_prefix
+                active_orphan_filter=active_orphan_filter
+                selected_path=selected_path
+                config=config.clone()
+                current_org=current_org.clone()
+                current_repo=current_repo.clone()
+            />
 
             <section class="text-[11px] text-slate-500 leading-relaxed pt-4 border-t border-slate-800">
                 <p>"Empty filter means everything visible. Hover a node to emphasise its neighbourhood; click to lock it into the detail bar."</p>

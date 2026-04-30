@@ -10,7 +10,8 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    list_accessible_targets, load_brain_config_for_target, load_brain_graph_for_target,
+    FileQueryFilters, list_accessible_targets, list_brain_files, load_brain_config_for_target,
+    load_brain_graph_for_target,
 };
 use crate::app::{GraphVersion, SyncStatusSignal};
 
@@ -40,6 +41,17 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
         move || (graph_version.get(), org.get(), repo.get()),
         |(_, o, r)| async move { load_brain_config_for_target(o, r, String::new()).await },
     );
+    let files = Resource::new_blocking(
+        move || (graph_version.get(), org.get(), repo.get()),
+        |(_, o, r)| async move {
+            list_brain_files(FileQueryFilters {
+                org: Some(o),
+                repo: Some(r),
+                ..Default::default()
+            })
+            .await
+        },
+    );
 
     view! {
         <Suspense fallback=|| view! {
@@ -50,12 +62,14 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
             {move || {
                 let g = graph.get();
                 let c = config.get();
-                match (g, c) {
-                    (Some(Ok((nodes, edges))), Some(Ok(cfg))) => {
+                let f = files.get();
+                match (g, c, f) {
+                    (Some(Ok((nodes, edges))), Some(Ok(cfg)), Some(Ok(files))) => {
                         use super::page::KnowledgeViewProps;
                         super::page::KnowledgeView(KnowledgeViewProps {
                             nodes,
                             edges,
+                            files,
                             config: cfg,
                             graph_version,
                             sync_status,
@@ -64,7 +78,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                         })
                         .into_any()
                     }
-                    (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
+                    (Some(Err(e)), _, _) | (_, Some(Err(e)), _) | (_, _, Some(Err(e))) => view! {
                         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
                             {format!("Failed to load graph/config for target: {e}")}
                         </div>

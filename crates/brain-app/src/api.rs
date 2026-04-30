@@ -3,11 +3,13 @@ use leptos::prelude::*;
 
 mod files;
 pub use files::{
-    BrainFile, WriteCapabilities, WriteMode, WriteResult, delete_brain_file,
-    get_write_capabilities, read_brain_file, save_brain_file,
+    BrainFile, FileQueryFilters, RepoFile, WriteCapabilities, WriteMode, WriteResult,
+    delete_brain_file, get_write_capabilities, list_brain_files, read_brain_file, save_brain_file,
 };
 #[cfg(feature = "ssr")]
-pub use files::{DeleteBrainFile, GetWriteCapabilities, ReadBrainFile, SaveBrainFile};
+pub use files::{
+    DeleteBrainFile, GetWriteCapabilities, ListBrainFiles, ReadBrainFile, SaveBrainFile,
+};
 
 mod file_ops;
 #[cfg(feature = "ssr")]
@@ -107,6 +109,7 @@ const SERVER_FNS: &[&str] = &[
     "LoadWorkItemByPath",
     "LoadWorkItemComments",
     "ReadBrainFile",
+    "ListBrainFiles",
     "SaveBrainFile",
     "DeleteBrainFile",
     "RenameBrainFile",
@@ -145,6 +148,7 @@ pub fn register_server_functions() {
     register_explicit::<LoadWorkItemByPath>();
     register_explicit::<LoadWorkItemComments>();
     register_explicit::<ReadBrainFile>();
+    register_explicit::<ListBrainFiles>();
     register_explicit::<SaveBrainFile>();
     register_explicit::<DeleteBrainFile>();
     register_explicit::<RenameBrainFile>();

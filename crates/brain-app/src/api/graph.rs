@@ -21,6 +21,8 @@ pub struct NodeQueryFilters {
     pub tags: Vec<String>,
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
     #[serde(default = "default_include_virtual")]
     pub include_virtual: bool,
 }
@@ -31,6 +33,7 @@ impl Default for NodeQueryFilters {
             node_types: Vec::new(),
             tags: Vec::new(),
             paths: Vec::new(),
+            path_prefix: None,
             include_virtual: true,
         }
     }
@@ -52,6 +55,7 @@ pub async fn list_nodes(filters: NodeQueryFilters) -> Result<Vec<Node>, ServerFn
             node_types: filters.node_types,
             tags: filters.tags,
             paths: filters.paths,
+            path_prefix: filters.path_prefix,
             include_virtual: filters.include_virtual,
         },
     )

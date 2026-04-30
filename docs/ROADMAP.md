@@ -193,7 +193,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Vincolo: niente D3 — ~30KB di JS aggiuntivi non si sposano con il bundle Leptos+WASM. La logica resta in Rust/SVG nativo.
     - Success criterion: zoom continuo 0.25×–4×, transizioni morbide tra stati di selezione, nessuna area vuota visibile sui bordi del grafo per repo realistici.
 
-- [ ] **3.7 Repo Structure Transparency**
+- [x] **3.7 Repo Structure Transparency** — **DONE 2026-04-30**. MVP shippato sopra la projection SQLite: `ListBrainFiles` espone `files` + metadata nodo/work-item/orphan senza leggere il forge; Knowledge UI ha tree read-only opt-in nella sidebar con cartelle espandibili, conteggi, badge e stato localStorage per target; `?path_prefix=` e `?orphan=true` filtrano il grafo insieme a tag/type; l'editor mostra preview live del path finale e segnala cartelle nuove implicite; il detail panel mostra breadcrumb cliccabile che filtra per directory e filename linkato al blob GitHub.
 
     Razionale: oggi Brain UI mostra il grafo logico (nodi/edge derivati dal frontmatter e dai wiki link) ma rende quasi opaca la struttura fisica del repo. Una save/rename può atterrare in `runbooks/`, `concepts/sub_folder/`, `concepts/bozza-manifesto/` o creare implicitamente una nuova cartella, e l'utente non ha un modo immediato di vedere cosa esiste già, dove sta cosa, quanti file ci sono per directory, quale path verrà davvero generato. Il `LocationPicker` attuale (`editor.rs:1195`) è un input testuale con datalist piatto delle cartelle esistenti — utile per autocomplete, inutile come mappa.
 

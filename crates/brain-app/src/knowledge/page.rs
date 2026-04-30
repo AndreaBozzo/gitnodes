@@ -12,7 +12,10 @@ use super::graph_canvas::GraphCanvas;
 use super::live_sync::SyncStatus;
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
-use crate::api::{load_brain_config, load_brain_graph, refresh_brain_graph};
+use crate::api::{
+    FileQueryFilters, RepoFile, list_brain_files, load_brain_config, load_brain_graph,
+    refresh_brain_graph,
+};
 use crate::app::{GraphVersion, SyncStatusSignal};
 
 #[component]
@@ -35,6 +38,10 @@ pub fn KnowledgePage() -> impl IntoView {
         move || graph_version.get(),
         |_| async { load_brain_config().await },
     );
+    let files = Resource::new_blocking(
+        move || graph_version.get(),
+        |_| async { list_brain_files(FileQueryFilters::default()).await },
+    );
 
     view! {
         <Suspense fallback=|| view! {
@@ -45,11 +52,12 @@ pub fn KnowledgePage() -> impl IntoView {
             {move || {
                 let g = graph.get();
                 let c = config.get();
-                match (g, c) {
-                    (Some(Ok((nodes, edges))), Some(Ok(cfg))) => {
-                        KnowledgeView(KnowledgeViewProps { nodes, edges, config: cfg, graph_version, sync_status, org: None, repo: None }).into_any()
+                let f = files.get();
+                match (g, c, f) {
+                    (Some(Ok((nodes, edges))), Some(Ok(cfg)), Some(Ok(files))) => {
+                        KnowledgeView(KnowledgeViewProps { nodes, edges, files, config: cfg, graph_version, sync_status, org: None, repo: None }).into_any()
                     }
-                    (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
+                    (Some(Err(e)), _, _) | (_, Some(Err(e)), _) | (_, _, Some(Err(e))) => view! {
                         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
                             {format!("Failed to load graph/config: {e}")}
                         </div>
@@ -69,6 +77,7 @@ pub fn KnowledgePage() -> impl IntoView {
 pub(crate) fn KnowledgeView(
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    files: Vec<RepoFile>,
     config: brain_domain::BrainConfig,
     graph_version: RwSignal<u64>,
     sync_status: RwSignal<SyncStatus>,
@@ -81,6 +90,7 @@ pub(crate) fn KnowledgeView(
 ) -> impl IntoView {
     let query = use_query_map();
     let nodes = StoredValue::new(nodes);
+    let repo_files = StoredValue::new(files);
     let config = StoredValue::new(config);
     let edges = StoredValue::new(edges);
     let path_to_id: StoredValue<HashMap<String, u32>> = StoredValue::new(
@@ -116,6 +126,8 @@ pub(crate) fn KnowledgeView(
 
     let active_tags = RwSignal::new(HashSet::<String>::new());
     let active_types = RwSignal::new(HashSet::<String>::new());
+    let active_path_prefix = RwSignal::new(Option::<String>::None);
+    let active_orphan_filter = RwSignal::new(false);
     let hovered = RwSignal::new(None::<u32>);
     let selected = RwSignal::new(None::<u32>);
     let selected_path = RwSignal::new(None::<String>);
@@ -155,6 +167,15 @@ pub(crate) fn KnowledgeView(
         out
     }
 
+    fn normalize_path_prefix(input: &str) -> String {
+        let trimmed = input.trim().trim_matches('/');
+        if trimmed.is_empty() {
+            String::new()
+        } else {
+            format!("{trimmed}/")
+        }
+    }
+
     Effect::new(move |_| {
         let params = query.get();
         if let Some(path) = params.get_str("path") {
@@ -165,11 +186,24 @@ pub(crate) fn KnowledgeView(
             .map(|raw| parse_csv(&raw.to_lowercase()))
             .unwrap_or_default();
         let next_types = params.get_str("types").map(parse_csv).unwrap_or_default();
+        let next_path_prefix = params
+            .get_str("path_prefix")
+            .map(normalize_path_prefix)
+            .filter(|raw| !raw.is_empty());
+        let next_orphan_filter = params
+            .get_str("orphan")
+            .is_some_and(|raw| raw == "true" || raw == "1");
         if next_tags != active_tags.get_untracked() {
             active_tags.set(next_tags);
         }
         if next_types != active_types.get_untracked() {
             active_types.set(next_types);
+        }
+        if next_path_prefix != active_path_prefix.get_untracked() {
+            active_path_prefix.set(next_path_prefix);
+        }
+        if next_orphan_filter != active_orphan_filter.get_untracked() {
+            active_orphan_filter.set(next_orphan_filter);
         }
     });
 
@@ -190,6 +224,8 @@ pub(crate) fn KnowledgeView(
         let tags = active_tags.get();
         let types = active_types.get();
         let path = selected_path.get();
+        let path_prefix = active_path_prefix.get();
+        let orphan_filter = active_orphan_filter.get();
         let mut parts: Vec<String> = Vec::new();
         if let Some(p) = path.as_ref().filter(|s| !s.is_empty()) {
             parts.push(format!("path={}", url_encode(p)));
@@ -199,6 +235,15 @@ pub(crate) fn KnowledgeView(
         }
         if !types.is_empty() {
             parts.push(format!("types={}", url_encode(&join_sorted(&types))));
+        }
+        if let Some(prefix) = path_prefix.as_ref().filter(|s| !s.is_empty()) {
+            parts.push(format!(
+                "path_prefix={}",
+                url_encode(prefix.trim_end_matches('/'))
+            ));
+        }
+        if orphan_filter {
+            parts.push("orphan=true".to_string());
         }
         let target = if parts.is_empty() {
             base_path_nav.clone()
@@ -213,7 +258,19 @@ pub(crate) fn KnowledgeView(
             .unwrap_or_default();
         let current_types = current.get_str("types").map(parse_csv).unwrap_or_default();
         let current_path = current.get_str("path").map(str::to_string);
-        if current_tags == tags && current_types == types && current_path == path {
+        let current_path_prefix = current
+            .get_str("path_prefix")
+            .map(normalize_path_prefix)
+            .filter(|raw| !raw.is_empty());
+        let current_orphan_filter = current
+            .get_str("orphan")
+            .is_some_and(|raw| raw == "true" || raw == "1");
+        if current_tags == tags
+            && current_types == types
+            && current_path == path
+            && current_path_prefix == path_prefix
+            && current_orphan_filter == orphan_filter
+        {
             return;
         }
         navigate(
@@ -295,12 +352,31 @@ pub(crate) fn KnowledgeView(
     let visible_ids = Memo::new(move |_| {
         let tags = active_tags.get();
         let types = active_types.get();
+        let path_prefix = active_path_prefix.get();
+        let orphan_filter = active_orphan_filter.get();
+        let orphan_paths: HashSet<String> = if orphan_filter {
+            repo_files.with_value(|files| {
+                files
+                    .iter()
+                    .filter(|file| file.is_orphan_in_graph)
+                    .map(|file| file.path.clone())
+                    .collect()
+            })
+        } else {
+            HashSet::new()
+        };
         nodes.with_value(|ns| {
             ns.iter()
                 .filter(|n| types.is_empty() || types.contains(&n.node_type))
                 .filter(|n| {
                     tags.is_empty() || n.tags.iter().any(|t| tags.contains(&t.to_lowercase()))
                 })
+                .filter(|n| {
+                    path_prefix
+                        .as_deref()
+                        .is_none_or(|prefix| n.path.starts_with(prefix))
+                })
+                .filter(|n| !orphan_filter || orphan_paths.contains(&n.path))
                 .map(|n| n.id)
                 .collect::<HashSet<u32>>()
         })
@@ -377,6 +453,10 @@ pub(crate) fn KnowledgeView(
                     all_tags=all_tags.clone()
                     active_tags=active_tags
                     active_types=active_types
+                    active_path_prefix=active_path_prefix
+                    active_orphan_filter=active_orphan_filter
+                    selected_path=selected_path
+                    repo_files=repo_files.get_value()
                     config=config.get_value()
                     current_org=org.clone().unwrap_or_default()
                     current_repo=repo.clone().unwrap_or_default()
@@ -404,6 +484,7 @@ pub(crate) fn KnowledgeView(
                     edges=edges
                     selected=selected
                     selected_path=selected_path
+                    active_path_prefix=active_path_prefix
                     edit_mode=edit_mode
                     graph_version=graph_version
                     config=config.get_value()

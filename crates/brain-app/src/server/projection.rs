@@ -179,6 +179,7 @@ pub struct NodeFilters {
     pub node_types: Vec<String>,
     pub tags: Vec<String>,
     pub paths: Vec<String>,
+    pub path_prefix: Option<String>,
     pub include_virtual: bool,
 }
 
@@ -188,9 +189,27 @@ impl Default for NodeFilters {
             node_types: Vec::new(),
             tags: Vec::new(),
             paths: Vec::new(),
+            path_prefix: None,
             include_virtual: true,
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FileFilters {
+    pub path_prefix: Option<String>,
+    pub orphan_only: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectedFile {
+    pub path: String,
+    pub sha: String,
+    pub size_bytes: i64,
+    pub node_type: Option<String>,
+    pub title: Option<String>,
+    pub is_work_item: bool,
+    pub is_orphan_in_graph: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -212,6 +231,15 @@ pub async fn list_nodes(
     list_nodes_from_pool(pool, target_id, filters).await
 }
 
+pub async fn list_files(
+    target: &TargetConfig,
+    filters: &FileFilters,
+) -> Result<Vec<ProjectedFile>, BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    list_files_from_pool(pool, target_id, filters).await
+}
+
 pub async fn read_node(target: &TargetConfig, path: &str) -> Result<Option<Node>, BrainError> {
     let mut filters = NodeFilters {
         paths: vec![path.to_string()],
@@ -220,6 +248,15 @@ pub async fn read_node(target: &TargetConfig, path: &str) -> Result<Option<Node>
     };
     filters.paths.retain(|p| !p.trim().is_empty());
     Ok(list_nodes(target, &filters).await?.into_iter().next())
+}
+
+fn normalize_path_prefix(prefix: &str) -> String {
+    let trimmed = prefix.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}/")
+    }
 }
 
 pub async fn list_work_items(
@@ -997,6 +1034,15 @@ async fn list_nodes_from_pool(
         }
         separated.push_unseparated(")");
     }
+    if let Some(prefix) = filters
+        .path_prefix
+        .as_deref()
+        .map(normalize_path_prefix)
+        .filter(|p| !p.is_empty())
+    {
+        query.push(" AND path LIKE ");
+        query.push_bind(format!("{prefix}%"));
+    }
     query.push(" ORDER BY node_id ASC");
 
     let wanted_tags: HashSet<String> = filters.tags.iter().map(|t| t.to_lowercase()).collect();
@@ -1015,6 +1061,71 @@ async fn list_nodes_from_pool(
         nodes.push(node);
     }
     Ok(nodes)
+}
+
+async fn list_files_from_pool(
+    pool: &SqlitePool,
+    target_id: i64,
+    filters: &FileFilters,
+) -> Result<Vec<ProjectedFile>, BrainError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT
+            f.path,
+            f.sha,
+            f.size_bytes,
+            n.node_type,
+            n.title,
+            wi.brain_id AS work_item_brain_id,
+            EXISTS (
+                SELECT 1 FROM backlinks b
+                WHERE b.target_id = f.target_id
+                  AND (b.source_path = f.path OR b.target_path = f.path)
+            ) AS has_graph_link
+         FROM files f
+         LEFT JOIN nodes n
+            ON n.target_id = f.target_id
+           AND n.path = f.path
+           AND n.is_virtual = 0
+         LEFT JOIN work_items wi
+            ON wi.target_id = f.target_id
+           AND wi.content_path = f.path
+         WHERE f.target_id = ",
+    );
+    query.push_bind(target_id);
+
+    if let Some(prefix) = filters
+        .path_prefix
+        .as_deref()
+        .map(normalize_path_prefix)
+        .filter(|p| !p.is_empty())
+    {
+        query.push(" AND f.path LIKE ");
+        query.push_bind(format!("{prefix}%"));
+    }
+    if filters.orphan_only {
+        query.push(
+            " AND NOT EXISTS (
+                SELECT 1 FROM backlinks b
+                WHERE b.target_id = f.target_id
+                  AND (b.source_path = f.path OR b.target_path = f.path)
+            )",
+        );
+    }
+    query.push(" ORDER BY f.path ASC");
+
+    let rows = query.build().fetch_all(pool).await.map_err(sqlx_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| ProjectedFile {
+            path: row.get::<String, _>("path"),
+            sha: row.get::<String, _>("sha"),
+            size_bytes: row.get::<i64, _>("size_bytes"),
+            node_type: row.get::<Option<String>, _>("node_type"),
+            title: row.get::<Option<String>, _>("title"),
+            is_work_item: row.get::<Option<String>, _>("work_item_brain_id").is_some(),
+            is_orphan_in_graph: row.get::<i64, _>("has_graph_link") == 0,
+        })
+        .collect())
 }
 
 async fn list_edges_from_pool(pool: &SqlitePool, target_id: i64) -> Result<Vec<Edge>, BrainError> {
@@ -1618,10 +1729,81 @@ node_types:
         .into_iter()
         .next()
         .unwrap();
+        let prefixed = list_nodes_from_pool(
+            &pool,
+            target_id,
+            &NodeFilters {
+                path_prefix: Some("concepts".to_string()),
+                include_virtual: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         assert_eq!(non_virtual.len(), 2);
         assert_eq!(tagged.len(), 2);
         assert_eq!(beta.title, "Beta");
+        assert_eq!(prefixed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_files_reports_structure_metadata() {
+        let pool = test_pool().await;
+        let config = BrainConfig::default();
+        let target = target("org", "repo-file-query", "main");
+        let target_id = ensure_target_id(&pool, &target).await.unwrap();
+        let snapshot = ProjectionSnapshot::from_raw_files(
+            &[
+                raw(
+                    "concepts/A.md",
+                    "sha-a",
+                    "---\ntype: concept\ntopic: Alpha\n---\nsee [B](./B.md)\n",
+                ),
+                raw(
+                    "concepts/B.md",
+                    "sha-b",
+                    "---\ntype: concept\ntopic: Beta\n---\nbody\n",
+                ),
+                raw(
+                    "runbooks/solo.md",
+                    "sha-c",
+                    "---\ntype: runbook\ntopic: Solo\n---\nbody\n",
+                ),
+            ],
+            &config,
+        );
+        persist_snapshot(&pool, target_id, &snapshot, "test-file-query")
+            .await
+            .unwrap();
+
+        let concepts = list_files_from_pool(
+            &pool,
+            target_id,
+            &FileFilters {
+                path_prefix: Some("concepts".to_string()),
+                orphan_only: false,
+            },
+        )
+        .await
+        .unwrap();
+        let orphan = list_files_from_pool(
+            &pool,
+            target_id,
+            &FileFilters {
+                path_prefix: None,
+                orphan_only: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(concepts.len(), 2);
+        assert_eq!(concepts[0].title.as_deref(), Some("Alpha"));
+        assert!(!concepts[0].is_orphan_in_graph);
+        assert_eq!(orphan.len(), 1);
+        assert_eq!(orphan[0].path, "runbooks/solo.md");
+        assert!(orphan[0].is_orphan_in_graph);
     }
 
     #[tokio::test]

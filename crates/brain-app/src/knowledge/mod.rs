@@ -11,6 +11,7 @@ mod graph_canvas;
 pub mod live_sync;
 mod orphan_banner;
 pub mod page;
+mod repo_structure;
 #[cfg(feature = "ssr")]
 pub mod runtime;
 pub mod types;

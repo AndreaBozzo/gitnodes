@@ -24,6 +24,33 @@ pub struct BrainFile {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepoFile {
+    pub path: String,
+    pub sha: String,
+    pub size_bytes: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub is_work_item: bool,
+    pub is_orphan_in_graph: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FileQueryFilters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub orphan_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteMode {
     Direct,
@@ -112,6 +139,52 @@ pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
         content,
         rendered_html,
     })
+}
+
+#[server(
+    ListBrainFiles,
+    "/api",
+    input = server_fn::codec::Json,
+    endpoint = "list_brain_files",
+)]
+pub async fn list_brain_files(filters: FileQueryFilters) -> Result<Vec<RepoFile>, ServerFnError> {
+    use crate::server::session;
+
+    let _ = session::require_authenticated().await.map_err(sfe)?;
+    let fallback = session::target_cfg().map_err(sfe)?;
+    let target = match (filters.org.clone(), filters.repo.clone()) {
+        (Some(org), Some(repo)) if !org.is_empty() && !repo.is_empty() => {
+            brain_domain::TargetConfig {
+                org,
+                repo,
+                branch: filters.branch.clone().unwrap_or(fallback.branch),
+            }
+        }
+        _ => fallback,
+    };
+    crate::server::projection::list_files(
+        &target,
+        &crate::server::projection::FileFilters {
+            path_prefix: filters.path_prefix,
+            orphan_only: filters.orphan_only,
+        },
+    )
+    .await
+    .map(|files| {
+        files
+            .into_iter()
+            .map(|file| RepoFile {
+                path: file.path,
+                sha: file.sha,
+                size_bytes: file.size_bytes,
+                node_type: file.node_type,
+                title: file.title,
+                is_work_item: file.is_work_item,
+                is_orphan_in_graph: file.is_orphan_in_graph,
+            })
+            .collect()
+    })
+    .map_err(sfe)
 }
 
 #[server(

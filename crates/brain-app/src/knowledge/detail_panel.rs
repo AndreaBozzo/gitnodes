@@ -20,6 +20,7 @@ pub fn DetailPanel(
     edges: StoredValue<Vec<Edge>>,
     selected: RwSignal<Option<u32>>,
     selected_path: RwSignal<Option<String>>,
+    active_path_prefix: RwSignal<Option<String>>,
     edit_mode: RwSignal<EditMode>,
     graph_version: RwSignal<u64>,
     config: brain_domain::BrainConfig,
@@ -208,7 +209,7 @@ pub fn DetailPanel(
                                 </div>
                                 <div class="flex items-center gap-3 mt-3 text-[11px]">
                                     <a
-                                        href=github_url
+                                        href=github_url.clone()
                                         target="_blank"
                                         rel="noreferrer"
                                         class="text-teal-300 hover:text-teal-200"
@@ -216,7 +217,11 @@ pub fn DetailPanel(
                                         "View on GitHub ↗"
                                     </a>
                                     <span class="text-slate-600">"·"</span>
-                                    <span class="text-slate-500 truncate">{path.clone()}</span>
+                                    <PathBreadcrumb
+                                        path=path.clone()
+                                        github_url=github_url.clone()
+                                        active_path_prefix=active_path_prefix
+                                    />
                                 </div>
                             </div>
                             <div class="flex items-center gap-2 shrink-0">
@@ -529,6 +534,65 @@ pub fn DetailPanel(
                 }
             }}
         </Show>
+    }
+}
+
+#[component]
+fn PathBreadcrumb(
+    path: String,
+    github_url: String,
+    active_path_prefix: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let parts: Vec<String> = path.split('/').map(ToOwned::to_owned).collect();
+    let last_index = parts.len().saturating_sub(1);
+
+    view! {
+        <nav class="min-w-0 flex flex-wrap items-center gap-1 text-slate-500" aria-label="File path">
+            {parts.into_iter().enumerate().map(move |(idx, part)| {
+                let is_file = idx == last_index;
+                let prefix = if is_file {
+                    String::new()
+                } else {
+                    let prefix = path
+                        .split('/')
+                        .take(idx + 1)
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    format!("{prefix}/")
+                };
+                view! {
+                    <>
+                        {(idx > 0).then(|| view! { <span class="text-slate-700">"/"</span> })}
+                        {if is_file {
+                            view! {
+                                <a
+                                    href=github_url.clone()
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    class="max-w-[220px] truncate font-mono text-slate-400 hover:text-teal-200"
+                                    title=path.clone()
+                                >
+                                    {part}
+                                </a>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <button
+                                    class="font-mono text-slate-500 hover:text-teal-200 focus:outline-none focus:ring-1 focus:ring-slate-600 rounded"
+                                    title=format!("Filter to {prefix}")
+                                    on:click={
+                                        let prefix = prefix.clone();
+                                        move |_| active_path_prefix.set(Some(prefix.clone()))
+                                    }
+                                >
+                                    {part}
+                                </button>
+                            }.into_any()
+                        }}
+                    </>
+                }
+            }).collect_view()}
+        </nav>
     }
 }
 
