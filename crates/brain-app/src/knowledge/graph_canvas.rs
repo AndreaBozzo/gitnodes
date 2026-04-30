@@ -14,6 +14,9 @@ type RafClosure = Closure<dyn FnMut(f64)>;
 const MIN_SCALE: f32 = 0.25;
 const MAX_SCALE: f32 = 4.0;
 const BASE_VIEW_SIZE: f32 = 100.0;
+const NODE_HOVER_BUMP: f32 = 0.5;
+const NODE_SELECTED_BUMP: f32 = 0.8;
+const NODE_HIT_TARGET_BUFFER: f32 = 0.35;
 #[cfg(feature = "hydrate")]
 const VIEWPORT_TWEEN_MS: f64 = 300.0;
 
@@ -105,6 +108,22 @@ impl Viewport {
             scale: self.scale + (to.scale - self.scale) * t,
         }
     }
+}
+
+fn node_visual_radius(base_r: f32, is_selected: bool, is_hovered: bool) -> f32 {
+    let bump = if is_selected {
+        NODE_SELECTED_BUMP
+    } else if is_hovered {
+        NODE_HOVER_BUMP
+    } else {
+        0.0
+    };
+
+    base_r + bump
+}
+
+fn node_hit_radius(base_r: f32) -> f32 {
+    base_r + NODE_SELECTED_BUMP + NODE_HIT_TARGET_BUFFER
 }
 
 fn clamp_viewport(viewport: Viewport, bounds: GraphBounds) -> Viewport {
@@ -559,16 +578,22 @@ pub fn GraphCanvas(
                                 cx=format!("{:.3}", x)
                                 cy=format!("{:.3}", y)
                                 r=move || {
-                                    let bump = if is_selected.get() { 0.8 }
-                                        else if is_hovered.get() { 0.5 }
-                                        else { 0.0 };
-                                    format!("{:.3}", base_r + bump)
+                                    format!(
+                                        "{:.3}",
+                                        node_visual_radius(base_r, is_selected.get(), is_hovered.get())
+                                    )
                                 }
                                 fill=accent.clone()
                                 fill-opacity=if is_tag { "0.55" } else { "0.92" }
                                 stroke={
                                     let accent = accent.clone();
-                                    move || if is_selected.get() { "#f8fafc".to_string() } else { accent.clone() }
+                                    move || {
+                                        if is_selected.get() {
+                                            "#f8fafc".to_string()
+                                        } else {
+                                            accent.clone()
+                                        }
+                                    }
                                 }
                                 stroke-width=move || if is_selected.get() { "0.5" } else { "0.18" }
                                 style={
@@ -587,6 +612,14 @@ pub fn GraphCanvas(
                                         }
                                     }
                                 }
+                                pointer-events="none"
+                            />
+                            <circle
+                                cx=format!("{:.3}", x)
+                                cy=format!("{:.3}", y)
+                                r=format!("{:.3}", node_hit_radius(base_r))
+                                fill="transparent"
+                                pointer-events="all"
                             />
                             {is_label_visible.then(|| view! {
                                 <text
@@ -729,6 +762,19 @@ mod tests {
 
         assert!(compact_label(title, false, false).len() < compact_label(title, false, true).len());
         assert!(compact_label(title, true, false).len() < compact_label(title, false, false).len());
+    }
+
+    #[test]
+    fn node_hit_radius_covers_all_visual_states() {
+        let base_r = 1.5;
+        let idle = node_visual_radius(base_r, false, false);
+        let hovered = node_visual_radius(base_r, false, true);
+        let selected = node_visual_radius(base_r, true, true);
+        let hit = node_hit_radius(base_r);
+
+        assert!(hit > idle);
+        assert!(hit > hovered);
+        assert!(hit > selected);
     }
 
     #[test]
