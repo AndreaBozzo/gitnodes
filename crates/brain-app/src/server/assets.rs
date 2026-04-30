@@ -13,7 +13,7 @@
 
 use axum::{
     body::Body,
-    extract::{OriginalUri, Path, State},
+    extract::{OriginalUri, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -37,7 +37,6 @@ pub async fn serve_asset(
     State(state): State<AssetProxyState>,
     session: Session,
     OriginalUri(uri): OriginalUri,
-    Path(path): Path<String>,
 ) -> Response {
     if !auth::is_authenticated(&session).await {
         return (StatusCode::UNAUTHORIZED, "not authenticated").into_response();
@@ -46,9 +45,16 @@ pub async fn serve_asset(
         return (StatusCode::UNAUTHORIZED, "no github token").into_response();
     };
 
-    // `path` is the `*path` capture, so it's the part after `/assets/`. Rebuild
-    // the repo-rooted path and refuse anything that escapes `assets/`.
-    let repo_path = format!("assets/{}", path.trim_start_matches('/'));
+    // Parse the asset sub-path from the full URI rather than via a `Path<String>`
+    // extractor. The handler is mounted under TWO nests (`/assets` and
+    // `/{org}/{repo}/assets`) — the multi-tenant nest puts `org` and `repo` in
+    // the path-param map alongside `*path`, which makes a single-field
+    // `Path<String>` deserialiser fail with a 500. Reading from `OriginalUri`
+    // sidesteps the extractor entirely.
+    let Some(asset_subpath) = subpath_after_assets(uri.path()) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
+    let repo_path = format!("assets/{}", asset_subpath.trim_start_matches('/'));
     if repo_path.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
@@ -136,6 +142,14 @@ async fn fetch_and_serve(
         .header(header::CACHE_CONTROL, "private, max-age=60")
         .body(Body::from(bytes))
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build response").into_response())
+}
+
+/// Extract the part of the URL after `/assets/`. Works for both the legacy
+/// `/assets/{path}` route and the multi-tenant `/{org}/{repo}/assets/{path}`
+/// route by anchoring on the literal `/assets/` separator. Returns `None` if
+/// the URL does not contain that segment (which would be a routing bug).
+fn subpath_after_assets(uri_path: &str) -> Option<&str> {
+    uri_path.split_once("/assets/").map(|(_, rest)| rest)
 }
 
 fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
@@ -283,6 +297,22 @@ mod tests {
         // `/assets/...` (no org/repo) must fall through so the caller uses the
         // env-configured target.
         assert!(target_from_path("/assets/2026/04/foo.png", &fallback).is_none());
+    }
+
+    #[test]
+    fn subpath_after_assets_handles_both_routes() {
+        // Legacy single-target route.
+        assert_eq!(
+            subpath_after_assets("/assets/2026/04/foo.png"),
+            Some("2026/04/foo.png")
+        );
+        // Multi-tenant route — `org` and `repo` segments are stripped.
+        assert_eq!(
+            subpath_after_assets("/Dritara-Digital/Brain/assets/2026/04/foo.png"),
+            Some("2026/04/foo.png")
+        );
+        // No `/assets/` segment at all → None (routing bug).
+        assert!(subpath_after_assets("/knowledge").is_none());
     }
 
     #[test]
