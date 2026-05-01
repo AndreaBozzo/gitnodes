@@ -12,6 +12,7 @@ use super::write_orchestrator::{
 };
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
+use brain_domain::TargetRef;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RenameResult {
@@ -27,6 +28,7 @@ pub struct RenameResult {
 /// rather than assembling a Git Data tree.
 #[server(RenameBrainFile, "/api", endpoint = "rename_brain_file")]
 pub async fn rename_brain_file(
+    target: TargetRef,
     old_path: String,
     new_path: String,
     old_sha: String,
@@ -49,8 +51,8 @@ pub async fn rename_brain_file(
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let author_email = format!("{}@users.noreply.github.com", user);
-    let target = session::target_cfg().map_err(sfe)?;
-    let storage = session::storage().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let storage = session::storage_for(target.clone()).map_err(sfe)?;
 
     let user_msg = sanitize_commit_message(commit_message.as_deref());
     let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
@@ -374,7 +376,11 @@ const MAX_ASSET_BYTES: usize = 2 * 1024 * 1024;
     input = server_fn::codec::Json,
     endpoint = "upload_asset",
 )]
-pub async fn upload_asset(filename: String, bytes: Vec<u8>) -> Result<String, ServerFnError> {
+pub async fn upload_asset(
+    target: TargetRef,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<String, ServerFnError> {
     use crate::server::session;
     use brain_storage::Storage;
 
@@ -413,7 +419,8 @@ pub async fn upload_asset(filename: String, bytes: Vec<u8>) -> Result<String, Se
     );
 
     let commit_msg = format!("Upload {asset_path} via Brain UI");
-    let storage = session::storage().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let storage = session::storage_for(target).map_err(sfe)?;
     match storage
         .upload_binary(
             &token,
@@ -518,12 +525,13 @@ fn short_content_hash(bytes: &[u8]) -> String {
 }
 
 #[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]
-pub async fn list_brain_folders() -> Result<Vec<String>, ServerFnError> {
+pub async fn list_brain_folders(target: TargetRef) -> Result<Vec<String>, ServerFnError> {
     use crate::server::session;
     use brain_storage::Storage;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = session::storage().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let storage = session::storage_for(target).map_err(sfe)?;
     storage.list_folders(&token).await.map_err(sfe)
 }
 

@@ -1,3 +1,5 @@
+#[cfg(feature = "hydrate")]
+use brain_domain::decode_path_segment;
 use leptos::prelude::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -24,7 +26,13 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
     {
         #[derive(serde::Deserialize)]
         struct SyncFailedPayload {
+            target: brain_domain::TargetRef,
             message: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct TargetPayload {
+            target: brain_domain::TargetRef,
         }
 
         use gloo_timers::callback::Timeout;
@@ -64,6 +72,41 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 "Live sync connection lost. Retrying in {:.1}s while showing the last known snapshot.",
                 delay_ms as f32 / 1_000.0
             )
+        }
+
+        fn active_target_from_location() -> Option<brain_domain::TargetRef> {
+            let path = web_sys::window()?.location().pathname().ok()?;
+            let parts: Vec<&str> = path.trim_start_matches('/').splitn(5, '/').collect();
+            match parts.as_slice() {
+                [org, repo, branch, "knowledge"] | [org, repo, branch, "admin"]
+                    if !org.is_empty() && !repo.is_empty() && !branch.is_empty() =>
+                {
+                    Some(brain_domain::TargetRef::new(
+                        *org,
+                        *repo,
+                        decode_path_segment(branch),
+                    ))
+                }
+                [org, repo, branch, "knowledge", _] | [org, repo, branch, "admin", _]
+                    if !org.is_empty() && !repo.is_empty() && !branch.is_empty() =>
+                {
+                    Some(brain_domain::TargetRef::new(
+                        *org,
+                        *repo,
+                        decode_path_segment(branch),
+                    ))
+                }
+                _ => None,
+            }
+        }
+
+        fn event_matches_active_target(raw: &str) -> bool {
+            let Some(active) = active_target_from_location() else {
+                return true;
+            };
+            serde_json::from_str::<TargetPayload>(raw)
+                .map(|payload| payload.target == active)
+                .unwrap_or(false)
         }
 
         let runtime = Rc::new(RefCell::new(LiveSyncRuntime::default()));
@@ -123,17 +166,30 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                     sync_status.set(SyncStatus::Fresh);
                 });
                 let on_updated: Closure<dyn FnMut(MessageEvent)> =
-                    Closure::new(move |_event: MessageEvent| {
+                    Closure::new(move |event: MessageEvent| {
+                        let Some(raw) = event.data().as_string() else {
+                            return;
+                        };
+                        if !event_matches_active_target(&raw) {
+                            return;
+                        }
                         graph_version.update(|v| *v += 1);
                         sync_status.set(SyncStatus::Fresh);
                     });
                 let on_failed: Closure<dyn FnMut(MessageEvent)> =
                     Closure::new(move |event: MessageEvent| {
-                        let message = event
-                            .data()
-                            .as_string()
-                            .and_then(|raw| serde_json::from_str::<SyncFailedPayload>(&raw).ok())
-                            .and_then(|payload| payload.message);
+                        let Some(raw) = event.data().as_string() else {
+                            return;
+                        };
+                        let Ok(payload) = serde_json::from_str::<SyncFailedPayload>(&raw) else {
+                            return;
+                        };
+                        if active_target_from_location()
+                            .is_some_and(|active| active != payload.target)
+                        {
+                            return;
+                        }
+                        let message = payload.message;
                         graph_version.update(|v| *v += 1);
                         sync_status.set(SyncStatus::Stale { message });
                     });
@@ -142,12 +198,24 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 // future iteration can demux on `brain_id` to refresh only the
                 // affected detail panel without a full graph reload.
                 let on_work_item: Closure<dyn FnMut(MessageEvent)> =
-                    Closure::new(move |_event: MessageEvent| {
+                    Closure::new(move |event: MessageEvent| {
+                        let Some(raw) = event.data().as_string() else {
+                            return;
+                        };
+                        if !event_matches_active_target(&raw) {
+                            return;
+                        }
                         graph_version.update(|v| *v += 1);
                         sync_status.set(SyncStatus::Fresh);
                     });
                 let on_binding: Closure<dyn FnMut(MessageEvent)> =
-                    Closure::new(move |_event: MessageEvent| {
+                    Closure::new(move |event: MessageEvent| {
+                        let Some(raw) = event.data().as_string() else {
+                            return;
+                        };
+                        if !event_matches_active_target(&raw) {
+                            return;
+                        }
                         graph_version.update(|v| *v += 1);
                         sync_status.set(SyncStatus::Fresh);
                     });

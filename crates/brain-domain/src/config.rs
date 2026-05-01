@@ -11,11 +11,146 @@ use thiserror::Error;
 use crate::work_items::{WorkItemKind, WorkItemState};
 
 /// The GitHub repository the app reads from and writes to.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// This is the runtime *config wrapper* — what `GithubStorage` and the config
+/// loader consume. It is built from env on boot and then propagated via Leptos
+/// context. For the *identity* contract that travels in URLs, server fn
+/// payloads, audit logs, and webhook payloads use [`TargetRef`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetConfig {
     pub org: String,
     pub repo: String,
     pub branch: String,
+}
+
+/// Canonical *identity* of a forge target. The narrow contract: org + repo +
+/// branch, hashable, serde-roundtrippable, validated. This is the type that
+/// belongs in URLs (`/{org}/{repo}/{branch}/...`), in mutation server fn
+/// payloads, in audit-log entries, and in webhook routing tables. Keep
+/// [`TargetConfig`] for runtime config consumed by storage clients; reach for
+/// `TargetRef` whenever the value crosses a trust boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TargetRef {
+    pub org: String,
+    pub repo: String,
+    pub branch: String,
+}
+
+/// Validation errors for [`TargetRef`]. Exposed so callers can surface a
+/// precise `BrainError` at HTTP boundaries instead of a generic 400.
+#[derive(Debug, Error)]
+pub enum TargetRefError {
+    #[error("target {field} is empty")]
+    Empty { field: &'static str },
+    #[error("target {field} contains forbidden segment {value:?}")]
+    PathTraversal { field: &'static str, value: String },
+    #[error("target {field} {value:?} contains a non-printable character")]
+    NonPrintable { field: &'static str, value: String },
+    #[error("target {field} {value:?} starts with a slash")]
+    LeadingSlash { field: &'static str, value: String },
+}
+
+impl TargetRef {
+    pub fn new(org: impl Into<String>, repo: impl Into<String>, branch: impl Into<String>) -> Self {
+        Self {
+            org: org.into(),
+            repo: repo.into(),
+            branch: branch.into(),
+        }
+    }
+
+    /// Reject empty/`..`/leading-slash/non-printable values across all three
+    /// components. The branch may contain `/` (e.g. `feature/foo`) — that's
+    /// valid on the forge — but `..` is rejected outright because every code
+    /// path that interpolates the branch into a URL or filesystem path would
+    /// otherwise be a traversal sink.
+    pub fn validate(&self) -> Result<(), TargetRefError> {
+        for (field, value) in [
+            ("org", &self.org),
+            ("repo", &self.repo),
+            ("branch", &self.branch),
+        ] {
+            if value.is_empty() {
+                return Err(TargetRefError::Empty { field });
+            }
+            if value.starts_with('/') {
+                return Err(TargetRefError::LeadingSlash {
+                    field,
+                    value: value.clone(),
+                });
+            }
+            if value.chars().any(|c| c.is_control()) {
+                return Err(TargetRefError::NonPrintable {
+                    field,
+                    value: value.clone(),
+                });
+            }
+            for segment in value.split('/') {
+                if segment == ".." || segment == "." {
+                    return Err(TargetRefError::PathTraversal {
+                        field,
+                        value: value.clone(),
+                    });
+                }
+            }
+            // org and repo cannot contain `/` at all — they are single
+            // segments on every forge we plan to support. Branch is allowed
+            // to be multi-segment (e.g. `feature/foo`).
+            if field != "branch" && value.contains('/') {
+                return Err(TargetRefError::PathTraversal {
+                    field,
+                    value: value.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for TargetRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}/{}", self.org, self.repo, self.branch)
+    }
+}
+
+impl From<TargetRef> for TargetConfig {
+    fn from(r: TargetRef) -> Self {
+        Self {
+            org: r.org,
+            repo: r.repo,
+            branch: r.branch,
+        }
+    }
+}
+
+impl From<&TargetRef> for TargetConfig {
+    fn from(r: &TargetRef) -> Self {
+        Self {
+            org: r.org.clone(),
+            repo: r.repo.clone(),
+            branch: r.branch.clone(),
+        }
+    }
+}
+
+impl From<&TargetConfig> for TargetRef {
+    fn from(c: &TargetConfig) -> Self {
+        Self {
+            org: c.org.clone(),
+            repo: c.repo.clone(),
+            branch: c.branch.clone(),
+        }
+    }
+}
+
+impl From<TargetConfig> for TargetRef {
+    fn from(c: TargetConfig) -> Self {
+        Self {
+            org: c.org,
+            repo: c.repo,
+            branch: c.branch,
+        }
+    }
 }
 
 /// Stable, hashable identity for a target repo. Used as the cache key in
@@ -28,11 +163,24 @@ impl TargetKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Build a `TargetKey` directly from its three parts. Both
+    /// `From<&TargetConfig>` and `From<&TargetRef>` route through here so the
+    /// format string lives in exactly one place.
+    pub fn from_parts(org: &str, repo: &str, branch: &str) -> Self {
+        Self(format!("{org}/{repo}/{branch}"))
+    }
 }
 
 impl From<&TargetConfig> for TargetKey {
     fn from(t: &TargetConfig) -> Self {
-        Self(format!("{}/{}/{}", t.org, t.repo, t.branch))
+        Self::from_parts(&t.org, &t.repo, &t.branch)
+    }
+}
+
+impl From<&TargetRef> for TargetKey {
+    fn from(t: &TargetRef) -> Self {
+        Self::from_parts(&t.org, &t.repo, &t.branch)
     }
 }
 
@@ -40,6 +188,40 @@ impl std::fmt::Display for TargetKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// Percent-encode a value for use as a single URL path segment.
+pub fn encode_path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Decode one URL path segment, leaving invalid escape sequences untouched.
+pub fn decode_path_segment(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &s[i + 1..i + 3];
+            if let Ok(v) = u8::from_str_radix(hex, 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// Builds GitHub REST + raw + blob URLs for a target repository. This is the
@@ -90,6 +272,16 @@ impl GithubClient {
 
     pub fn target_repo_url(&self) -> String {
         self.repo_url(&self.target.org, &self.target.repo)
+    }
+
+    pub fn branch_url(&self, branch: &str) -> String {
+        format!(
+            "{}/repos/{}/{}/branches/{}",
+            self.api_base,
+            self.target.org,
+            self.target.repo,
+            encode_path_segment(branch)
+        )
     }
 
     pub fn user_repos_url(&self) -> String {
@@ -1246,5 +1438,139 @@ node_types:
             c.user_repos_url(),
             "https://example.test/api/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member"
         );
+    }
+
+    #[test]
+    fn branch_url_encodes_branch_as_single_segment() {
+        let c = gh("acme", "kb", "main").with_api_base("https://example.test/api/");
+        assert_eq!(
+            c.branch_url("feature/foo"),
+            "https://example.test/api/repos/acme/kb/branches/feature%2Ffoo"
+        );
+    }
+
+    #[test]
+    fn path_segment_helpers_roundtrip_branch_values() {
+        let branch = "feature/foo";
+        assert_eq!(decode_path_segment(&encode_path_segment(branch)), branch);
+    }
+
+    // ----- TargetRef -----
+
+    #[test]
+    fn target_ref_validate_accepts_canonical_inputs() {
+        TargetRef::new("acme", "kb", "main").validate().unwrap();
+        // Branch with `/` is valid (e.g. feature branches).
+        TargetRef::new("acme", "kb", "feature/foo")
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn target_ref_validate_rejects_empty_components() {
+        let e = TargetRef::new("", "kb", "main").validate().unwrap_err();
+        assert!(matches!(e, TargetRefError::Empty { field: "org" }));
+        let e = TargetRef::new("acme", "", "main").validate().unwrap_err();
+        assert!(matches!(e, TargetRefError::Empty { field: "repo" }));
+        let e = TargetRef::new("acme", "kb", "").validate().unwrap_err();
+        assert!(matches!(e, TargetRefError::Empty { field: "branch" }));
+    }
+
+    #[test]
+    fn target_ref_validate_rejects_path_traversal() {
+        let e = TargetRef::new("acme", "kb", "..").validate().unwrap_err();
+        assert!(matches!(
+            e,
+            TargetRefError::PathTraversal {
+                field: "branch",
+                ..
+            }
+        ));
+        let e = TargetRef::new("acme", "kb", "feature/../escape")
+            .validate()
+            .unwrap_err();
+        assert!(matches!(e, TargetRefError::PathTraversal { .. }));
+        // Single-dot segment also forbidden in branch — leaks `current dir`
+        // semantics into URL/path interpolation.
+        let e = TargetRef::new("acme", "kb", ".").validate().unwrap_err();
+        assert!(matches!(e, TargetRefError::PathTraversal { .. }));
+    }
+
+    #[test]
+    fn target_ref_validate_rejects_slash_in_org_or_repo() {
+        // org and repo are single segments on every supported forge.
+        let e = TargetRef::new("ac/me", "kb", "main")
+            .validate()
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            TargetRefError::PathTraversal { field: "org", .. }
+        ));
+        let e = TargetRef::new("acme", "k/b", "main")
+            .validate()
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            TargetRefError::PathTraversal { field: "repo", .. }
+        ));
+    }
+
+    #[test]
+    fn target_ref_validate_rejects_leading_slash() {
+        let e = TargetRef::new("/acme", "kb", "main")
+            .validate()
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            TargetRefError::LeadingSlash { field: "org", .. }
+        ));
+    }
+
+    #[test]
+    fn target_ref_validate_rejects_control_chars() {
+        let e = TargetRef::new("acme", "kb", "main\n")
+            .validate()
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            TargetRefError::NonPrintable {
+                field: "branch",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn target_ref_and_target_config_produce_same_key() {
+        let r = TargetRef::new("acme", "kb", "main");
+        let c = TargetConfig {
+            org: "acme".into(),
+            repo: "kb".into(),
+            branch: "main".into(),
+        };
+        assert_eq!(TargetKey::from(&r), TargetKey::from(&c));
+        assert_eq!(TargetKey::from(&r).as_str(), "acme/kb/main");
+    }
+
+    #[test]
+    fn target_ref_roundtrips_through_target_config() {
+        let original = TargetRef::new("acme", "kb", "feature/foo");
+        let cfg: TargetConfig = (&original).into();
+        let back: TargetRef = (&cfg).into();
+        assert_eq!(original, back);
+    }
+
+    #[test]
+    fn target_ref_serde_roundtrip() {
+        let r = TargetRef::new("acme", "kb", "main");
+        let json = serde_json::to_string(&r).unwrap();
+        let back: TargetRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn target_ref_display_matches_target_key() {
+        let r = TargetRef::new("acme", "kb", "main");
+        assert_eq!(format!("{r}"), TargetKey::from(&r).as_str());
     }
 }

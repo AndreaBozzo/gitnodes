@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::knowledge::types::BrainFilePayload;
 #[cfg(feature = "ssr")]
 use brain_domain::BrainConfig;
+use brain_domain::TargetRef;
 
 #[cfg(feature = "ssr")]
 use super::sanitize_commit_message;
@@ -80,11 +81,12 @@ pub struct WriteCapabilities {
 }
 
 #[server(GetWriteCapabilities, "/api", endpoint = "get_write_capabilities")]
-pub async fn get_write_capabilities() -> Result<WriteCapabilities, ServerFnError> {
+pub async fn get_write_capabilities(target: TargetRef) -> Result<WriteCapabilities, ServerFnError> {
     use crate::server::session;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let storage = session::storage().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let storage = session::storage_for(target).map_err(sfe)?;
     let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
     Ok(WriteCapabilities {
         can_read: permissions.pull,
@@ -123,13 +125,13 @@ impl WriteResult {
 }
 
 #[server(ReadBrainFile, "/api", endpoint = "read_brain_file")]
-pub async fn read_brain_file(path: String) -> Result<BrainFile, ServerFnError> {
+pub async fn read_brain_file(target: TargetRef, path: String) -> Result<BrainFile, ServerFnError> {
     use crate::server::session;
     use brain_storage::Storage;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let cfg = session::target_cfg().map_err(sfe)?;
-    let storage = session::storage().map_err(sfe)?;
+    let cfg = super::target_from_ref(target).map_err(sfe)?;
+    let storage = session::storage_for(cfg.clone()).map_err(sfe)?;
     let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
 
     let (body, _fm) = crate::markdown::split_frontmatter(&content);
@@ -201,7 +203,10 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, S
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
 
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = match payload.target.clone() {
+        Some(target) => super::target_from_ref(target).map_err(sfe)?,
+        None => session::target_cfg().map_err(sfe)?,
+    };
     let config = crate::knowledge::config_loader::load(&target, &token).await;
 
     let file_path = match &payload.path {
@@ -250,7 +255,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, S
     };
     let commit_msg = sanitize_commit_message(payload.commit_message.as_deref()).unwrap_or(auto_msg);
 
-    let storage = session::storage().map_err(sfe)?;
+    let storage = session::storage_for(target.clone()).map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
 
     match save_file_permission_aware(
@@ -312,6 +317,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, S
 
 #[server(DeleteBrainFile, "/api", endpoint = "delete_brain_file")]
 pub async fn delete_brain_file(
+    target: TargetRef,
     path: String,
     sha: String,
     commit_message: Option<String>,
@@ -320,13 +326,13 @@ pub async fn delete_brain_file(
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     validate_markdown_path(&path).map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = sanitize_commit_message(commit_message.as_deref())
         .unwrap_or_else(|| format!("Delete {} via Brain UI", path));
 
-    let storage = session::storage().map_err(sfe)?;
+    let storage = session::storage_for(target.clone()).map_err(sfe)?;
     match delete_file_permission_aware(
         &storage,
         &token,
@@ -527,6 +533,7 @@ mod merge_frontmatter_tests {
 
     fn base_payload(node_type: String) -> BrainFilePayload {
         BrainFilePayload {
+            target: None,
             node_type,
             title: "T".into(),
             author: "alice".into(),

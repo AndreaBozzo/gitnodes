@@ -1,4 +1,4 @@
-use crate::config::BrainConfig;
+use crate::config::{BrainConfig, TargetRef};
 use crate::frontmatter::split_frontmatter;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -155,6 +155,11 @@ impl EditPrefill {
 /// Payload sent from the editor form to create/update a Brain file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BrainFilePayload {
+    /// Explicit target identity for this write. Legacy clients may omit this
+    /// while the single-target `/knowledge` compat page exists, but all
+    /// multi-tenant UI paths must send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetRef>,
     pub node_type: String,
     pub title: String,
     pub author: String,
@@ -241,6 +246,7 @@ mod tests {
         assert_eq!(p.body, "body");
 
         let payload = BrainFilePayload {
+            target: None,
             node_type: "concept".to_string(),
             title: "X".into(),
             author: "alice".into(),

@@ -2,15 +2,14 @@ use leptos::prelude::*;
 
 use super::components::TagBadge;
 use super::types::{Edge, EditMode, EditPrefill, Node};
-use crate::api::load_work_item_comments;
 use crate::api::{
-    AppConfig, BrainFile, WorkItemComment, WriteMode, assign_work_item, bind_work_item,
-    load_work_item_by_path, read_brain_file, transition_work_item,
+    BrainFile, WorkItemComment, WriteMode, assign_work_item, bind_work_item,
+    load_work_item_by_path, load_work_item_comments, read_brain_file, transition_work_item,
 };
 #[cfg(not(feature = "ssr"))]
 use crate::api::{delete_brain_file, rename_brain_file};
 use brain_domain::{
-    ExternalWorkItemBinding, ExternalWorkItemSystem, WorkItem, WorkItemState,
+    ExternalWorkItemBinding, ExternalWorkItemSystem, TargetRef, WorkItem, WorkItemState,
     WorkItemSystemOfRecord,
 };
 
@@ -25,6 +24,7 @@ pub fn DetailPanel(
     graph_version: RwSignal<u64>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
+    let active_target = StoredValue::new(expect_context::<TargetRef>());
     let config = StoredValue::new(config);
     let current = move || {
         selected
@@ -32,33 +32,31 @@ pub fn DetailPanel(
             .and_then(|id| nodes.with_value(|ns| ns.iter().find(|n| n.id == id).cloned()))
     };
 
-    let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
     let blob_base = Memo::new(move |_| {
-        app_config
-            .and_then(|r| r.get())
-            .and_then(|r| r.ok())
-            .map(|c| brain_domain::GithubClient::new(c.target).blob_base())
-            .unwrap_or_default()
+        let target: brain_domain::TargetConfig = active_target.get_value().into();
+        brain_domain::GithubClient::new(target).blob_base()
     });
 
     let current_path = Memo::new(move |_| selected_path.get().unwrap_or_default());
 
     let file = Resource::new(
         move || current_path.get(),
-        |path| async move {
+        move |path| async move {
             if path.is_empty() {
                 return Ok::<Option<BrainFile>, ServerFnError>(None);
             }
-            read_brain_file(path).await.map(Some)
+            read_brain_file(active_target.get_value(), path)
+                .await
+                .map(Some)
         },
     );
     let work_item = Resource::new(
         move || current_path.get(),
-        |path| async move {
+        move |path| async move {
             if path.is_empty() {
                 return Ok::<Option<WorkItem>, ServerFnError>(None);
             }
-            load_work_item_by_path(path).await
+            load_work_item_by_path(active_target.get_value(), path).await
         },
     );
 
@@ -140,7 +138,7 @@ pub fn DetailPanel(
             };
             delete_msg.set(String::new());
             leptos::task::spawn_local(async move {
-                match delete_brain_file(path_for_task, sha, msg).await {
+                match delete_brain_file(active_target.get_value(), path_for_task, sha, msg).await {
                     Ok(result) => {
                         if result.mode == WriteMode::Direct {
                             selected_path.set(None);
@@ -349,7 +347,7 @@ pub fn DetailPanel(
                                                                     if t.is_empty() { None } else { Some(t.to_string()) }
                                                                 };
                                                                 leptos::task::spawn_local(async move {
-                                                                    match rename_brain_file(old_p, target.clone(), sha, msg).await {
+                                                                    match rename_brain_file(active_target.get_value(), old_p, target.clone(), sha, msg).await {
                                                                         Ok(r) => {
                                                                             match r.write.mode {
                                                                                 WriteMode::Direct => {
@@ -598,6 +596,7 @@ fn PathBreadcrumb(
 
 #[component]
 fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
+    let active_target = expect_context::<TargetRef>();
     let state = work_item_state_label(&item.state);
     let state_class = work_item_state_class(&item.state);
     let system = work_item_system_label(&item.system_of_record);
@@ -690,11 +689,13 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
                 {binding_view}
             </dl>
             <WorkItemComments
+                target=active_target.clone()
                 brain_id=item.brain_id.clone()
                 binding=item.external_binding.clone()
                 graph_version=graph_version
             />
             <WorkItemControls
+                target=active_target.clone()
                 brain_id=brain_id
                 current_state=item.state.clone()
                 current_assignees=item.assignees.clone()
@@ -707,6 +708,7 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
 
 #[component]
 fn WorkItemComments(
+    target: TargetRef,
     brain_id: String,
     binding: Option<ExternalWorkItemBinding>,
     graph_version: RwSignal<u64>,
@@ -719,8 +721,8 @@ fn WorkItemComments(
     }
 
     let comments = Resource::new(
-        move || (brain_id.clone(), graph_version.get()),
-        |(brain_id, _)| async move { load_work_item_comments(brain_id).await },
+        move || (target.clone(), brain_id.clone(), graph_version.get()),
+        |(target, brain_id, _)| async move { load_work_item_comments(target, brain_id).await },
     );
 
     view! {
@@ -790,23 +792,30 @@ fn comment_card(comment: WorkItemComment) -> impl IntoView {
 /// `Resource`s (work_item, file) to refetch.
 #[component]
 fn WorkItemControls(
+    target: TargetRef,
     brain_id: String,
     current_state: WorkItemState,
     current_assignees: Vec<String>,
     current_binding: Option<ExternalWorkItemBinding>,
     graph_version: RwSignal<u64>,
 ) -> impl IntoView {
+    let target_for_state = target.clone();
+    let target_for_assign = target.clone();
+    let target_for_bind = target.clone();
     let state_action = Action::new(move |args: &(String, WorkItemState)| {
         let (id, state) = args.clone();
-        async move { transition_work_item(id, state).await }
+        let target = target_for_state.clone();
+        async move { transition_work_item(target, id, state).await }
     });
     let assign_action = Action::new(move |args: &(String, Vec<String>)| {
         let (id, list) = args.clone();
-        async move { assign_work_item(id, list).await }
+        let target = target_for_assign.clone();
+        async move { assign_work_item(target, id, list).await }
     });
     let bind_action = Action::new(move |args: &(String, Option<ExternalWorkItemBinding>)| {
         let (id, binding) = args.clone();
-        async move { bind_work_item(id, binding).await }
+        let target = target_for_bind.clone();
+        async move { bind_work_item(target, id, binding).await }
     });
 
     // Bump graph_version only for direct writes. PR fallback writes a branch,

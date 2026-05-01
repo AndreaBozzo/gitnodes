@@ -23,6 +23,14 @@ fn pool() -> Result<&'static SqlitePool, BrainError> {
         .ok_or_else(|| BrainError::other("Projection SQLite pool not initialized"))
 }
 
+/// Expose the projection pool to other server modules (`routing`,
+/// server fns that need to call `target_registry::register_or_get`). Returns
+/// `None` if `init` has not run yet — callers should treat that as "no
+/// per-target sticky state available; behave as the env-default deploy".
+pub fn pool_handle() -> Option<&'static SqlitePool> {
+    POOL.get()
+}
+
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("PRAGMA foreign_keys = ON")
         .execute(pool)
@@ -35,6 +43,37 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             repo TEXT NOT NULL,
             branch TEXT NOT NULL
         )",
+    )
+    .execute(pool)
+    .await?;
+    // 3.7B-α: extend `targets` with registration metadata so a deterministic
+    // sticky branch can be persisted at first sighting of (org, repo). The
+    // ALTERs are guarded by `pragma_table_info` because SQLite has no
+    // `ADD COLUMN IF NOT EXISTS`. UNIQUE(org, repo) enforces the stickiness
+    // invariant — one branch per repo per deployment, decided at first
+    // registration. Re-registration is a separate explicit mutation (β).
+    add_column_if_missing(
+        pool,
+        "targets",
+        "registered_at",
+        "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    )
+    .await?;
+    add_column_if_missing(pool, "targets", "registered_by", "TEXT").await?;
+    add_column_if_missing(
+        pool,
+        "targets",
+        "source",
+        "TEXT NOT NULL DEFAULT 'env_default'",
+    )
+    .await?;
+    add_column_if_missing(pool, "targets", "default_branch", "TEXT").await?;
+    sqlx::query("UPDATE targets SET default_branch = branch WHERE default_branch IS NULL")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_org_repo
+            ON targets(org, repo)",
     )
     .execute(pool)
     .await?;
@@ -164,6 +203,28 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// Idempotent `ALTER TABLE ADD COLUMN`. SQLite does not support
+/// `ADD COLUMN IF NOT EXISTS`, so we probe `pragma_table_info` first and
+/// skip when the column already exists. Used by the 3.7B-α migration to
+/// extend `targets` without re-creating the table.
+async fn add_column_if_missing(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    spec: &str,
+) -> Result<(), sqlx::Error> {
+    let existing: Vec<(String,)> =
+        sqlx::query_as(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .fetch_all(pool)
+            .await?;
+    if existing.iter().any(|(name,)| name == column) {
+        return Ok(());
+    }
+    let stmt = format!("ALTER TABLE {table} ADD COLUMN {column} {spec}");
+    sqlx::query(&stmt).execute(pool).await?;
     Ok(())
 }
 
@@ -624,12 +685,16 @@ struct SyncState {
 async fn ensure_target_id(pool: &SqlitePool, target: &TargetConfig) -> Result<i64, BrainError> {
     let key = TargetKey::from(target);
     sqlx::query(
-        "INSERT INTO targets (key, org, repo, branch) VALUES (?, ?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET org = excluded.org, repo = excluded.repo, branch = excluded.branch",
+        "INSERT INTO targets (key, org, repo, branch, default_branch) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(org, repo) DO UPDATE SET
+            key = excluded.key,
+            branch = excluded.branch,
+            default_branch = COALESCE(targets.default_branch, excluded.default_branch)",
     )
     .bind(key.as_str())
     .bind(&target.org)
     .bind(&target.repo)
+    .bind(&target.branch)
     .bind(&target.branch)
     .execute(pool)
     .await
@@ -1858,5 +1923,75 @@ node_types:
 
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0].brain_id, "task-a");
+    }
+
+    // ----- 3.7B-α migration -----
+
+    #[tokio::test]
+    async fn migrate_adds_registration_columns_to_targets() {
+        let pool = test_pool().await;
+        let cols: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info('targets')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let names: Vec<&str> = cols.iter().map(|(n,)| n.as_str()).collect();
+        for required in ["registered_at", "registered_by", "source", "default_branch"] {
+            assert!(
+                names.contains(&required),
+                "targets is missing column {required}; got {names:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_creates_unique_index_on_org_repo() {
+        let pool = test_pool().await;
+        // The UNIQUE index must reject a second row with the same (org, repo)
+        // even when the branch differs — this is the stickiness invariant.
+        let _ = ensure_target_id(&pool, &target("acme", "kb", "main"))
+            .await
+            .unwrap();
+        let res = sqlx::query("INSERT INTO targets (key, org, repo, branch) VALUES (?, ?, ?, ?)")
+            .bind("acme/kb/develop")
+            .bind("acme")
+            .bind("kb")
+            .bind("develop")
+            .execute(&pool)
+            .await;
+        assert!(res.is_err(), "expected UNIQUE(org, repo) violation, got Ok");
+    }
+
+    #[tokio::test]
+    async fn migrate_is_idempotent() {
+        // Running migrate twice on the same pool must not fail. ALTER TABLE
+        // ADD COLUMN would error on the second run without the
+        // `add_column_if_missing` guard.
+        let pool = test_pool().await;
+        migrate(&pool).await.expect("second migrate must succeed");
+        migrate(&pool).await.expect("third migrate must succeed");
+    }
+
+    #[tokio::test]
+    async fn ensure_target_id_seeds_registration_metadata() {
+        // Default seed for rows created via the existing ensure_target_id
+        // path (which doesn't yet know about the new columns) must be the
+        // schema default `'env_default'` and CURRENT_TIMESTAMP.
+        let pool = test_pool().await;
+        let _id = ensure_target_id(&pool, &target("acme", "kb", "main"))
+            .await
+            .unwrap();
+        let row: (String, Option<String>, String, Option<String>) = sqlx::query_as(
+            "SELECT source, registered_by, registered_at, default_branch FROM targets
+             WHERE org = ? AND repo = ?",
+        )
+        .bind("acme")
+        .bind("kb")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "env_default");
+        assert!(row.1.is_none());
+        assert!(!row.2.is_empty());
+        assert_eq!(row.3.as_deref(), Some("main"));
     }
 }

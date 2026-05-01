@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::knowledge::types::{Edge, Node};
-use brain_domain::BrainConfig;
+use brain_domain::{BrainConfig, TargetRef};
 
 #[cfg(feature = "ssr")]
 use super::sfe;
@@ -44,11 +44,14 @@ impl Default for NodeQueryFilters {
 /// reconciliation stays behind `RefreshBrainGraph`, webhook handling, and
 /// post-write rebuilds.
 #[server(ListNodes, "/api", input = server_fn::codec::Json, endpoint = "list_nodes")]
-pub async fn list_nodes(filters: NodeQueryFilters) -> Result<Vec<Node>, ServerFnError> {
+pub async fn list_nodes(
+    target: TargetRef,
+    filters: NodeQueryFilters,
+) -> Result<Vec<Node>, ServerFnError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     crate::server::projection::list_nodes(
         &target,
         &crate::server::projection::NodeFilters {
@@ -66,11 +69,11 @@ pub async fn list_nodes(filters: NodeQueryFilters) -> Result<Vec<Node>, ServerFn
 /// Read one projected node by repo-relative path, without fetching file
 /// content from GitHub. `ReadBrainFile` remains the markdown-content path.
 #[server(ReadNode, "/api", endpoint = "read_node")]
-pub async fn read_node(path: String) -> Result<Option<Node>, ServerFnError> {
+pub async fn read_node(target: TargetRef, path: String) -> Result<Option<Node>, ServerFnError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     crate::server::projection::read_node(&target, &path)
         .await
         .map_err(sfe)
@@ -92,17 +95,17 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError>
 /// projection from the forge. This is the explicit manual reindex path used
 /// for drift recovery until inbound webhooks/SSE exist.
 #[server(RefreshBrainGraph, "/api", endpoint = "refresh_brain_graph")]
-pub async fn refresh_brain_graph() -> Result<(), ServerFnError> {
+pub async fn refresh_brain_graph(target: TargetRef) -> Result<(), ServerFnError> {
     use crate::server::session;
     use brain_domain::TargetKey;
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     let key = TargetKey::from(&target);
     brain_storage::invalidate(&key);
     brain_storage::invalidate_template(&key);
     crate::knowledge::config_loader::invalidate(&key);
-    let storage = session::storage().map_err(sfe)?;
+    let storage = session::storage_for(target.clone()).map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     match crate::server::projection::rebuild(&storage, &token, &config, "manual_refresh").await {
         Ok(()) => {
@@ -126,8 +129,21 @@ pub async fn refresh_brain_graph() -> Result<(), ServerFnError> {
 pub struct AccessibleTarget {
     pub org: String,
     pub repo: String,
+    pub default_branch: String,
+    pub active_branch: String,
+    pub state: AccessibleTargetState,
     /// Whether `.brain-config.yml` was found at the repo root.
     pub has_brain_config: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessibleTargetState {
+    Accessible,
+    MissingConfig,
+    Forbidden,
+    BranchMissing,
+    ConfigInvalid,
 }
 
 /// Discover repos accessible to the current user that might host a Brain
@@ -142,7 +158,8 @@ pub struct AccessibleTarget {
 pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFnError> {
     use crate::server::session;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
     let http = session::github_http().map_err(sfe)?;
     let target = session::target_cfg().map_err(sfe)?;
 
@@ -180,19 +197,51 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
             repo: repo.clone(),
             branch: r.default_branch,
         };
+        if let Some(pool) = crate::server::projection::pool_handle()
+            && let Err(error) = crate::server::target_registry::remember_default_branch(
+                pool,
+                &org,
+                &repo,
+                &target.branch,
+                Some(&user),
+            )
+            .await
+        {
+            tracing::debug!(%error, %org, %repo, "failed to persist discovered default_branch");
+        }
+        let active_branch = match crate::server::projection::pool_handle() {
+            Some(pool) => crate::server::target_registry::lookup(pool, &org, &repo)
+                .await
+                .ok()
+                .flatten()
+                .map(|entry| entry.branch)
+                .unwrap_or_else(|| target.branch.clone()),
+            None => target.branch.clone(),
+        };
+        let active_target = TargetConfig {
+            org: target.org.clone(),
+            repo: target.repo.clone(),
+            branch: active_branch.clone(),
+        };
         let config_url = format!(
             "{}?ref={}",
-            brain_domain::GithubClient::new(target.clone()).contents_url(".brain-config.yml"),
-            target.branch
+            brain_domain::GithubClient::new(active_target.clone())
+                .contents_url(".brain-config.yml"),
+            active_target.branch
         );
+        let branch_url = brain_domain::GithubClient::new(active_target.clone())
+            .branch_url(&active_target.branch);
         let http = http.clone();
         let token = token.clone();
         set.spawn(async move {
-            let has_brain_config = check_brain_config_exists(&http, &token, &config_url).await;
+            let state = probe_brain_config(&http, &token, &config_url, &branch_url).await;
             AccessibleTarget {
                 org,
                 repo,
-                has_brain_config,
+                default_branch: target.branch,
+                active_branch,
+                has_brain_config: state == AccessibleTargetState::Accessible,
+                state,
             }
         });
     }
@@ -212,11 +261,61 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
 /// This works for private repos, unlike raw.githubusercontent.com where bearer
 /// token behavior is inconsistent.
 #[cfg(feature = "ssr")]
-async fn check_brain_config_exists(
+async fn probe_brain_config(
     http: &brain_storage::GithubHttp,
     token: &str,
-    url: &str,
-) -> bool {
+    config_url: &str,
+    branch_url: &str,
+) -> AccessibleTargetState {
+    let Ok(response) = http.get(config_url, token).send().await else {
+        return AccessibleTargetState::Forbidden;
+    };
+    let status = response.status();
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::UNAUTHORIZED {
+        return AccessibleTargetState::Forbidden;
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return if branch_exists(http, token, branch_url).await {
+            AccessibleTargetState::MissingConfig
+        } else {
+            AccessibleTargetState::BranchMissing
+        };
+    }
+    if !status.is_success() {
+        return AccessibleTargetState::Forbidden;
+    }
+    #[derive(serde::Deserialize)]
+    struct ContentsResponse {
+        content: String,
+        #[serde(default)]
+        encoding: Option<String>,
+    }
+    let Ok(body) = response.json::<ContentsResponse>().await else {
+        return AccessibleTargetState::ConfigInvalid;
+    };
+    if body.encoding.as_deref() != Some("base64") {
+        return AccessibleTargetState::ConfigInvalid;
+    }
+    use base64::Engine;
+    let compact: String = body
+        .content
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(compact) else {
+        return AccessibleTargetState::ConfigInvalid;
+    };
+    let Ok(raw) = String::from_utf8(decoded) else {
+        return AccessibleTargetState::ConfigInvalid;
+    };
+    match BrainConfig::parse(&raw) {
+        Ok(_) => AccessibleTargetState::Accessible,
+        Err(_) => AccessibleTargetState::ConfigInvalid,
+    }
+}
+
+#[cfg(feature = "ssr")]
+async fn branch_exists(http: &brain_storage::GithubHttp, token: &str, url: &str) -> bool {
     http.get(url, token)
         .send()
         .await
@@ -224,34 +323,53 @@ async fn check_brain_config_exists(
         .unwrap_or(false)
 }
 
-/// Load the brain graph for an explicit `org/repo` target (used by the
-/// multi-tenant `/{org}/{repo}/knowledge` route). The `branch` parameter
-/// defaults to the server-configured branch when empty.
+#[cfg(feature = "ssr")]
+fn validate_legacy_target_parts(org: &str, repo: &str) -> Result<(), ServerFnError> {
+    TargetRef::new(org, repo, "_")
+        .validate()
+        .map_err(|e| ServerFnError::new(format!("invalid target: {e}")))
+}
+
+#[server(ResolveLegacyTarget, "/api", endpoint = "resolve_legacy_target")]
+pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRef, ServerFnError> {
+    use crate::server::session;
+
+    validate_legacy_target_parts(&org, &repo)?;
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let http = session::github_http().map_err(sfe)?;
+    let pool = crate::server::projection::pool_handle()
+        .ok_or_else(|| ServerFnError::new("Projection SQLite pool not initialized"))?;
+    let entry = crate::server::target_registry::register_or_get(
+        pool,
+        &http,
+        &token,
+        &org,
+        &repo,
+        Some(&user),
+    )
+    .await
+    .map_err(sfe)?;
+    let target = entry.target_ref();
+    target
+        .validate()
+        .map_err(|e| ServerFnError::new(format!("invalid target: {e}")))?;
+    Ok(target)
+}
+
+/// Load the brain graph for an explicit canonical target.
 #[server(
     LoadBrainGraphForTarget,
     "/api",
     endpoint = "load_brain_graph_for_target"
 )]
 pub async fn load_brain_graph_for_target(
-    org: String,
-    repo: String,
-    branch: String,
+    target: TargetRef,
 ) -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
     use crate::server::session;
-    use brain_domain::TargetConfig;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let fallback = session::target_cfg().map_err(sfe)?;
-    let resolved_branch = if branch.is_empty() {
-        fallback.branch.clone()
-    } else {
-        branch
-    };
-    let target = TargetConfig {
-        org,
-        repo,
-        branch: resolved_branch,
-    };
+    let target = super::target_from_ref(target).map_err(sfe)?;
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     crate::server::projection::load_graph(&storage, &token, &config)
@@ -265,26 +383,11 @@ pub async fn load_brain_graph_for_target(
     "/api",
     endpoint = "load_brain_config_for_target"
 )]
-pub async fn load_brain_config_for_target(
-    org: String,
-    repo: String,
-    branch: String,
-) -> Result<BrainConfig, ServerFnError> {
+pub async fn load_brain_config_for_target(target: TargetRef) -> Result<BrainConfig, ServerFnError> {
     use crate::server::session;
-    use brain_domain::TargetConfig;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let fallback = session::target_cfg().map_err(sfe)?;
-    let resolved_branch = if branch.is_empty() {
-        fallback.branch.clone()
-    } else {
-        branch
-    };
-    let target = TargetConfig {
-        org,
-        repo,
-        branch: resolved_branch,
-    };
+    let target = super::target_from_ref(target).map_err(sfe)?;
     let cfg = crate::knowledge::config_loader::load(&target, &token).await;
     Ok((*cfg).clone())
 }

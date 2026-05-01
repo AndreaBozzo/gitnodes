@@ -1,35 +1,57 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
-use brain_domain::{BrainConfig, ViewSpec, slugify_view_name};
+use brain_domain::{BrainConfig, TargetRef, ViewSpec, decode_path_segment, slugify_view_name};
 
-use crate::api::{WriteMode, list_views, load_brain_config, save_views};
+use crate::api::{
+    WriteMode, list_views, load_brain_config_for_target, resolve_legacy_target, save_views,
+};
 
 #[component]
 pub fn ViewsAdminPage() -> impl IntoView {
     let params = use_params_map();
     let target_prefix = Memo::new(move |_| {
-        let (org, repo) = params.with(|p| {
+        let (org, repo, branch) = params.with(|p| {
             (
                 p.get("org").unwrap_or_default().to_string(),
                 p.get("repo").unwrap_or_default().to_string(),
+                p.get("branch").unwrap_or_default().to_string(),
             )
         });
         if org.is_empty() || repo.is_empty() {
             String::new()
-        } else {
+        } else if branch.is_empty() {
             format!("/{org}/{repo}")
+        } else {
+            format!("/{org}/{repo}/{branch}")
         }
+    });
+    let target = Memo::new(move |_| {
+        params.with(|p| {
+            (
+                p.get("org").unwrap_or_default().to_string(),
+                p.get("repo").unwrap_or_default().to_string(),
+                p.get("branch").unwrap_or_default().to_string(),
+            )
+        })
     });
     let reload_tick = RwSignal::new(0u32);
     let outcome_msg = RwSignal::new(Option::<OutcomeBanner>::None);
 
     let initial = Resource::new_blocking(
-        move || reload_tick.get(),
-        |_| async move {
-            let cfg = load_brain_config().await?;
-            let views = list_views().await?;
-            Ok::<_, leptos::prelude::ServerFnError>((cfg, views))
+        move || (reload_tick.get(), target.get()),
+        |(_, (org, repo, branch))| async move {
+            let target = if org.is_empty() || repo.is_empty() {
+                let app = crate::api::get_app_config().await?;
+                TargetRef::from(app.target)
+            } else if branch.is_empty() {
+                resolve_legacy_target(org, repo).await?
+            } else {
+                TargetRef::new(org, repo, decode_path_segment(&branch))
+            };
+            let cfg = load_brain_config_for_target(target.clone()).await?;
+            let views = list_views(target.clone()).await?;
+            Ok::<_, leptos::prelude::ServerFnError>((target, cfg, views))
         },
     );
 
@@ -68,8 +90,9 @@ pub fn ViewsAdminPage() -> impl IntoView {
                     <p class="text-xs text-slate-500">"loading…"</p>
                 }>
                     {move || initial.get().map(|res| match res {
-                        Ok((cfg, views)) => view! {
+                        Ok((target, cfg, views)) => view! {
                             <ViewsEditor
+                                target=target
                                 cfg=cfg
                                 initial_views=views
                                 outcome_msg=outcome_msg
@@ -88,6 +111,7 @@ pub fn ViewsAdminPage() -> impl IntoView {
 
 #[component]
 fn ViewsEditor(
+    target: TargetRef,
     cfg: BrainConfig,
     initial_views: Vec<ViewSpec>,
     outcome_msg: RwSignal<Option<OutcomeBanner>>,
@@ -103,7 +127,8 @@ fn ViewsEditor(
 
     let save = Action::new(move |payload: &Vec<ViewSpec>| {
         let payload = payload.clone();
-        async move { save_views(payload).await }
+        let target = target.clone();
+        async move { save_views(target, payload).await }
     });
 
     Effect::new(move |_| {

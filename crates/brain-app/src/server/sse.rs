@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 use tokio::sync::broadcast;
 use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 
+use brain_domain::TargetRef;
+
 static EVENT_BUS: OnceLock<EventBus> = OnceLock::new();
 
 /// Register the process-wide event bus. Call once during startup, after
@@ -31,19 +33,21 @@ pub fn global() -> Option<&'static EventBus> {
 #[derive(Clone, Debug)]
 pub enum BrainEvent {
     /// A push to the target repo was processed and the projection was rebuilt.
-    GraphUpdated,
+    GraphUpdated { target: TargetRef },
     /// The background sync worker failed and can provide an operator-facing reason.
-    SyncFailed { message: String },
+    SyncFailed { target: TargetRef, message: String },
     /// A single work item mutated (state, assignees, labels). Carries enough
     /// identity for the client to refetch a single record without a full graph
     /// reload, but clients that don't handle it can fall back to bumping the
     /// generic graph version.
     WorkItemUpdated {
+        target: TargetRef,
         brain_id: String,
         content_path: Option<String>,
     },
     /// The external binding of a work item changed (set, cleared, or rebound).
     BindingUpdated {
+        target: TargetRef,
         brain_id: String,
         content_path: Option<String>,
     },
@@ -52,7 +56,7 @@ pub enum BrainEvent {
 impl BrainEvent {
     fn as_event_name(&self) -> &'static str {
         match self {
-            BrainEvent::GraphUpdated => "graph_updated",
+            BrainEvent::GraphUpdated { .. } => "graph_updated",
             BrainEvent::SyncFailed { .. } => "sync_failed",
             BrainEvent::WorkItemUpdated { .. } => "work_item_updated",
             BrainEvent::BindingUpdated { .. } => "binding_updated",
@@ -61,18 +65,23 @@ impl BrainEvent {
 
     fn as_event_data(&self) -> String {
         match self {
-            BrainEvent::GraphUpdated => "{}".to_string(),
-            BrainEvent::SyncFailed { message } => {
-                serde_json::json!({ "message": message }).to_string()
+            BrainEvent::GraphUpdated { target } => {
+                serde_json::json!({ "target": target }).to_string()
+            }
+            BrainEvent::SyncFailed { target, message } => {
+                serde_json::json!({ "target": target, "message": message }).to_string()
             }
             BrainEvent::WorkItemUpdated {
+                target,
                 brain_id,
                 content_path,
             }
             | BrainEvent::BindingUpdated {
+                target,
                 brain_id,
                 content_path,
             } => serde_json::json!({
+                "target": target,
                 "brain_id": brain_id,
                 "content_path": content_path,
             })

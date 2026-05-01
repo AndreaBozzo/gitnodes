@@ -8,13 +8,14 @@ use sha2::Sha256;
 
 use super::sse::EventBus;
 use crate::server::sse::BrainEvent;
-use brain_domain::{BrainConfig, WorkItem, WorkItemState, WorkItemSystemOfRecord};
+use brain_domain::{
+    BrainConfig, TargetConfig, TargetRef, WorkItem, WorkItemState, WorkItemSystemOfRecord,
+};
 
 /// Axum state threaded into the webhook handler.
 #[derive(Clone)]
 pub struct WebhookState {
     pub bus: EventBus,
-    pub target: brain_domain::TargetConfig,
     pub http: brain_storage::GithubHttp,
     /// Shared secret configured in the GitHub webhook settings.
     /// When `None` the endpoint is open — suitable for local dev, dangerous in prod.
@@ -52,17 +53,12 @@ pub async fn handle(
             tracing::debug!("webhook push: payload missing repository/ref — ignored");
             return StatusCode::ACCEPTED;
         };
-        if !push_matches_target(&payload, &state.target) {
-            tracing::debug!(
-                payload_repo = %payload.repository.full_name,
-                payload_ref = %payload.r#ref,
-                "webhook push: target mismatch — ignored"
-            );
+        let Some(target) = resolve_push_target(&payload).await else {
             return StatusCode::ACCEPTED;
-        }
+        };
         let state_clone = state.clone();
         tokio::spawn(async move {
-            handle_push(state_clone).await;
+            handle_push(state_clone, target).await;
         });
     } else if event_type == "issues" || event_type == "pull_request" {
         let Some(payload) = parse_item_payload(&body, event_type) else {
@@ -72,13 +68,14 @@ pub async fn handle(
             );
             return StatusCode::ACCEPTED;
         };
-        if !item_matches_target(&payload, &state.target) {
+        let Some(target) = resolve_repo_target(&payload.repo_full_name, "webhook_item").await
+        else {
             return StatusCode::ACCEPTED;
-        }
+        };
         let state_clone = state.clone();
         let payload_clone = payload;
         tokio::spawn(async move {
-            handle_item_event(state_clone, payload_clone).await;
+            handle_item_event(state_clone, payload_clone, target).await;
         });
     }
 
@@ -100,20 +97,87 @@ fn parse_push_payload(body: &[u8]) -> Option<PushPayload> {
     serde_json::from_slice(body).ok()
 }
 
-/// True iff the push's `ref` and `repository.full_name` line up with the
-/// configured target. Rejects pushes for sibling branches or unrelated repos
-/// that happen to share the endpoint and secret.
-fn push_matches_target(payload: &PushPayload, target: &brain_domain::TargetConfig) -> bool {
-    let expected_ref = format!("refs/heads/{}", target.branch);
-    let expected_repo = format!("{}/{}", target.org, target.repo);
-    payload.r#ref == expected_ref && payload.repository.full_name == expected_repo
+fn split_repo_full_name(full_name: &str) -> Option<(&str, &str)> {
+    full_name.split_once('/')
 }
 
-async fn handle_push(state: WebhookState) {
+fn branch_from_ref(r#ref: &str) -> Option<&str> {
+    r#ref.strip_prefix("refs/heads/")
+}
+
+fn target_ref_from_push(payload: &PushPayload) -> Option<TargetRef> {
+    let (org, repo) = split_repo_full_name(&payload.repository.full_name)?;
+    let branch = branch_from_ref(&payload.r#ref)?;
+    let target = TargetRef::new(org, repo, branch);
+    target.validate().ok()?;
+    Some(target)
+}
+
+async fn resolve_push_target(payload: &PushPayload) -> Option<TargetRef> {
+    let payload_target = target_ref_from_push(payload)?;
+    let configured = resolve_repo_target(&payload.repository.full_name, "webhook_push").await?;
+    if configured.branch != payload_target.branch {
+        crate::server::audit::log(
+            "webhook_unconfigured_target",
+            Some("github-webhook"),
+            &format!(
+                "push {} ignored; configured branch is {}",
+                payload_target, configured.branch
+            ),
+        )
+        .await;
+        tracing::debug!(
+            payload_target = %payload_target,
+            configured_target = %configured,
+            "webhook push: branch mismatch — ignored"
+        );
+        return None;
+    }
+    Some(configured)
+}
+
+async fn resolve_repo_target(repo_full_name: &str, reason: &str) -> Option<TargetRef> {
+    let (org, repo) = split_repo_full_name(repo_full_name)?;
+    let Some(pool) = crate::server::projection::pool_handle() else {
+        crate::server::audit::log(
+            "webhook_unconfigured_target",
+            Some("github-webhook"),
+            &format!("{reason} {repo_full_name}: projection pool unavailable"),
+        )
+        .await;
+        return None;
+    };
+    match crate::server::target_registry::lookup(pool, org, repo).await {
+        Ok(Some(entry)) => Some(entry.target_ref()),
+        Ok(None) => {
+            crate::server::audit::log(
+                "webhook_unconfigured_target",
+                Some("github-webhook"),
+                &format!("{reason} {repo_full_name}: target not registered"),
+            )
+            .await;
+            tracing::debug!(repo = %repo_full_name, "webhook: target not registered — ignored");
+            None
+        }
+        Err(error) => {
+            crate::server::audit::log(
+                "webhook_target_lookup_error",
+                Some("github-webhook"),
+                &format!("{reason} {repo_full_name}: {error}"),
+            )
+            .await;
+            tracing::warn!(%error, repo = %repo_full_name, "webhook: target lookup failed");
+            None
+        }
+    }
+}
+
+async fn handle_push(state: WebhookState, target: TargetRef) {
     use brain_domain::TargetKey;
     use brain_storage::GithubStorage;
 
-    let storage = GithubStorage::new(state.http.clone(), state.target.clone());
+    let target_cfg = TargetConfig::from(&target);
+    let storage = GithubStorage::new(state.http.clone(), target_cfg);
 
     // We need a token for the GitHub API calls. Webhooks arrive without a user
     // session, so we authenticate as the GitHub App (preferred) or fall back to
@@ -126,6 +190,7 @@ async fn handle_push(state: WebhookState) {
                 "webhook push: no GitHub App or PAT credentials — skipping projection rebuild"
             );
             state.bus.send(BrainEvent::SyncFailed {
+                    target,
                     message: "Background sync skipped: no GitHub credentials configured on the server. Showing the last known snapshot until a manual refresh succeeds.".to_string(),
                 });
             return;
@@ -133,6 +198,7 @@ async fn handle_push(state: WebhookState) {
         Err(error) => {
             tracing::warn!(%error, "webhook push: token resolution failed — skipping projection rebuild");
             state.bus.send(BrainEvent::SyncFailed {
+                    target,
                     message: format!("Background sync skipped: failed to obtain a GitHub token ({error}). Showing the last known snapshot until a manual refresh succeeds."),
                 });
             return;
@@ -154,11 +220,12 @@ async fn handle_push(state: WebhookState) {
     match crate::server::projection::rebuild(&storage, &token, &config, "webhook_push").await {
         Ok(()) => {
             tracing::info!(target = %key, "webhook push: projection rebuilt");
-            state.bus.send(BrainEvent::GraphUpdated);
+            state.bus.send(BrainEvent::GraphUpdated { target });
         }
         Err(error) => {
             tracing::warn!(target = %key, error = %error, "webhook push: projection rebuild failed");
             state.bus.send(BrainEvent::SyncFailed {
+                target,
                 message: format!(
                     "Background sync failed after the latest GitHub push: {error}. Showing the last successful snapshot."
                 ),
@@ -266,19 +333,21 @@ fn parse_item_payload(body: &[u8], event_type: &str) -> Option<ItemEventPayload>
     }
 }
 
-fn item_matches_target(payload: &ItemEventPayload, target: &brain_domain::TargetConfig) -> bool {
+#[cfg_attr(not(test), allow(dead_code))]
+fn item_matches_target(payload: &ItemEventPayload, target: &TargetRef) -> bool {
     payload.repo_full_name == format!("{}/{}", target.org, target.repo)
 }
 
-async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
+async fn handle_item_event(state: WebhookState, payload: ItemEventPayload, target: TargetRef) {
     use brain_domain::TargetKey;
     use brain_storage::GithubStorage;
 
     // The binding lookup uses the project as `{org}/{repo}` to stay
     // forge-agnostic with how `WorkItemControls` writes it from the UI.
-    let project = format!("{}/{}", state.target.org, state.target.repo);
+    let target_cfg = TargetConfig::from(&target);
+    let project = format!("{}/{}", target.org, target.repo);
     let bound = match crate::server::projection::find_work_item_by_external(
-        &state.target,
+        &target_cfg,
         "github",
         &project,
         &payload.item_key,
@@ -307,6 +376,7 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
                 "webhook item event: no GitHub credentials — emitting cache-bump event without rebuild"
             );
             state.bus.send(BrainEvent::WorkItemUpdated {
+                target,
                 brain_id: bound.0,
                 content_path: bound.1,
             });
@@ -315,6 +385,7 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
         Err(error) => {
             tracing::warn!(%error, "webhook item event: token resolution failed — emitting cache-bump only");
             state.bus.send(BrainEvent::WorkItemUpdated {
+                target,
                 brain_id: bound.0,
                 content_path: bound.1,
             });
@@ -322,7 +393,7 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
         }
     };
 
-    let storage = GithubStorage::new(state.http.clone(), state.target.clone());
+    let storage = GithubStorage::new(state.http.clone(), target_cfg.clone());
     let key = TargetKey::from(storage.target());
     brain_storage::invalidate(&key);
     brain_storage::invalidate_template(&key);
@@ -337,7 +408,7 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
         // or push event will reconcile.
     }
 
-    match crate::server::projection::load_work_item_by_brain_id(&state.target, &bound.0).await {
+    match crate::server::projection::load_work_item_by_brain_id(&target_cfg, &bound.0).await {
         Ok(Some(item)) => {
             let next_state = provider_state_for_item(&item, &payload, &config);
             let next_assignees = (item.system_of_record != WorkItemSystemOfRecord::Brain)
@@ -345,7 +416,7 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
             if let Err(error) = crate::api::apply_provider_work_item_update(
                 &token,
                 "github-webhook",
-                &state.target,
+                &target_cfg,
                 &storage,
                 &bound.0,
                 next_state,
@@ -379,6 +450,7 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload) {
     }
 
     state.bus.send(BrainEvent::WorkItemUpdated {
+        target,
         brain_id: bound.0,
         content_path: bound.1,
     });
@@ -483,42 +555,31 @@ mod tests {
         assert!(!verify_signature(b"secret", &headers, b"body"));
     }
 
-    fn target(org: &str, repo: &str, branch: &str) -> brain_domain::TargetConfig {
-        brain_domain::TargetConfig {
-            org: org.to_string(),
-            repo: repo.to_string(),
-            branch: branch.to_string(),
-        }
-    }
-
     #[test]
-    fn push_matching_target_branch_and_repo_is_accepted() {
+    fn push_payload_extracts_target_ref() {
         let body = br#"{"ref":"refs/heads/main","repository":{"full_name":"acme/brain"}}"#;
         let payload = parse_push_payload(body).unwrap();
-        assert!(push_matches_target(
-            &payload,
-            &target("acme", "brain", "main")
-        ));
+        assert_eq!(
+            target_ref_from_push(&payload),
+            Some(TargetRef::new("acme", "brain", "main"))
+        );
     }
 
     #[test]
-    fn push_to_other_branch_is_rejected() {
-        let body = br#"{"ref":"refs/heads/feature","repository":{"full_name":"acme/brain"}}"#;
+    fn push_payload_preserves_branch_slashes() {
+        let body = br#"{"ref":"refs/heads/feature/foo","repository":{"full_name":"acme/brain"}}"#;
         let payload = parse_push_payload(body).unwrap();
-        assert!(!push_matches_target(
-            &payload,
-            &target("acme", "brain", "main")
-        ));
+        assert_eq!(
+            target_ref_from_push(&payload),
+            Some(TargetRef::new("acme", "brain", "feature/foo"))
+        );
     }
 
     #[test]
-    fn push_from_sibling_repo_sharing_secret_is_rejected() {
-        let body = br#"{"ref":"refs/heads/main","repository":{"full_name":"acme/other"}}"#;
+    fn non_branch_push_has_no_target_ref() {
+        let body = br#"{"ref":"refs/tags/v1","repository":{"full_name":"acme/brain"}}"#;
         let payload = parse_push_payload(body).unwrap();
-        assert!(!push_matches_target(
-            &payload,
-            &target("acme", "brain", "main")
-        ));
+        assert!(target_ref_from_push(&payload).is_none());
     }
 
     #[test]
@@ -569,7 +630,7 @@ mod tests {
         };
         assert!(!item_matches_target(
             &payload,
-            &target("acme", "brain", "main")
+            &TargetRef::new("acme", "brain", "main")
         ));
     }
 
@@ -585,7 +646,7 @@ mod tests {
         };
         assert!(item_matches_target(
             &payload,
-            &target("acme", "brain", "main")
+            &TargetRef::new("acme", "brain", "main")
         ));
     }
 

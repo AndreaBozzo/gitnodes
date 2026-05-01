@@ -13,7 +13,8 @@ mod work_items;
 
 pub use config::{
     BrainConfig, BrandConfig, ConfigError, GithubClient, NodeTypeSpec, TargetConfig, TargetKey,
-    ViewSpec, slugify_view_name,
+    TargetRef, TargetRefError, ViewSpec, decode_path_segment, encode_path_segment,
+    slugify_view_name,
 };
 pub use error::BrainError;
 pub use frontmatter::split_frontmatter;

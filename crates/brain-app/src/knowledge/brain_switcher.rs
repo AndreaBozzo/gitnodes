@@ -10,10 +10,11 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    FileQueryFilters, list_accessible_targets, list_brain_files, load_brain_config_for_target,
-    load_brain_graph_for_target,
+    AccessibleTargetState, FileQueryFilters, list_accessible_targets, list_brain_files,
+    load_brain_config_for_target, load_brain_graph_for_target, resolve_legacy_target,
 };
 use crate::app::{GraphVersion, SyncStatusSignal};
+use brain_domain::{TargetRef, decode_path_segment, encode_path_segment};
 
 // ---------------------------------------------------------------------------
 // KnowledgePageForTarget
@@ -27,29 +28,32 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
 
     let org = Memo::new(move |_| params.with(|p| p.get("org").unwrap_or_default().to_string()));
     let repo = Memo::new(move |_| params.with(|p| p.get("repo").unwrap_or_default().to_string()));
+    let branch =
+        Memo::new(move |_| params.with(|p| p.get("branch").unwrap_or_default().to_string()));
 
     let graph_version = expect_context::<GraphVersion>().0;
     let sync_status = expect_context::<SyncStatusSignal>().0;
 
     // Reload whenever graph_version bumps (webhook / manual refresh) or the
     // target changes (user switched to a different repo via Brain Switcher).
-    let graph = Resource::new_blocking(
-        move || (graph_version.get(), org.get(), repo.get()),
-        |(_, o, r)| async move { load_brain_graph_for_target(o, r, String::new()).await },
-    );
-    let config = Resource::new_blocking(
-        move || (graph_version.get(), org.get(), repo.get()),
-        |(_, o, r)| async move { load_brain_config_for_target(o, r, String::new()).await },
-    );
-    let files = Resource::new_blocking(
-        move || (graph_version.get(), org.get(), repo.get()),
-        |(_, o, r)| async move {
-            list_brain_files(FileQueryFilters {
-                org: Some(o),
-                repo: Some(r),
+    let data = Resource::new_blocking(
+        move || (graph_version.get(), org.get(), repo.get(), branch.get()),
+        |(_, o, r, b)| async move {
+            let target = if b.is_empty() {
+                resolve_legacy_target(o, r).await?
+            } else {
+                TargetRef::new(o, r, decode_path_segment(&b))
+            };
+            let (nodes, edges) = load_brain_graph_for_target(target.clone()).await?;
+            let cfg = load_brain_config_for_target(target.clone()).await?;
+            let files = list_brain_files(FileQueryFilters {
+                org: Some(target.org.clone()),
+                repo: Some(target.repo.clone()),
+                branch: Some(target.branch.clone()),
                 ..Default::default()
             })
-            .await
+            .await?;
+            Ok::<_, ServerFnError>((target, nodes, edges, cfg, files))
         },
     );
 
@@ -60,11 +64,8 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
             </div>
         }>
             {move || {
-                let g = graph.get();
-                let c = config.get();
-                let f = files.get();
-                match (g, c, f) {
-                    (Some(Ok((nodes, edges))), Some(Ok(cfg)), Some(Ok(files))) => {
+                match data.get() {
+                    Some(Ok((target, nodes, edges, cfg, files))) => {
                         use super::page::KnowledgeViewProps;
                         super::page::KnowledgeView(KnowledgeViewProps {
                             nodes,
@@ -73,12 +74,11 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                             config: cfg,
                             graph_version,
                             sync_status,
-                            org: Some(org.get()),
-                            repo: Some(repo.get()),
+                            target_ref: target,
                         })
                         .into_any()
                     }
-                    (Some(Err(e)), _, _) | (_, Some(Err(e)), _) | (_, _, Some(Err(e))) => view! {
+                    Some(Err(e)) => view! {
                         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
                             {format!("Failed to load graph/config for target: {e}")}
                         </div>
@@ -103,12 +103,15 @@ pub fn BrainSwitcher(
     current_org: Option<String>,
     /// Active target repo for highlighting in the list.
     current_repo: Option<String>,
+    /// Active target branch for highlighting in the list.
+    current_branch: Option<String>,
 ) -> impl IntoView {
     let open = RwSignal::new(false);
     // Store in reactive-graph-stable wrappers so closures can borrow across
     // multiple reactive runs without consuming the value.
     let current_org = StoredValue::new(current_org);
     let current_repo = StoredValue::new(current_repo);
+    let current_branch = StoredValue::new(current_branch);
 
     let targets = Resource::new(
         move || open.get(),
@@ -123,7 +126,10 @@ pub fn BrainSwitcher(
 
     let current_label = current_org.with_value(|o| {
         current_repo.with_value(|r| match (o, r) {
-            (Some(o), Some(r)) => format!("{}/{}", o, r),
+            (Some(o), Some(r)) => match current_branch.get_value() {
+                Some(b) => format!("{}/{}/{}", o, r, b),
+                None => format!("{}/{}", o, r),
+            },
             _ => "Switch repo".to_string(),
         })
     });
@@ -164,17 +170,24 @@ pub fn BrainSwitcher(
                             } else {
                                 list.into_iter().map(|t| {
                                     let is_current = current_org.with_value(|o| o.as_deref() == Some(&t.org))
-                                        && current_repo.with_value(|r| r.as_deref() == Some(&t.repo));
-                                    let label = format!("{}/{}", t.org, t.repo);
-                                    // Missing-config repos render as a dimmed,
-                                    // non-clickable row: navigating to them
-                                    // would silently fall back to the default
-                                    // config and show an empty graph with no
-                                    // cause shown. Keep them visible (so the
-                                    // user knows the repo exists and what to do
-                                    // about it) but inert.
-                                    if t.has_brain_config {
-                                        let href = format!("/{}/{}/knowledge", t.org, t.repo);
+                                        && current_repo.with_value(|r| r.as_deref() == Some(&t.repo))
+                                        && current_branch.with_value(|b| b.as_deref().is_none_or(|branch| branch == t.active_branch));
+                                    let label = format!("{}/{} · {}", t.org, t.repo, t.active_branch);
+                                    let state_label = match &t.state {
+                                        AccessibleTargetState::Accessible => "accessible",
+                                        AccessibleTargetState::MissingConfig => "missing config",
+                                        AccessibleTargetState::Forbidden => "forbidden",
+                                        AccessibleTargetState::BranchMissing => "branch missing",
+                                        AccessibleTargetState::ConfigInvalid => "config invalid",
+                                    };
+                                    let branch_differs = t.active_branch != t.default_branch;
+                                    if matches!(t.state, AccessibleTargetState::Accessible) {
+                                        let href = format!(
+                                            "/{}/{}/{}/knowledge",
+                                            t.org,
+                                            t.repo,
+                                            encode_path_segment(&t.active_branch),
+                                        );
                                         view! {
                                             <a
                                                 href=href
@@ -190,18 +203,29 @@ pub fn BrainSwitcher(
                                                     title="Brain config present"
                                                 ></span>
                                                 <span class="truncate">{label}</span>
+                                                {branch_differs.then(|| view! {
+                                                    <span
+                                                        class="ml-auto rounded border border-amber-400/40 px-1 py-0.5 text-[9px] uppercase tracking-widest text-amber-200"
+                                                        title=format!("Repo default branch is {}", t.default_branch)
+                                                    >
+                                                        "branch"
+                                                    </span>
+                                                })}
                                             </a>
                                         }.into_any()
                                     } else {
                                         view! {
                                             <div
                                                 class="flex items-center gap-2 px-1 py-1 rounded text-[11px] text-slate-600 cursor-not-allowed"
-                                                title="No .brain-config.yml at repo root — add one to enable Brain."
+                                                title=format!("Brain target state: {state_label}")
                                             >
                                                 <span
                                                     class="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-slate-700"
                                                 ></span>
                                                 <span class="truncate">{label}</span>
+                                                <span class="ml-auto text-[9px] uppercase tracking-widest text-slate-600">
+                                                    {state_label}
+                                                </span>
                                             </div>
                                         }.into_any()
                                     }

@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use brain_domain::{ExternalWorkItemBinding, WorkItem, WorkItemKind, WorkItemState};
+use brain_domain::{ExternalWorkItemBinding, TargetRef, WorkItem, WorkItemKind, WorkItemState};
 
 use super::WriteResult;
 #[cfg(feature = "ssr")]
@@ -31,12 +31,13 @@ pub struct WorkItemQueryFilters {
     endpoint = "list_work_items"
 )]
 pub async fn list_work_items(
+    target: TargetRef,
     filters: WorkItemQueryFilters,
 ) -> Result<Vec<WorkItem>, ServerFnError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     crate::server::projection::list_work_items(
         &target,
         &crate::server::projection::WorkItemFilters {
@@ -53,11 +54,14 @@ pub async fn list_work_items(
 }
 
 #[server(LoadWorkItemByPath, "/api", endpoint = "load_work_item_by_path")]
-pub async fn load_work_item_by_path(path: String) -> Result<Option<WorkItem>, ServerFnError> {
+pub async fn load_work_item_by_path(
+    target: TargetRef,
+    path: String,
+) -> Result<Option<WorkItem>, ServerFnError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     crate::server::projection::load_work_item_by_path(&target, &path)
         .await
         .map_err(sfe)
@@ -79,21 +83,25 @@ pub struct WorkItemComment {
 /// collapsible "Comments" surface without provider-specific branching.
 #[server(LoadWorkItemComments, "/api", endpoint = "load_work_item_comments")]
 pub async fn load_work_item_comments(
+    target: TargetRef,
     brain_id: String,
 ) -> Result<Vec<WorkItemComment>, ServerFnError> {
-    load_work_item_comments_inner(brain_id).await.map_err(sfe)
+    load_work_item_comments_inner(target, brain_id)
+        .await
+        .map_err(sfe)
 }
 
 #[cfg(feature = "ssr")]
 async fn load_work_item_comments_inner(
+    target: TargetRef,
     brain_id: String,
 ) -> Result<Vec<WorkItemComment>, brain_domain::BrainError> {
     use crate::server::session;
     use brain_domain::ExternalWorkItemSystem;
 
     let (_s, token) = session::require_session_and_token().await?;
-    let target = session::target_cfg()?;
-    let storage = session::storage()?;
+    let target = super::target_from_ref(target)?;
+    let storage = session::storage_for(target.clone())?;
     let Some(item) =
         crate::server::projection::load_work_item_by_brain_id(&target, &brain_id).await?
     else {
@@ -131,10 +139,11 @@ async fn load_work_item_comments_inner(
 /// the bidirectional sync pass below.
 #[server(TransitionWorkItem, "/api", endpoint = "transition_work_item")]
 pub async fn transition_work_item(
+    target: TargetRef,
     brain_id: String,
     new_state: WorkItemState,
 ) -> Result<WorkItemMutationResult, ServerFnError> {
-    apply_work_item_mutation(brain_id, WorkItemMutation::State(new_state))
+    apply_work_item_mutation(target, brain_id, WorkItemMutation::State(new_state))
         .await
         .map_err(sfe)
 }
@@ -148,10 +157,11 @@ pub async fn transition_work_item(
     endpoint = "assign_work_item"
 )]
 pub async fn assign_work_item(
+    target: TargetRef,
     brain_id: String,
     assignees: Vec<String>,
 ) -> Result<WorkItemMutationResult, ServerFnError> {
-    apply_work_item_mutation(brain_id, WorkItemMutation::Assignees(assignees))
+    apply_work_item_mutation(target, brain_id, WorkItemMutation::Assignees(assignees))
         .await
         .map_err(sfe)
 }
@@ -164,10 +174,11 @@ pub async fn assign_work_item(
     endpoint = "bind_work_item"
 )]
 pub async fn bind_work_item(
+    target: TargetRef,
     brain_id: String,
     binding: Option<ExternalWorkItemBinding>,
 ) -> Result<WorkItemMutationResult, ServerFnError> {
-    apply_work_item_mutation(brain_id, WorkItemMutation::Binding(binding))
+    apply_work_item_mutation(target, brain_id, WorkItemMutation::Binding(binding))
         .await
         .map_err(sfe)
 }
@@ -203,6 +214,7 @@ impl WorkItemMutation {
 
 #[cfg(feature = "ssr")]
 async fn apply_work_item_mutation(
+    target: TargetRef,
     brain_id: String,
     mutation: WorkItemMutation,
 ) -> Result<WorkItemMutationResult, brain_domain::BrainError> {
@@ -212,8 +224,8 @@ async fn apply_work_item_mutation(
 
     let (s, token) = session::require_session_and_token().await?;
     let user = session::session_user_or_fallback(&s).await;
-    let target = session::target_cfg()?;
-    let storage = session::storage()?;
+    let target = super::target_from_ref(target)?;
+    let storage = session::storage_for(target.clone())?;
 
     let permissions = storage.repository_permissions(&token).await?;
     if permissions.push {
@@ -484,11 +496,13 @@ async fn apply_work_item_mutation_inner(
     if publish_event && let Some(bus) = crate::server::sse::global() {
         let event = if mutation.is_binding() {
             crate::server::sse::BrainEvent::BindingUpdated {
+                target: brain_domain::TargetRef::from(target),
                 brain_id: brain_id.clone(),
                 content_path: Some(path.clone()),
             }
         } else {
             crate::server::sse::BrainEvent::WorkItemUpdated {
+                target: brain_domain::TargetRef::from(target),
                 brain_id: brain_id.clone(),
                 content_path: Some(path.clone()),
             }

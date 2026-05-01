@@ -10,16 +10,19 @@ pub use views::ViewsAdminPage;
 pub fn AdminPage() -> impl IntoView {
     let params = use_params_map();
     let target_prefix = Memo::new(move |_| {
-        let (org, repo) = params.with(|p| {
+        let (org, repo, branch) = params.with(|p| {
             (
                 p.get("org").unwrap_or_default().to_string(),
                 p.get("repo").unwrap_or_default().to_string(),
+                p.get("branch").unwrap_or_default().to_string(),
             )
         });
         if org.is_empty() || repo.is_empty() {
             String::new()
-        } else {
+        } else if branch.is_empty() {
             format!("/{org}/{repo}")
+        } else {
+            format!("/{org}/{repo}/{branch}")
         }
     });
     let kind_filter = RwSignal::new(String::new());

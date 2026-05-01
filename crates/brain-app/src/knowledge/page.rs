@@ -13,10 +13,11 @@ use super::live_sync::SyncStatus;
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
 use crate::api::{
-    FileQueryFilters, RepoFile, list_brain_files, load_brain_config, load_brain_graph,
+    AppConfig, FileQueryFilters, RepoFile, list_brain_files, load_brain_config, load_brain_graph,
     refresh_brain_graph,
 };
 use crate::app::{GraphVersion, SyncStatusSignal};
+use brain_domain::{TargetRef, encode_path_segment};
 
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
@@ -42,6 +43,7 @@ pub fn KnowledgePage() -> impl IntoView {
         move || graph_version.get(),
         |_| async { list_brain_files(FileQueryFilters::default()).await },
     );
+    let app_config = expect_context::<Resource<Result<AppConfig, ServerFnError>>>();
 
     view! {
         <Suspense fallback=|| view! {
@@ -53,11 +55,20 @@ pub fn KnowledgePage() -> impl IntoView {
                 let g = graph.get();
                 let c = config.get();
                 let f = files.get();
-                match (g, c, f) {
-                    (Some(Ok((nodes, edges))), Some(Ok(cfg)), Some(Ok(files))) => {
-                        KnowledgeView(KnowledgeViewProps { nodes, edges, files, config: cfg, graph_version, sync_status, org: None, repo: None }).into_any()
+                let a = app_config.get();
+                match (g, c, f, a) {
+                    (Some(Ok((nodes, edges))), Some(Ok(cfg)), Some(Ok(files)), Some(Ok(app))) => {
+                        KnowledgeView(KnowledgeViewProps {
+                            nodes,
+                            edges,
+                            files,
+                            config: cfg,
+                            graph_version,
+                            sync_status,
+                            target_ref: TargetRef::from(app.target),
+                        }).into_any()
                     }
-                    (Some(Err(e)), _, _) | (_, Some(Err(e)), _) | (_, _, Some(Err(e))) => view! {
+                    (Some(Err(e)), _, _, _) | (_, Some(Err(e)), _, _) | (_, _, Some(Err(e)), _) | (_, _, _, Some(Err(e))) => view! {
                         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
                             {format!("Failed to load graph/config: {e}")}
                         </div>
@@ -81,13 +92,9 @@ pub(crate) fn KnowledgeView(
     config: brain_domain::BrainConfig,
     graph_version: RwSignal<u64>,
     sync_status: RwSignal<SyncStatus>,
-    /// Set to `Some(org)` when serving `/{org}/{repo}/knowledge`.
-    #[prop(optional)]
-    org: Option<String>,
-    /// Set to `Some(repo)` when serving `/{org}/{repo}/knowledge`.
-    #[prop(optional)]
-    repo: Option<String>,
+    target_ref: TargetRef,
 ) -> impl IntoView {
+    provide_context(target_ref.clone());
     let query = use_query_map();
     let nodes = StoredValue::new(nodes);
     let repo_files = StoredValue::new(files);
@@ -209,10 +216,12 @@ pub(crate) fn KnowledgeView(
 
     // Canonical base path for this view: `/knowledge` for the legacy route,
     // `/{org}/{repo}/knowledge` for the multi-tenant route.
-    let base_path = match (&org, &repo) {
-        (Some(o), Some(r)) => format!("/{}/{}/knowledge", o, r),
-        _ => "/knowledge".to_string(),
-    };
+    let base_path = format!(
+        "/{}/{}/{}/knowledge",
+        target_ref.org,
+        target_ref.repo,
+        encode_path_segment(&target_ref.branch)
+    );
 
     // Push filter changes back to the URL so refresh and link sharing both
     // round-trip through the same query string. `replace=true` keeps filter
@@ -389,14 +398,16 @@ pub(crate) fn KnowledgeView(
             .collect()
     });
 
-    let admin_href = match (&org, &repo) {
-        (Some(o), Some(r)) => format!("/{}/{}/admin", o, r),
-        _ => "/admin".to_string(),
-    };
-    let target_label = match (&org, &repo) {
-        (Some(o), Some(r)) => format!("{}/{}", o, r),
-        _ => String::new(),
-    };
+    let admin_href = format!(
+        "/{}/{}/{}/admin",
+        target_ref.org,
+        target_ref.repo,
+        encode_path_segment(&target_ref.branch)
+    );
+    let target_label = format!(
+        "{}/{}/{}",
+        target_ref.org, target_ref.repo, target_ref.branch
+    );
 
     view! {
         <div class="h-screen flex flex-col bg-slate-950 text-slate-100">
@@ -458,8 +469,9 @@ pub(crate) fn KnowledgeView(
                     selected_path=selected_path
                     repo_files=repo_files.get_value()
                     config=config.get_value()
-                    current_org=org.clone().unwrap_or_default()
-                    current_repo=repo.clone().unwrap_or_default()
+                    current_org=target_ref.org.clone()
+                    current_repo=target_ref.repo.clone()
+                    current_branch=target_ref.branch.clone()
                 />
                 <Show when=move || editing.get()>
                     <EditorPanel
@@ -506,6 +518,7 @@ pub(crate) fn KnowledgeView(
 #[component]
 fn RefreshButton(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>) -> impl IntoView {
     let busy = RwSignal::new(false);
+    let target = expect_context::<TargetRef>();
     view! {
         <button
             class="px-3 py-1.5 rounded-md bg-slate-800/60 border border-slate-700 text-slate-300 text-xs font-medium hover:bg-slate-700/70 hover:text-slate-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
@@ -516,8 +529,9 @@ fn RefreshButton(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>
                     return;
                 }
                 busy.set(true);
+                let target = target.clone();
                 leptos::task::spawn_local(async move {
-                    match refresh_brain_graph().await {
+                    match refresh_brain_graph(target).await {
                         Ok(()) => {
                             graph_version.update(|v| *v += 1);
                             sync_status.set(SyncStatus::Fresh);

@@ -129,7 +129,6 @@ async fn main() {
     }
     let webhook_state = brain_app::server::webhook::WebhookState {
         bus: event_bus.clone(),
-        target: target_cfg.clone(),
         http: gh_http.clone(),
         secret: webhook_secret,
     };
@@ -189,8 +188,11 @@ async fn main() {
     }
 
     fn is_multi_tenant_protected(path: &str) -> bool {
-        // Match /{org}/{repo}/knowledge, /admin, or /assets (no trailing slash needed).
-        let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
+        // Match both 3-segment legacy (`/{org}/{repo}/{knowledge|admin|assets}[/...]`)
+        // and 4-segment canonical (`/{org}/{repo}/{branch}/{knowledge|admin}[/...]`).
+        // Asset proxy stays 3-segment in α (see plan §9); branch-aware asset
+        // routing is deferred to β.
+        let segments: Vec<&str> = path.trim_start_matches('/').splitn(6, '/').collect();
         matches!(
             segments.as_slice(),
             [_, _, "knowledge"]
@@ -199,63 +201,12 @@ async fn main() {
                 | [_, _, "knowledge", _]
                 | [_, _, "admin", _]
                 | [_, _, "assets", _]
+                | [_, _, _, "knowledge"]
+                | [_, _, _, "admin"]
+                | [_, _, _, "knowledge", _]
+                | [_, _, _, "admin", _]
+                | [_, _, _, "admin", "views", _]
         )
-    }
-
-    fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
-        let segments: Vec<&str> = path.trim_start_matches('/').splitn(4, '/').collect();
-        match segments.as_slice() {
-            [org, repo, "knowledge"] | [org, repo, "admin"] | [org, repo, "assets"]
-                if !org.is_empty() && !repo.is_empty() =>
-            {
-                Some(TargetConfig {
-                    org: (*org).to_string(),
-                    repo: (*repo).to_string(),
-                    branch: fallback.branch.clone(),
-                })
-            }
-            [org, repo, "knowledge", _] | [org, repo, "admin", _] | [org, repo, "assets", _]
-                if !org.is_empty() && !repo.is_empty() =>
-            {
-                Some(TargetConfig {
-                    org: (*org).to_string(),
-                    repo: (*repo).to_string(),
-                    branch: fallback.branch.clone(),
-                })
-            }
-            _ => None,
-        }
-    }
-
-    fn path_from_same_origin_referer(request: &Request<Body>) -> Option<String> {
-        let raw = request
-            .headers()
-            .get(axum::http::header::REFERER)?
-            .to_str()
-            .ok()?;
-        if raw.starts_with('/') {
-            return Some(raw.to_string());
-        }
-        let without_scheme = raw.split_once("://").map(|(_, rest)| rest)?;
-        let path_start = without_scheme.find('/')?;
-        let referer_host = &without_scheme[..path_start];
-        let request_host = request
-            .headers()
-            .get(axum::http::header::HOST)
-            .and_then(|value| value.to_str().ok())?;
-        if referer_host != request_host {
-            return None;
-        }
-        Some(without_scheme[path_start..].to_string())
-    }
-
-    fn target_for_request(request: &Request<Body>, fallback: &TargetConfig) -> TargetConfig {
-        target_from_path(request.uri().path(), fallback)
-            .or_else(|| {
-                path_from_same_origin_referer(request)
-                    .and_then(|path| target_from_path(&path, fallback))
-            })
-            .unwrap_or_else(|| fallback.clone())
     }
 
     let options_for_ssr = leptos_options.clone();
@@ -289,6 +240,10 @@ async fn main() {
         )
         // Server functions: extract Session and inject Session + runtime config
         // into Leptos context so use_context::<...>() works inside #[server] fns.
+        // 3.7B-α: target identity is resolved from the URL path via the
+        // `routing` module — never from `Referer`. Mutations carry an
+        // explicit `TargetRef` in the body; reads inherit the path-derived
+        // context.
         .route(
             "/api/{*fn_name}",
             axum::routing::post({
@@ -296,16 +251,28 @@ async fn main() {
                 let brand_for_api = brand_cfg.clone();
                 let http_for_api = gh_http.clone();
                 move |session: Session, request: Request<Body>| {
-                    let target = target_for_request(&request, &target_for_api);
+                    let fallback = target_for_api.clone();
                     let brand = brand_for_api.clone();
                     let http = http_for_api.clone();
                     async move {
+                        let path = request.uri().path().to_string();
+                        let resolved = brain_app::server::routing::resolve_path(
+                            &path,
+                            &fallback,
+                            brain_app::server::projection::pool_handle(),
+                        )
+                        .await;
+                        let target = resolved.target_config(&fallback);
+                        let legacy_marker = resolved.legacy_marker();
                         leptos_axum::handle_server_fns_with_context(
                             move || {
                                 provide_context(session.clone());
                                 provide_context(target.clone());
                                 provide_context(brand.clone());
                                 provide_context(http.clone());
+                                if let Some(ref marker) = legacy_marker {
+                                    provide_context(marker.clone());
+                                }
                             },
                             request,
                         )
@@ -322,16 +289,28 @@ async fn main() {
             let http_for_ssr = gh_http.clone();
             move |session: Session, request: Request<Body>| {
                 let options = options_for_ssr.clone();
-                let target = target_for_request(&request, &target_for_ssr);
+                let fallback = target_for_ssr.clone();
                 let brand = brand_for_ssr.clone();
                 let http = http_for_ssr.clone();
                 async move {
+                    let path = request.uri().path().to_string();
+                    let resolved = brain_app::server::routing::resolve_path(
+                        &path,
+                        &fallback,
+                        brain_app::server::projection::pool_handle(),
+                    )
+                    .await;
+                    let target = resolved.target_config(&fallback);
+                    let legacy_marker = resolved.legacy_marker();
                     let handler = leptos_axum::render_app_to_stream_with_context(
                         move || {
                             provide_context(session.clone());
                             provide_context(target.clone());
                             provide_context(brand.clone());
                             provide_context(http.clone());
+                            if let Some(ref marker) = legacy_marker {
+                                provide_context(marker.clone());
+                            }
                         },
                         move || shell(options.clone()),
                     );

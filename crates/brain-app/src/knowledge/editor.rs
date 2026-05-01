@@ -7,6 +7,7 @@ use super::types::EditMode;
 #[cfg(not(feature = "ssr"))]
 use crate::api::WriteMode;
 use crate::api::{AppConfig, get_current_user, load_brain_template};
+use brain_domain::TargetRef;
 
 /// Smart editor form that enforces Brain templates programmatically.
 #[component]
@@ -21,6 +22,7 @@ pub fn EditorPanel(
     graph_version: RwSignal<u64>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
+    let active_target = StoredValue::new(expect_context::<TargetRef>());
     let config = StoredValue::new(config);
     let node_type = RwSignal::new(config.with_value(|c| c.default_spec().name.clone()));
     let title = RwSignal::new(String::new());
@@ -34,7 +36,14 @@ pub fn EditorPanel(
     let folder = RwSignal::new(String::new());
     let all_folders = Resource::new(
         || (),
-        |_| async { crate::api::list_brain_folders().await.unwrap_or_default() },
+        move |_| {
+            let target = active_target.get_value();
+            async move {
+                crate::api::list_brain_folders(target)
+                    .await
+                    .unwrap_or_default()
+            }
+        },
     );
     let status_msg = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
@@ -142,7 +151,8 @@ pub fn EditorPanel(
         #[cfg(not(feature = "ssr"))]
         {
             leptos::task::spawn_local(async move {
-                match load_brain_template(nt).await {
+                let target = active_target.get_value();
+                match load_brain_template(target, nt).await {
                     Ok(t) if !t.is_empty() => body.set(t),
                     Ok(_) => {}
                     Err(_) => {}
@@ -180,7 +190,6 @@ pub fn EditorPanel(
             .map(|c| format!("{}/{}", c.target.org, c.target.repo))
             .unwrap_or_default()
     });
-    let app_config_for_preview = app_config;
     let draft_key = Memo::new(move |_| {
         let scope = repo_scope.get();
         if scope.is_empty() {
@@ -366,6 +375,7 @@ pub fn EditorPanel(
             };
 
         let _payload = crate::knowledge::types::BrainFilePayload {
+            target: Some(active_target.get_value()),
             node_type: nt,
             title: title.get_untracked(),
             author: author.get_untracked(),
@@ -492,8 +502,10 @@ pub fn EditorPanel(
         #[cfg(not(feature = "ssr"))]
         {
             use crate::api::rename_brain_file;
+            let active_target = active_target.get_value();
             leptos::task::spawn_local(async move {
-                match rename_brain_file(old_path, new_path.clone(), sha, None).await {
+                match rename_brain_file(active_target, old_path, new_path.clone(), sha, None).await
+                {
                     Ok(res) => {
                         if res.write.mode == WriteMode::Direct {
                             edit_path.set(Some(res.new_path.clone()));
@@ -642,10 +654,10 @@ pub fn EditorPanel(
             />
             <TagInput tags=tags all_tags=all_tags_stored />
             <MarkdownPreview
+                active_target=active_target.get_value()
                 node_type=node_type.into()
                 body=body
                 file_path=markdown_file_path.into()
-                app_config=app_config_for_preview
                 config=config.get_value()
             />
             <RelatedLinksPicker selected_related=selected_related node_titles=node_titles_stored />
@@ -913,21 +925,20 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
 /// Edit / preview toggle for the markdown body.
 #[component]
 fn MarkdownPreview(
+    active_target: TargetRef,
     node_type: Signal<String>,
     body: RwSignal<String>,
     file_path: Signal<Option<String>>,
-    app_config: Option<Resource<Result<AppConfig, ServerFnError>>>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
     let show_preview = RwSignal::new(false);
+    let target_for_preview = active_target.clone();
+    let target_for_upload = active_target.clone();
     let preview_html = Memo::new(move |_| {
         let b = body.get();
-        let target_config = app_config
-            .and_then(|r| r.get())
-            .and_then(|r| r.ok())
-            .map(|c| c.target);
+        let target_config: brain_domain::TargetConfig = target_for_preview.clone().into();
         match (file_path.get(), target_config) {
-            (Some(path), Some(cfg)) => crate::markdown::render_for_file(&b, &path, &cfg),
+            (Some(path), cfg) => crate::markdown::render_for_file(&b, &path, &cfg),
             _ => crate::markdown::render(&b),
         }
     });
@@ -955,8 +966,12 @@ fn MarkdownPreview(
             </div>
             <Show
                 when=move || show_preview.get()
-                fallback=move || view! {
-                    <textarea
+                fallback=move || {
+                    let drop_target = target_for_upload.clone();
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = &drop_target;
+                    view! {
+                        <textarea
                         class="w-full px-3 py-2 rounded-md bg-slate-800 border text-slate-100 text-sm focus:border-teal-400 focus:outline-none min-h-[180px] resize-y font-mono transition-colors"
                         class=("bg-slate-800", move || !dragging.get())
                         class=("border-slate-700", move || !dragging.get())
@@ -974,11 +989,18 @@ fn MarkdownPreview(
                             ev.prevent_default();
                             dragging.set(false);
                             #[cfg(feature = "hydrate")]
-                            handle_image_drop(ev, body, upload_status, file_path.get_untracked());
+                            handle_image_drop(
+                                ev,
+                                body,
+                                upload_status,
+                                file_path.get_untracked(),
+                                drop_target.clone(),
+                            );
                             #[cfg(not(feature = "hydrate"))]
                             { let _ = (upload_status, &body, file_path); }
                         }
-                    />
+                        />
+                    }
                 }
             >
                 <div class="px-3 py-2 rounded-md bg-slate-950 border border-slate-800 min-h-[180px]">
@@ -1015,6 +1037,7 @@ fn handle_image_drop(
     body: RwSignal<String>,
     status: RwSignal<String>,
     file_path: Option<String>,
+    active_target: TargetRef,
 ) {
     use crate::api::upload_asset;
     use wasm_bindgen::JsCast;
@@ -1039,6 +1062,7 @@ fn handle_image_drop(
         let filename = file.name();
         let file_for_task = file.clone();
         let file_path_for_task = file_path.clone();
+        let target_for_task = active_target.clone();
         status.set(format!("Uploading {filename}…"));
         leptos::task::spawn_local(async move {
             let buf_promise = file_for_task.array_buffer();
@@ -1055,7 +1079,7 @@ fn handle_image_drop(
             };
             let bytes = js_sys::Uint8Array::new(&array).to_vec();
             let alt = strip_ext(&filename);
-            match upload_asset(filename.clone(), bytes).await {
+            match upload_asset(target_for_task, filename.clone(), bytes).await {
                 Ok(path) => {
                     let link = crate::markdown::repo_relative_link_target(
                         file_path_for_task.as_deref(),

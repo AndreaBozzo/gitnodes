@@ -18,6 +18,7 @@ pub fn FilterPanel(
     config: brain_domain::BrainConfig,
     #[prop(optional)] current_org: String,
     #[prop(optional)] current_repo: String,
+    #[prop(optional)] current_branch: String,
 ) -> impl IntoView {
     let type_buttons = config.node_types
         .iter()
@@ -180,6 +181,7 @@ pub fn FilterPanel(
             <BrainSwitcher
                 current_org=(!current_org.is_empty()).then(|| current_org.clone())
                 current_repo=(!current_repo.is_empty()).then(|| current_repo.clone())
+                current_branch=(!current_branch.is_empty()).then(|| current_branch.clone())
             />
             {has_views.then(|| view! {
                 <section>

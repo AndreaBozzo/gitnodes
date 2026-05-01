@@ -3,6 +3,8 @@ pub mod audit;
 pub mod auth;
 pub mod installation_token;
 pub mod projection;
+pub mod routing;
 pub mod session;
 pub mod sse;
+pub mod target_registry;
 pub mod webhook;

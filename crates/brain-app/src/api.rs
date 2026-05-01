@@ -31,14 +31,14 @@ pub use config_admin::{
 
 mod graph;
 pub use graph::{
-    AccessibleTarget, NodeQueryFilters, list_accessible_targets, list_nodes,
+    AccessibleTarget, AccessibleTargetState, NodeQueryFilters, list_accessible_targets, list_nodes,
     load_brain_config_for_target, load_brain_graph, load_brain_graph_for_target, read_node,
-    refresh_brain_graph,
+    refresh_brain_graph, resolve_legacy_target,
 };
 #[cfg(feature = "ssr")]
 pub use graph::{
     ListAccessibleTargets, ListNodes, LoadBrainConfigForTarget, LoadBrainGraph,
-    LoadBrainGraphForTarget, ReadNode, RefreshBrainGraph,
+    LoadBrainGraphForTarget, ReadNode, RefreshBrainGraph, ResolveLegacyTarget,
 };
 
 mod work_items;
@@ -64,6 +64,16 @@ use brain_domain::BrainError;
 #[cfg(feature = "ssr")]
 fn sfe(e: BrainError) -> ServerFnError {
     ServerFnError::new(e.to_string())
+}
+
+#[cfg(feature = "ssr")]
+fn target_from_ref(
+    target: brain_domain::TargetRef,
+) -> Result<brain_domain::TargetConfig, BrainError> {
+    target
+        .validate()
+        .map_err(|e| BrainError::parse(format!("invalid target: {e}")))?;
+    Ok(target.into())
 }
 
 /// Accept a user-supplied commit message only if it's non-empty after trim and
@@ -118,6 +128,7 @@ const SERVER_FNS: &[&str] = &[
     "RefreshBrainGraph",
     "GetWriteCapabilities",
     "ListAccessibleTargets",
+    "ResolveLegacyTarget",
     "LoadBrainGraphForTarget",
     "LoadBrainConfigForTarget",
     "TransitionWorkItem",
@@ -157,6 +168,7 @@ pub fn register_server_functions() {
     register_explicit::<RefreshBrainGraph>();
     register_explicit::<GetWriteCapabilities>();
     register_explicit::<ListAccessibleTargets>();
+    register_explicit::<ResolveLegacyTarget>();
     register_explicit::<LoadBrainGraphForTarget>();
     register_explicit::<LoadBrainConfigForTarget>();
     register_explicit::<TransitionWorkItem>();

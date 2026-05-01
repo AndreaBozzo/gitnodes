@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use brain_domain::{BrainConfig, BrandConfig, TargetConfig, ViewSpec};
+use brain_domain::{BrainConfig, BrandConfig, TargetConfig, TargetRef, ViewSpec};
 
 #[cfg(feature = "ssr")]
 use super::WriteMode;
@@ -42,11 +42,11 @@ pub async fn load_brain_config() -> Result<BrainConfig, ServerFnError> {
 /// cached `BrainConfig` as the rest of the runtime, so it reflects the latest
 /// committed state of `.brain-config.yml` without an extra fetch.
 #[server(ListViews, "/api", endpoint = "list_views")]
-pub async fn list_views() -> Result<Vec<ViewSpec>, ServerFnError> {
+pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ServerFnError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     let cfg = config_loader::load(&target, &token).await;
     Ok(cfg.views.clone())
 }
@@ -60,15 +60,18 @@ pub async fn list_views() -> Result<Vec<ViewSpec>, ServerFnError> {
 /// Returns the same `WriteResult` shape as `SaveBrainFile` so the admin UI can
 /// render `Saved` / `Proposed via PR #...` consistently with the editor.
 #[server(SaveViews, "/api", endpoint = "save_views")]
-pub async fn save_views(views: Vec<ViewSpec>) -> Result<WriteResult, ServerFnError> {
+pub async fn save_views(
+    target: TargetRef,
+    views: Vec<ViewSpec>,
+) -> Result<WriteResult, ServerFnError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
     use brain_storage::Storage;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let target = session::target_cfg().map_err(sfe)?;
-    let storage = session::storage().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let storage = session::storage_for(target.clone()).map_err(sfe)?;
 
     let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
     if !(permissions.admin || permissions.maintain) {
@@ -227,10 +230,13 @@ pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
 }
 
 #[server(LoadBrainTemplate, "/api", endpoint = "load_brain_template")]
-pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnError> {
+pub async fn load_brain_template(
+    target: TargetRef,
+    node_type: String,
+) -> Result<String, ServerFnError> {
     use crate::server::session;
     use brain_storage::Storage;
-    let target = session::target_cfg().map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     let Some(filename) = config
@@ -239,7 +245,7 @@ pub async fn load_brain_template(node_type: String) -> Result<String, ServerFnEr
     else {
         return Ok(String::new());
     };
-    let storage = session::storage().map_err(sfe)?;
+    let storage = session::storage_for(target).map_err(sfe)?;
     let raw = storage.load_template(&token, filename).await.map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);
     Ok(body.trim_start_matches('\n').to_string())

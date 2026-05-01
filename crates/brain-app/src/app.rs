@@ -75,7 +75,11 @@ pub fn App() -> impl IntoView {
                     path=(StaticSegment("admin"), StaticSegment("views"))
                     view=ViewsAdminPage
                 />
-                // Multi-tenant routes: /{org}/{repo}/knowledge and /{org}/{repo}/admin.
+                // Multi-tenant 3-segment legacy compat: `/{org}/{repo}/knowledge`
+                // and `/{org}/{repo}/admin[/views]`. Branch is resolved sticky
+                // via `target_registry` and the page reads the env-default
+                // until the redirect-to-canonical wrapper lands in the next
+                // commit.
                 <Route
                     path=(ParamSegment("org"), ParamSegment("repo"), StaticSegment("knowledge"))
                     view=KnowledgePageForTarget
@@ -88,6 +92,38 @@ pub fn App() -> impl IntoView {
                     path=(
                         ParamSegment("org"),
                         ParamSegment("repo"),
+                        StaticSegment("admin"),
+                        StaticSegment("views"),
+                    )
+                    view=ViewsAdminPage
+                />
+                // Canonical 4-segment multi-tenant routes
+                // (`/{org}/{repo}/{branch}/...`). Branch is part of the
+                // identity now — the same components handle both shapes,
+                // reading the branch param when present.
+                <Route
+                    path=(
+                        ParamSegment("org"),
+                        ParamSegment("repo"),
+                        ParamSegment("branch"),
+                        StaticSegment("knowledge"),
+                    )
+                    view=KnowledgePageForTarget
+                />
+                <Route
+                    path=(
+                        ParamSegment("org"),
+                        ParamSegment("repo"),
+                        ParamSegment("branch"),
+                        StaticSegment("admin"),
+                    )
+                    view=AdminPage
+                />
+                <Route
+                    path=(
+                        ParamSegment("org"),
+                        ParamSegment("repo"),
+                        ParamSegment("branch"),
                         StaticSegment("admin"),
                         StaticSegment("views"),
                     )
