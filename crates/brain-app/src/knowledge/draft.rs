@@ -33,6 +33,9 @@ pub struct Draft {
     /// `serde(default)` keeps pre-existing drafts deserializable with `None`.
     #[serde(default)]
     pub preserved_frontmatter: Option<BTreeMap<String, serde_yaml::Value>>,
+    /// UI-managed extra frontmatter string fields, such as ADR `status`.
+    #[serde(default)]
+    pub extra_frontmatter: BTreeMap<String, String>,
     /// Keeps the malformed-frontmatter guard active across draft restore.
     #[serde(default)]
     pub frontmatter_malformed: bool,

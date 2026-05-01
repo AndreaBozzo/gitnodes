@@ -464,7 +464,7 @@ pub(super) fn merge_frontmatter(
     }
 
     let date = today_iso();
-    let is_update = payload.preserved_frontmatter.is_some();
+    let is_update = payload.sha.is_some();
     let spec = config
         .lookup(&payload.node_type)
         .unwrap_or_else(|| config.default_spec());
@@ -572,12 +572,31 @@ mod merge_frontmatter_tests {
 
     #[test]
     fn create_seeds_defaults() {
-        let payload = base_payload("adr".to_string());
+        let mut payload = base_payload("adr".to_string());
+        payload.path = None;
+        payload.sha = None;
         let out = merge_frontmatter(&payload, "alice", &BrainConfig::default());
         assert!(out.contains("type: adr"));
         assert!(out.contains("status: draft"));
         assert!(out.starts_with("---\n"));
         assert!(out.ends_with("---\n"));
+    }
+
+    #[test]
+    fn create_with_form_managed_extra_field_keeps_create_semantics() {
+        let mut payload = base_payload("adr".to_string());
+        payload.sha = None;
+        payload.path = None;
+        let mut preserved = BTreeMap::new();
+        preserved.insert(
+            "status".into(),
+            serde_yaml::Value::String("accepted".into()),
+        );
+        payload.preserved_frontmatter = Some(preserved);
+
+        let out = merge_frontmatter(&payload, "alice", &BrainConfig::default());
+        assert!(out.contains("status: accepted"), "out was: {out}");
+        assert!(out.contains("date:"), "out was: {out}");
     }
 
     #[test]
@@ -611,6 +630,8 @@ mod merge_frontmatter_tests {
         // Create path: title_key and date_create_field both get injected.
         let mut payload = base_payload("articolo".to_string());
         payload.title = "Il Mio Articolo".into();
+        payload.path = None;
+        payload.sha = None;
         let out = merge_frontmatter(&payload, "me", &cfg);
         assert!(out.contains("titolo: Il Mio Articolo"), "out was: {out}");
         assert!(out.contains("creato_il:"), "out was: {out}");

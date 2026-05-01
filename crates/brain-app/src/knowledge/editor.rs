@@ -9,6 +9,73 @@ use crate::api::WriteMode;
 use crate::api::{AppConfig, get_current_user, load_brain_template};
 use brain_domain::TargetRef;
 
+fn frontmatter_string_fields(
+    config: &brain_domain::BrainConfig,
+    node_type: &str,
+    frontmatter: Option<&BTreeMap<String, serde_yaml::Value>>,
+) -> BTreeMap<String, String> {
+    let spec = config
+        .lookup(node_type)
+        .unwrap_or_else(|| config.default_spec());
+    let mut out = BTreeMap::new();
+    let mut managed = std::collections::BTreeSet::from([
+        "type".to_string(),
+        "author".to_string(),
+        "tags".to_string(),
+    ]);
+    if let Some(key) = spec.title_key.as_deref() {
+        managed.insert(key.to_string());
+    }
+    if let Some(key) = spec.date_create_field.as_deref() {
+        managed.insert(key.to_string());
+    }
+    if let Some(key) = spec.date_update_field.as_deref() {
+        managed.insert(key.to_string());
+    }
+    if spec.is_work_item() {
+        managed.insert("brain_id".to_string());
+        managed.insert("state".to_string());
+        managed.insert("system_of_record".to_string());
+        managed.insert("assignees".to_string());
+    }
+
+    for (key, value) in &spec.frontmatter_seed {
+        if managed.contains(key) {
+            continue;
+        }
+        if let Some(text) = value.as_str() {
+            out.insert(key.clone(), text.to_string());
+        }
+    }
+
+    if let Some(frontmatter) = frontmatter {
+        for (key, value) in frontmatter {
+            if managed.contains(key) {
+                continue;
+            }
+            if let Some(text) = value.as_str() {
+                out.insert(key.clone(), text.to_string());
+            }
+        }
+    }
+
+    out
+}
+
+fn frontmatter_field_label(key: &str) -> String {
+    key.split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Smart editor form that enforces Brain templates programmatically.
 #[component]
 pub fn EditorPanel(
@@ -50,6 +117,7 @@ pub fn EditorPanel(
     let edit_path = RwSignal::new(Option::<String>::None);
     let edit_sha = RwSignal::new(Option::<String>::None);
     let preserved_frontmatter = RwSignal::new(Option::<BTreeMap<String, serde_yaml::Value>>::None);
+    let extra_frontmatter = RwSignal::new(BTreeMap::<String, String>::new());
     let frontmatter_malformed = RwSignal::new(false);
     let custom_msg_open = RwSignal::new(read_custom_msg_pref());
     let custom_msg = RwSignal::new(String::new());
@@ -65,6 +133,10 @@ pub fn EditorPanel(
                 return;
             }
             prefilled_for.set(Some(p.path.clone()));
+            let effective_node_type = p
+                .node_type
+                .clone()
+                .unwrap_or_else(|| node_type.get_untracked());
             if let Some(nt) = p.node_type {
                 node_type.set(nt);
             }
@@ -108,6 +180,13 @@ pub fn EditorPanel(
             } else {
                 Some(p.frontmatter)
             });
+            extra_frontmatter.set(config.with_value(|c| {
+                frontmatter_string_fields(
+                    c,
+                    &effective_node_type,
+                    preserved_frontmatter.get_untracked().as_ref(),
+                )
+            }));
             frontmatter_malformed.set(p.frontmatter_malformed);
             folder.set(String::new());
         } else {
@@ -116,6 +195,9 @@ pub fn EditorPanel(
                 edit_path.set(None);
                 edit_sha.set(None);
                 preserved_frontmatter.set(None);
+                extra_frontmatter.set(config.with_value(|c| {
+                    frontmatter_string_fields(c, &node_type.get_untracked(), None)
+                }));
                 frontmatter_malformed.set(false);
                 folder.set(String::new());
                 wi_state.set(String::from("todo"));
@@ -126,6 +208,21 @@ pub fn EditorPanel(
     });
 
     let is_edit = Memo::new(move |_| edit_sha.with(|s| s.is_some()));
+
+    let seeded_frontmatter_for = RwSignal::new(Option::<String>::None);
+    Effect::new(move |_| {
+        if is_edit.get() || !matches!(edit_mode.get(), EditMode::New) {
+            seeded_frontmatter_for.set(None);
+            return;
+        }
+        let current_type = node_type.get();
+        if seeded_frontmatter_for.get_untracked().as_deref() == Some(&current_type) {
+            return;
+        }
+        extra_frontmatter
+            .set(config.with_value(|c| frontmatter_string_fields(c, &current_type, None)));
+        seeded_frontmatter_for.set(Some(current_type));
+    });
 
     // Fetch the Brain template and prefill the body textarea when in New mode.
     let template_applied_for = RwSignal::new(Option::<String>::None);
@@ -257,6 +354,7 @@ pub fn EditorPanel(
         }
         let base_sha = edit_sha.get_untracked();
         let preserved = preserved_frontmatter.get_untracked();
+        let extra = extra_frontmatter.get_untracked();
 
         #[cfg(feature = "hydrate")]
         {
@@ -271,6 +369,7 @@ pub fn EditorPanel(
                 saved_at: draft::now_secs(),
                 base_sha,
                 preserved_frontmatter: preserved,
+                extra_frontmatter: extra,
                 frontmatter_malformed: frontmatter_malformed.get_untracked(),
             };
             let key_for_timeout = key.clone();
@@ -281,7 +380,7 @@ pub fn EditorPanel(
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (nt, a, base_sha, key, preserved);
+            let _ = (nt, a, base_sha, key, preserved, extra);
         }
     });
 
@@ -289,7 +388,7 @@ pub fn EditorPanel(
         let Some(d) = restore_banner.get_untracked() else {
             return;
         };
-        node_type.set(d.node_type);
+        node_type.set(d.node_type.clone());
         title.set(d.title);
         if !d.author.is_empty() {
             author.set(d.author);
@@ -301,6 +400,8 @@ pub fn EditorPanel(
             folder.set(f);
         }
         preserved_frontmatter.set(d.preserved_frontmatter);
+        extra_frontmatter.set(d.extra_frontmatter);
+        seeded_frontmatter_for.set(Some(d.node_type));
         frontmatter_malformed.set(d.frontmatter_malformed);
         restore_banner.set(None);
     };
@@ -352,6 +453,9 @@ pub fn EditorPanel(
         // For work item types, bake the form-controlled operational fields
         // into preserved_frontmatter so merge_frontmatter emits them.
         let mut frontmatter = preserved_frontmatter.get_untracked().unwrap_or_default();
+        for (key, value) in extra_frontmatter.get_untracked() {
+            frontmatter.insert(key, serde_yaml::Value::String(value));
+        }
         if is_work_item {
             use serde_yaml::Value;
             let state_val = wi_state.get_untracked();
@@ -367,12 +471,14 @@ pub fn EditorPanel(
                 .collect();
             frontmatter.insert("assignees".into(), Value::Sequence(assignees));
         }
-        let merged_frontmatter =
-            if is_work_item || preserved_frontmatter.with_untracked(|p| p.is_some()) {
-                Some(frontmatter)
-            } else {
-                None
-            };
+        let merged_frontmatter = if is_work_item
+            || !extra_frontmatter.with_untracked(|fields| fields.is_empty())
+            || preserved_frontmatter.with_untracked(|p| p.is_some())
+        {
+            Some(frontmatter)
+        } else {
+            None
+        };
 
         let _payload = crate::knowledge::types::BrainFilePayload {
             target: Some(active_target.get_value()),
@@ -598,6 +704,7 @@ pub fn EditorPanel(
             </Show>
 
             <FrontmatterFields node_type=node_type title=title author=author config=config.get_value() />
+            <ExtraFrontmatterFields fields=extra_frontmatter />
 
             <Show when=move || config.with_value(|c| {
                 c.lookup(&node_type.get()).map(|s| s.is_work_item()).unwrap_or(false)
@@ -834,6 +941,49 @@ fn WorkItemFields(
                 <p class="text-[10px] text-slate-600 mt-1">"Comma-separated GitHub usernames."</p>
             </div>
         </div>
+    }
+}
+
+#[component]
+fn ExtraFrontmatterFields(fields: RwSignal<BTreeMap<String, String>>) -> impl IntoView {
+    view! {
+        <Show when=move || !fields.with(BTreeMap::is_empty)>
+            <div class="space-y-3 pt-2 border-t border-slate-800">
+                <p class="text-[10px] uppercase tracking-widest text-slate-500">"Metadata"</p>
+                {move || fields.get().into_keys().map(|key| {
+                    let input_key = key.clone();
+                    let label = frontmatter_field_label(&key);
+                    let placeholder = if key == "status" {
+                        "e.g. draft, accepted"
+                    } else {
+                        ""
+                    };
+                    view! {
+                        <div>
+                            <label class="text-[10px] uppercase tracking-widest text-slate-500 mb-1 block">{label}</label>
+                            <input
+                                type="text"
+                                class="w-full px-3 py-2 rounded-md bg-slate-800 border border-slate-700 text-slate-100 text-sm focus:border-teal-400 focus:outline-none"
+                                placeholder=placeholder
+                                prop:value={
+                                    let key = input_key.clone();
+                                    move || fields.with(|map| map.get(&key).cloned().unwrap_or_default())
+                                }
+                                on:input={
+                                    let key = input_key.clone();
+                                    move |ev| {
+                                        let value = event_target_value(&ev);
+                                        fields.update(|map| {
+                                            map.insert(key.clone(), value.clone());
+                                        });
+                                    }
+                                }
+                            />
+                        </div>
+                    }
+                }).collect_view()}
+            </div>
+        </Show>
     }
 }
 
@@ -1102,6 +1252,34 @@ fn strip_ext(filename: &str) -> String {
     match filename.rsplit_once('.') {
         Some((stem, _)) if !stem.is_empty() => stem.to_string(),
         _ => filename.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frontmatter_string_fields_seeds_adr_status() {
+        let fields = frontmatter_string_fields(&brain_domain::BrainConfig::default(), "adr", None);
+        assert_eq!(fields.get("status").map(String::as_str), Some("draft"));
+    }
+
+    #[test]
+    fn frontmatter_string_fields_ignores_managed_keys() {
+        let mut frontmatter = BTreeMap::new();
+        frontmatter.insert("author".into(), serde_yaml::Value::String("alice".into()));
+        frontmatter.insert(
+            "status".into(),
+            serde_yaml::Value::String("accepted".into()),
+        );
+        let fields = frontmatter_string_fields(
+            &brain_domain::BrainConfig::default(),
+            "adr",
+            Some(&frontmatter),
+        );
+        assert!(!fields.contains_key("author"));
+        assert_eq!(fields.get("status").map(String::as_str), Some("accepted"));
     }
 }
 
