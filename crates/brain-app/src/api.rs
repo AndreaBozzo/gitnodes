@@ -16,7 +16,7 @@ mod file_ops;
 pub use file_ops::{ListBrainFolders, RenameBrainFile, UploadAsset};
 pub use file_ops::{RenameResult, list_brain_folders, rename_brain_file, upload_asset};
 #[cfg(feature = "ssr")]
-pub(crate) use file_ops::{relativize, slugify};
+pub(crate) use file_ops::{relativize, slugify, validate_markdown_path};
 
 mod config_admin;
 pub use config_admin::{

@@ -10,6 +10,8 @@ use super::sanitize_commit_message;
 #[cfg(feature = "ssr")]
 use super::sfe;
 #[cfg(feature = "ssr")]
+use super::validate_markdown_path;
+#[cfg(feature = "ssr")]
 use super::write_orchestrator::{
     delete_file_permission_aware, rebuild_projection_after_write, save_file_permission_aware,
 };
@@ -229,6 +231,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, S
             }
         }
     };
+    validate_markdown_path(&file_path).map_err(sfe)?;
 
     let related_section = build_related_section(&file_path, &payload.related);
     let body_without_related = strip_related_section(&payload.body);
@@ -318,6 +321,7 @@ pub async fn delete_brain_file(
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let target = session::target_cfg().map_err(sfe)?;
+    validate_markdown_path(&path).map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = sanitize_commit_message(commit_message.as_deref())
         .unwrap_or_else(|| format!("Delete {} via Brain UI", path));

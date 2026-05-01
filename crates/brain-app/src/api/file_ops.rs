@@ -43,12 +43,8 @@ pub async fn rename_brain_file(
     if new_path == old_path {
         return Err(sfe(BrainError::parse("New path matches old path")));
     }
-    if !new_path.ends_with(".md") {
-        return Err(sfe(BrainError::parse("New path must end in .md")));
-    }
-    if new_path.contains("..") || new_path.starts_with('/') {
-        return Err(sfe(BrainError::parse("Invalid new path")));
-    }
+    validate_markdown_path(&old_path).map_err(sfe)?;
+    validate_markdown_path(&new_path).map_err(sfe)?;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -456,7 +452,35 @@ fn split_filename(filename: &str) -> (String, String) {
 
 #[cfg(feature = "ssr")]
 fn is_allowed_image_ext(ext: &str) -> bool {
-    matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg")
+    matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp")
+}
+
+#[cfg(feature = "ssr")]
+pub(crate) fn validate_markdown_path(path: &str) -> Result<(), BrainError> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(BrainError::parse("Path is required"));
+    }
+    if !path.ends_with(".md") {
+        return Err(BrainError::parse("Path must end in .md"));
+    }
+    if path.starts_with('/') || path.contains('\\') || path.contains("..") {
+        return Err(BrainError::parse("Invalid path"));
+    }
+    if path.chars().any(char::is_control) {
+        return Err(BrainError::parse("Invalid path"));
+    }
+    if path
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(BrainError::parse("Invalid path"));
+    }
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    if filename.trim_end_matches(".md").is_empty() {
+        return Err(BrainError::parse("Filename is required"));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "ssr")]
@@ -681,5 +705,31 @@ mod rewrite_links_tests {
             "concepts/new.md",
         );
         assert!(out.is_none());
+    }
+
+    #[test]
+    fn rejects_unsafe_markdown_paths() {
+        for path in [
+            "",
+            ".md",
+            "/notes/a.md",
+            "../a.md",
+            "notes/../a.md",
+            "notes\\a.md",
+        ] {
+            assert!(
+                validate_markdown_path(path).is_err(),
+                "path should be rejected: {path:?}"
+            );
+        }
+        assert!(validate_markdown_path("notes/a.md").is_ok());
+        assert!(validate_markdown_path("notes/deep/a-b.md").is_ok());
+    }
+
+    #[test]
+    fn upload_extensions_exclude_svg_until_sanitizer_exists() {
+        assert!(is_allowed_image_ext("png"));
+        assert!(is_allowed_image_ext("webp"));
+        assert!(!is_allowed_image_ext("svg"));
     }
 }

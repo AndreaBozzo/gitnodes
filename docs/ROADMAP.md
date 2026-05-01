@@ -213,6 +213,46 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     Success criterion: un utente che apre per la prima volta un repo Brain capisce in <30 secondi quali cartelle esistono, quanti file contengono, dove finirà un nuovo documento e quali file sono "isolati" rispetto al grafo, senza dover aprire GitHub.
 
+- [ ] **3.7B Canonical TargetRef & Trust Boundary Preflight** _(emerged from architecture review, 2026-05-01)_
+
+    Razionale: la multi-tenancy funziona già nel percorso principale, ma il runtime ha ancora alcuni punti dove l'identità del target è implicita: server function che derivano `TargetConfig` dalla route corrente o dal `Referer`, URL multi-tenant senza branch, discovery che conosce `default_branch` ma non lo conserva nel link canonico, webhook ancora modellato soprattutto intorno al target env. Prima di aggiungere iframe, blob esterni e MCP/AI conviene chiudere questo strato: il target attivo deve essere un dato esplicito, verificabile e tracciabile in ogni read/write.
+
+    - Introdurre un `TargetRef` canonico `{ org, repo, branch }` come contratto di frontend/server fn, con branch esplicito nell'URL o in un target id firmato/risolto server-side. Le route legacy senza branch possono restare compat layer, ma non devono essere l'origine di verità per nuove superfici.
+    - Eliminare progressivamente l'inferenza del target da `Referer` per le mutazioni: ogni server fn che legge o scrive dati target-scoped riceve o risolve un `TargetRef` esplicito e poi verifica `can_read`/`can_write` su quel target.
+    - Brain Switcher: preservare il branch scoperto dal forge e rendere visibile quando un repo usa un branch diverso dal default operativo della istanza. Stato target più ricco: `accessible`, `missing-config`, `forbidden`, `branch-missing`, `config-invalid`.
+    - Webhook routing: mappare l'evento inbound al `TargetRef` reale del payload (`repo.full_name`, ref/branch) invece di assumere un solo target env. Eventi per target non configurati o non materializzati devono essere `202` con audit/debug, non rebuild sul target sbagliato.
+    - Success criterion: aprendo due target diversi in tab diverse, ogni server fn, asset proxy, SSE/refetch e webhook opera sul target corretto senza dipendere dal `Referer`; il branch è parte dell'identità canonica, non un dettaglio nascosto.
+
+- [ ] **3.7C Security & Content Trust Hardening** _(pre-embed / pre-blob / pre-AI)_
+
+    Razionale: Brain UI renderizza contenuto controllato dal repository e da provider esterni (Markdown, commenti issue, asset, in futuro iframe e AI-generated text). Finché l'app era un editor interno GitHub-first il rischio era gestibile; con dashboard embed, BYOB e assistant diventa un vero trust boundary. Questo lavoro va fatto prima o insieme a 3.8/3.9, non dopo.
+
+    - Markdown rendering policy esplicita: decidere se disabilitare raw HTML a monte o sanitizzare l'HTML generato prima di `inner_html`. La policy deve coprire documenti Brain, preview editor e commenti GitHub renderizzati nel detail panel.
+    - CSP baseline globale: `default-src 'self'`, `script-src` compatibile con Leptos/hydration, `img-src` limitato a self/data/blob e domini configurati, `frame-src` derivato dall'allowlist di 3.8, `object-src 'none'`, `base-uri 'none'`. La 3.8 estende questa policy, non la inventa.
+    - Upload safety: validare content-type e magic bytes lato server, non solo estensione; limitare SVG upload finché non esiste un sanitizer/policy dedicata. **Micro-fix 2026-05-01:** `UploadAsset` non accetta più nuovi `.svg`; gli SVG storici restano serviti dal proxy come asset legacy.
+    - CSRF per mutazioni server fn: `SameSite=Lax` protegge bene il callback OAuth, ma le mutazioni POST autenticate meritano un token anti-CSRF o un header same-origin verificato, soprattutto prima di iframe e automazioni.
+    - Session/token posture: decidere esplicitamente tra OAuth token utente, GitHub App installation token e token scoped per MCP. Tracciare TTL, revoca, cifratura at-rest della session store e rotazione dei secret.
+    - Success criterion: esiste una test matrix di sicurezza che prova XSS da Markdown/commenti, upload asset ostili, server fn cross-site e iframe non allowlistati; nessuna nuova superficie esterna può bypassare questa policy.
+
+- [ ] **3.7D Projection Schema v2 & SQLite Operations**
+
+    Razionale: le prossime feature usano SQLite non più solo come read model minimale. FTS5 richiede corpo/titolo/tag indicizzabili; Activity Stream e co-authorship richiedono commit metadata; Watch/Follow e advisory locks introducono dati user-scoped; Temporal Graph userà projection effimere. Prima di appoggiare tutto questo sulla tabella corrente, serve una piccola maturazione del layer dati.
+
+    - Versionare le migrazioni SQLite invece di affidarsi solo a `CREATE TABLE IF NOT EXISTS`; ogni schema change deve essere ripetibile su deploy Railway/prod e testabile in CI.
+    - Estendere `files`/`nodes` con i dati che servono davvero alle feature pianificate: `body_text` o tabella FTS separata, `frontmatter_json`, `commit_author`, `commit_message`, `last_commit_at`, e un modello chiaro per `node_authors`.
+    - Definire retention/cleanup per audit log, sessioni scadute, editing locks, watch notifications e projection temporanee. SQLite resta leggero solo se il ciclo di vita dei dati è esplicito.
+    - Aggiungere una vista admin/status della projection: schema version, last success/error per target, file/node/work item count, rebuild duration, webhook lag, rate-limit snapshot quando disponibile.
+    - Success criterion: 3.10 FTS5, Activity Stream, Watch/Follow e 4.2 Temporal Graph hanno una base dati coerente e migrabile; un deploy nuovo o esistente può aggiornarsi senza rebuild manuale cieco.
+
+- [ ] **3.7E Failure-Mode Matrix & Operational Readiness**
+
+    Razionale: il roadmap copre bene le capability, ma le feature collaborative diventano affidabili solo se i failure mode sono disegnati come percorsi di prodotto. Ogni nuova slice dovrebbe dichiarare cosa succede quando GitHub non risponde, il branch si muove, il permesso cambia, il provider sync fallisce, la projection è stale o il config è invalido.
+
+    - Aggiungere una tabella `feature → failure mode → UX → audit/log → retry/recovery` per le superfici principali: save, rename, work item sync, webhook rebuild, config editor, embed URL, blob URL, FTS rebuild.
+    - Health endpoint operativo (`/healthz`/`/readyz`) che distingua app boot, SQLite raggiungibile, session store migrato, projection pool pronto e config target leggibile quando esiste un target default.
+    - Background job/outbox leggero per riconciliazioni costose o retryabili: provider sync, webhook replay, future blob cleanup. Non introdurre un job system pesante finché SQLite + tokio task supervisionato bastano.
+    - Success criterion: quando una dipendenza esterna degrada, Brain UI mostra uno stato azionabile invece di un errore generico; gli operatori hanno log/audit sufficienti per capire se serve refresh, retry, re-login o fix di config.
+
 - [ ] **3.8 Embedded Analytics Views**
 
     Razionale: Brain UI è un control plane su una knowledge base editoriale, ma una parte crescente del valore aziendale vive in dati operativi pesanti (Postgres/Supabase, ads Instagram via Airbyte, metriche prodotto) che non ha senso ingerire dentro la projection SQLite né renderizzare con charting library lato WASM. La via naturale è far convivere dashboard esterni (Metabase, Superset, PowerBI, Grafana) come *view* di prima classe accanto ai grafi/nodi, embeddati via iframe, configurati dallo stesso `.brain-config.yml` e gated dalla stessa RBAC. Brain UI resta agnostico rispetto al data source: non parla mai col DB, non sa cosa c'è dentro il dashboard, sa solo che esiste, chi può vederlo, e dove punta.
@@ -474,3 +514,7 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 17. ~~Node hover flicker on graph canvas~~ — **DONE 2026-04-30**. Diagnosi confermata lato geometria SVG: l'hit-area del `<g>` era l'unione dei figli pitturati, quindi il `<circle>` visibile che transiva `r = base_r + bump` cambiava anche il target effettivo del puntatore. Fix in [graph_canvas.rs](../crates/brain-app/src/knowledge/graph_canvas.rs): il cerchio visibile ora ha `pointer-events="none"` e resta libero di animare; un secondo `<circle>` trasparente, stabile, con `r = base_r + selected_bump + buffer` riceve hover/click via bubbling sul gruppo. Aggiunto test `node_hit_radius_covers_all_visual_states`.
 
 18. **Graph canvas DOM scalability** — Il canvas SVG renderizza ogni nodo e arco come elemento DOM distinto gestito dalla reattività Leptos. Fino a ~300–500 nodi simultaneamente visibili le performance sono accettabili; oltre quella soglia — su repo reali con 1000+ nodi senza filtro attivo — il layout force-directed e i re-render reattivi possono introdurre frame drop percepibile. **Threshold di intervento:** se il dogfooding su repo reali con filtro rimosso mostra jank a >500 nodi, la risposta è virtualizzazione del viewport (render solo dei nodi dentro il viewBox corrente + buffer) prima di considerare Canvas 2D API. WebGL è overkill per un grafo 2D statico e richiede interop JS non banale da WASM. Da rivalutare dopo 4.2 (Temporal Graph View), che introdurrà un secondo render path e renderà più chiaro il vero collo di bottiglia.
+
+19. **Content trust boundary before embeds/blob/AI** — **PARTIAL 2026-05-01**. Brain UI usa `inner_html` per Markdown renderizzato e commenti issue: corretto per preservare formattazione, ma va trattato come trust boundary esplicito prima di iframe, BYOB e AI-generated content. Tracciato in **3.7C Security & Content Trust Hardening**. Micro-fix già applicata: i nuovi upload `.svg` non sono più accettati da `UploadAsset` finché non esiste sanitizer/policy dedicata; gli SVG storici restano serviti dal proxy come asset legacy.
+
+20. **Target identity still has ambient edges** — Il routing multi-tenant è landed, ma alcune server fn e handler ricavano ancora il target dalla route corrente o dal `Referer`, e il branch non è sempre parte dell'URL canonico. Questo è sufficiente per l'MVP, ma prima di embed/blob/MCP serve un `TargetRef { org, repo, branch }` esplicito in ogni read/write target-scoped. Tracciato in **3.7B Canonical TargetRef & Trust Boundary Preflight**.
