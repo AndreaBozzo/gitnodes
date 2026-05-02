@@ -121,7 +121,7 @@ pub(crate) fn KnowledgeView(
         v
     };
 
-    let stats: Vec<(String, usize)> = config
+    let type_counts: HashMap<String, usize> = config
         .with_value(|c| c.node_types.clone())
         .iter()
         .map(|spec| {
@@ -130,6 +130,21 @@ pub(crate) fn KnowledgeView(
             (spec.name.clone(), count)
         })
         .collect();
+    let total_nodes: usize = type_counts.values().sum();
+    // Header overflow: show top N by count, fold the rest into a dropdown.
+    let mut nonzero: Vec<(String, usize)> = type_counts
+        .iter()
+        .filter(|(_, c)| **c > 0)
+        .map(|(t, c)| (t.clone(), *c))
+        .collect();
+    nonzero.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    const HEADER_TOP_N: usize = 5;
+    let (header_top, header_rest): (Vec<_>, Vec<_>) = nonzero
+        .into_iter()
+        .enumerate()
+        .partition(|(i, _)| *i < HEADER_TOP_N);
+    let header_top: Vec<(String, usize)> = header_top.into_iter().map(|(_, p)| p).collect();
+    let header_rest: Vec<(String, usize)> = header_rest.into_iter().map(|(_, p)| p).collect();
 
     let active_tags = RwSignal::new(HashSet::<String>::new());
     let active_types = RwSignal::new(HashSet::<String>::new());
@@ -426,20 +441,61 @@ pub(crate) fn KnowledgeView(
                 >
                     "· /admin"
                 </a>
-                <div class="ml-auto flex items-center gap-2">
+                <div class="ml-auto flex items-center gap-2 flex-wrap justify-end">
+                    <span
+                        class="px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400"
+                        title="Total nodes in the current graph"
+                    >
+                        <span class="text-slate-200 font-semibold tabular-nums">{total_nodes}</span>
+                        " nodes"
+                    </span>
                     {
-                        let config = config.get_value();
-                        let stats_views = stats.into_iter().map(move |(t_name, count)| {
-                            let spec = config.lookup(&t_name).unwrap_or(config.default_spec());
+                        let config_top = config.get_value();
+                        header_top.into_iter().map(move |(t_name, count)| {
+                            let spec = config_top.lookup(&t_name).unwrap_or(config_top.default_spec());
                             view! {
-                            <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400">
-                                <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", spec.accent_var())></span>
-                                <span class="text-slate-200 font-semibold">{count}</span>
-                                <span>{spec.label.clone()}</span>
-                            </span>
+                                <span class="px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400">
+                                    <span class="text-slate-200 font-semibold tabular-nums">{count}</span>
+                                    " "
+                                    <span>{spec.label.clone()}</span>
+                                </span>
                             }
-                        }).collect::<Vec<_>>();
-                        stats_views.into_view()
+                        }).collect_view()
+                    }
+                    {
+                        let rest = header_rest.clone();
+                        (!rest.is_empty()).then(|| {
+                            let config_rest = config.get_value();
+                            let extra = rest.len();
+                            view! {
+                                <div class="dropdown dropdown-end">
+                                    <div
+                                        tabindex="0"
+                                        role="button"
+                                        class="px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400 hover:text-slate-200 cursor-pointer"
+                                        title="Show remaining types"
+                                    >
+                                        "+" {extra} " more"
+                                    </div>
+                                    <ul
+                                        tabindex="0"
+                                        class="dropdown-content menu menu-sm z-10 mt-1 p-2 shadow-lg bg-slate-900 border border-slate-800 rounded-md min-w-[180px]"
+                                    >
+                                        {rest.into_iter().map(move |(t_name, count)| {
+                                            let spec = config_rest.lookup(&t_name).unwrap_or(config_rest.default_spec());
+                                            view! {
+                                                <li>
+                                                    <span class="flex items-center justify-between gap-3 text-[11px] text-slate-300">
+                                                        <span>{spec.label.clone()}</span>
+                                                        <span class="tabular-nums text-slate-400">{count}</span>
+                                                    </span>
+                                                </li>
+                                            }
+                                        }).collect_view()}
+                                    </ul>
+                                </div>
+                            }
+                        })
                     }
                     <RefreshButton graph_version=graph_version sync_status=sync_status />
                     <button
@@ -469,6 +525,7 @@ pub(crate) fn KnowledgeView(
                     selected_path=selected_path
                     repo_files=repo_files.get_value()
                     config=config.get_value()
+                    type_counts=type_counts.clone()
                     current_org=target_ref.org.clone()
                     current_repo=target_ref.repo.clone()
                     current_branch=target_ref.branch.clone()

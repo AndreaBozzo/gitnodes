@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 
@@ -16,6 +16,7 @@ pub fn FilterPanel(
     selected_path: RwSignal<Option<String>>,
     repo_files: Vec<RepoFile>,
     config: brain_domain::BrainConfig,
+    type_counts: HashMap<String, usize>,
     #[prop(optional)] current_org: String,
     #[prop(optional)] current_repo: String,
     #[prop(optional)] current_branch: String,
@@ -24,6 +25,7 @@ pub fn FilterPanel(
         .iter()
         .map(|spec| {
             let t = spec.name.clone();
+            let count = type_counts.get(&t).copied().unwrap_or(0);
             let is_on = Memo::new({
                 let t = t.clone();
                 move |_| active_types.with(|s| s.contains(&t))
@@ -47,10 +49,12 @@ pub fn FilterPanel(
                     class=("text-slate-300", move || !is_on.get())
                     class=("border-slate-700", move || !is_on.get())
                     class=("hover:border-slate-500", move || !is_on.get())
+                    class=("opacity-50", move || count == 0)
                     on:click=toggle
                 >
                     <span class="inline-block w-2 h-2 rounded-full" style=format!("background:{}", spec.accent_var())></span>
-                    {spec.label.clone()}
+                    <span>{spec.label.clone()}</span>
+                    <span class="text-[10px] tabular-nums opacity-70">{count}</span>
                 </button>
             }
         })
@@ -103,36 +107,59 @@ pub fn FilterPanel(
         .collect_view();
     let has_views = !config.views.is_empty();
 
-    let tag_buttons = all_tags
-        .into_iter()
-        .map(|tag| {
-            let tag_cmp = tag.clone();
-            let is_on = Memo::new(move |_| active_tags.with(|s| s.contains(&tag_cmp)));
-            let tag_toggle = tag.clone();
-            let toggle = move |_| {
-                let t = tag_toggle.clone();
-                active_tags.update(|s| {
-                    if !s.remove(&t) {
-                        s.insert(t);
-                    }
-                });
-            };
-            view! {
-                <button
-                    class="px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
-                    class=("bg-teal-400/20", move || is_on.get())
-                    class=("text-teal-200", move || is_on.get())
-                    class=("border-teal-400/60", move || is_on.get())
-                    class=("text-slate-400", move || !is_on.get())
-                    class=("border-slate-700", move || !is_on.get())
-                    class=("hover:border-slate-500", move || !is_on.get())
-                    on:click=toggle
-                >
-                    {"#"}{tag}
-                </button>
+    let all_tags_total = all_tags.len();
+    let all_tags_stored = StoredValue::new(all_tags);
+    let tag_filter = RwSignal::new(String::new());
+
+    let visible_tags = Memo::new(move |_| {
+        let needle = tag_filter.get().to_lowercase();
+        let active = active_tags.get();
+        let mut pinned: Vec<String> = Vec::new();
+        let mut rest: Vec<String> = Vec::new();
+        all_tags_stored.with_value(|tags| {
+            for tag in tags {
+                let matches = needle.is_empty() || tag.contains(&needle);
+                if !matches {
+                    continue;
+                }
+                if active.contains(tag) {
+                    pinned.push(tag.clone());
+                } else {
+                    rest.push(tag.clone());
+                }
             }
-        })
-        .collect_view();
+        });
+        pinned.append(&mut rest);
+        pinned
+    });
+
+    let render_tag_button = move |tag: String| {
+        let tag_cmp = tag.clone();
+        let is_on = Memo::new(move |_| active_tags.with(|s| s.contains(&tag_cmp)));
+        let tag_toggle = tag.clone();
+        let toggle = move |_| {
+            let t = tag_toggle.clone();
+            active_tags.update(|s| {
+                if !s.remove(&t) {
+                    s.insert(t);
+                }
+            });
+        };
+        view! {
+            <button
+                class="px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
+                class=("bg-teal-400/20", move || is_on.get())
+                class=("text-teal-200", move || is_on.get())
+                class=("border-teal-400/60", move || is_on.get())
+                class=("text-slate-400", move || !is_on.get())
+                class=("border-slate-700", move || !is_on.get())
+                class=("hover:border-slate-500", move || !is_on.get())
+                on:click=toggle
+            >
+                {"#"}{tag}
+            </button>
+        }
+    };
 
     // --- Folder creation state ---
     // (Removed in favor of implicit folders)
@@ -176,46 +203,89 @@ pub fn FilterPanel(
         })
     };
 
+    // Reserved bottom slot for 4.x time-history graph. Hidden today; the
+    // filter pane reclaims the full height. Flip `HISTORY_SLOT_ENABLED` (or
+    // gate via cargo feature) when the time-history surface lands.
+    const HISTORY_SLOT_ENABLED: bool = false;
+    let has_tags = all_tags_total > 0;
+    let no_tags = all_tags_total == 0;
+
     view! {
-        <aside class="w-64 shrink-0 border-r border-slate-800 bg-slate-900/40 p-5 space-y-6 overflow-y-auto">
-            <BrainSwitcher
-                current_org=(!current_org.is_empty()).then(|| current_org.clone())
-                current_repo=(!current_repo.is_empty()).then(|| current_repo.clone())
-                current_branch=(!current_branch.is_empty()).then(|| current_branch.clone())
-            />
-            {has_views.then(|| view! {
+        <aside class="w-64 shrink-0 border-r border-slate-800 bg-slate-900/40 flex flex-col h-full min-h-0">
+            <div class="px-5 pt-5 pb-3 shrink-0 border-b border-slate-800/60">
+                <BrainSwitcher
+                    current_org=(!current_org.is_empty()).then(|| current_org.clone())
+                    current_repo=(!current_repo.is_empty()).then(|| current_repo.clone())
+                    current_branch=(!current_branch.is_empty()).then(|| current_branch.clone())
+                />
+            </div>
+            <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-6">
+                {has_views.then(|| view! {
+                    <section>
+                        <div class="flex items-center mb-3">
+                            <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Views"</h2>
+                            {clear_in_views_row}
+                        </div>
+                        <div class="flex flex-wrap gap-2">{view_buttons}</div>
+                    </section>
+                })}
                 <section>
                     <div class="flex items-center mb-3">
-                        <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Views"</h2>
-                        {clear_in_views_row}
+                        <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Type"</h2>
+                        {clear_in_type_row}
                     </div>
-                    <div class="flex flex-wrap gap-2">{view_buttons}</div>
+                    <div class="flex flex-wrap gap-2">{type_buttons}</div>
                 </section>
-            })}
-            <section>
-                <div class="flex items-center mb-3">
-                    <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Type"</h2>
-                    {clear_in_type_row}
-                </div>
-                <div class="flex flex-wrap gap-2">{type_buttons}</div>
-            </section>
-            <section>
-                <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-3">"Tags"</h2>
-                <div class="flex flex-wrap gap-2">{tag_buttons}</div>
-            </section>
-            <RepoStructureTree
-                files=repo_files
-                active_path_prefix=active_path_prefix
-                active_orphan_filter=active_orphan_filter
-                selected_path=selected_path
-                config=config.clone()
-                current_org=current_org.clone()
-                current_repo=current_repo.clone()
-            />
+                <RepoStructureTree
+                    files=repo_files
+                    active_path_prefix=active_path_prefix
+                    active_orphan_filter=active_orphan_filter
+                    selected_path=selected_path
+                    config=config.clone()
+                    current_org=current_org.clone()
+                    current_repo=current_repo.clone()
+                />
+                <section>
+                    <div class="flex items-center justify-between mb-2">
+                        <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">
+                            "Tags"
+                            <Show when=move || has_tags>
+                                <span class="ml-1.5 text-slate-600 normal-case tracking-normal">{all_tags_total}</span>
+                            </Show>
+                        </h2>
+                    </div>
+                    <Show when=move || has_tags>
+                        <input
+                            type="search"
+                            placeholder="Filter tags…"
+                            class="w-full px-2 py-1 mb-2 rounded bg-slate-900/60 border border-slate-800 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-slate-600"
+                            prop:value=move || tag_filter.get()
+                            on:input=move |ev| tag_filter.set(event_target_value(&ev))
+                        />
+                        <div class="max-h-48 overflow-y-auto pr-1">
+                            <div class="flex flex-wrap gap-2">
+                                {move || visible_tags.get().into_iter().map(render_tag_button).collect_view()}
+                            </div>
+                            <Show when=move || visible_tags.with(|v| v.is_empty()) && !tag_filter.with(String::is_empty)>
+                                <p class="text-[10px] text-slate-600 italic mt-1">"No tags match."</p>
+                            </Show>
+                        </div>
+                    </Show>
+                    <Show when=move || no_tags>
+                        <p class="text-[10px] text-slate-600 italic">"No tags in this graph."</p>
+                    </Show>
+                </section>
 
-            <section class="text-[11px] text-slate-500 leading-relaxed pt-4 border-t border-slate-800">
-                <p>"Empty filter means everything visible. Hover a node to emphasise its neighbourhood; click to lock it into the detail bar."</p>
-            </section>
+                <section class="text-[11px] text-slate-500 leading-relaxed pt-4 border-t border-slate-800">
+                    <p>"Empty filter means everything visible. Hover a node to emphasise its neighbourhood; click to lock it into the detail bar."</p>
+                </section>
+            </div>
+            <Show when=move || HISTORY_SLOT_ENABLED>
+                <div class="shrink-0 border-t border-slate-800 h-1/3 min-h-[160px] overflow-y-auto px-5 py-3 bg-slate-950/40">
+                    <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 mb-2">"History"</h2>
+                    <p class="text-[11px] text-slate-600 italic">"Time-history graph lands in 4.x."</p>
+                </div>
+            </Show>
         </aside>
     }
 }
