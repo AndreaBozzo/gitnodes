@@ -252,6 +252,14 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
             targets.push(t);
         }
     }
+    // Drop repos with no Brain presence — they add noise to the switcher and
+    // are not actionable. ConfigInvalid is kept so the user can see a broken config.
+    targets.retain(|t| {
+        matches!(
+            t.state,
+            AccessibleTargetState::Accessible | AccessibleTargetState::ConfigInvalid
+        )
+    });
     // Preserve a stable, predictable order regardless of probe completion order.
     targets.sort_by(|a, b| a.org.cmp(&b.org).then_with(|| a.repo.cmp(&b.repo)));
     Ok(targets)

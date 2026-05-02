@@ -162,7 +162,7 @@ pub fn BrainSwitcher(
                     {move || {
                         let list = targets.get().unwrap_or_default();
                         view! {
-                            <div>
+                            <div class="max-h-64 overflow-y-auto">
                             {if list.is_empty() {
                                 view! {
                                     <p class="text-[10px] text-slate-500 px-1 py-2">"No accessible repos found."</p>
