@@ -20,9 +20,20 @@ use std::time::{Duration, Instant};
 const TTL: Duration = Duration::from_secs(30);
 const CONFIG_PATH: &str = ".brain-config.yml";
 
+/// Grace window during which a freshly-seeded entry is protected from
+/// `invalidate()`. Sized to outlast GitHub's contents-API eventual-consistency
+/// window (typically <1s) plus the time it takes a webhook push for the same
+/// commit to round-trip and trigger a rebuild. If a webhook lands inside this
+/// window, the seeded canonical config wins; outside it, normal invalidation
+/// applies (manual refresh / out-of-band push).
+const SEED_GRACE: Duration = Duration::from_secs(5);
+
 struct CacheEntry {
     cfg: Arc<BrainConfig>,
     stored_at: Instant,
+    /// True when this entry was placed by `store()` (post-save canonical seed).
+    /// Cleared when the entry is replaced by a normal `cache_store` from `load`.
+    seeded: bool,
 }
 
 fn cache() -> &'static Mutex<HashMap<TargetKey, CacheEntry>> {
@@ -40,22 +51,34 @@ fn cache_get(key: &TargetKey) -> Option<Arc<BrainConfig>> {
     }
 }
 
-fn cache_store(key: &TargetKey, cfg: Arc<BrainConfig>) {
+fn cache_store(key: &TargetKey, cfg: Arc<BrainConfig>, seeded: bool) {
     if let Ok(mut guard) = cache().lock() {
         guard.insert(
             key.clone(),
             CacheEntry {
                 cfg,
                 stored_at: Instant::now(),
+                seeded,
             },
         );
     }
 }
 
 /// Drop the cached config for a single target. Called from the manual
-/// `RefreshGraph` server fn and from any future webhook push handler.
+/// `RefreshGraph` server fn and from webhook push handlers.
+///
+/// Honours the post-save grace window: if a `store()` seeded the cache within
+/// the last `SEED_GRACE`, the entry is preserved. This blocks the webhook
+/// triggered by our own commit from racing GitHub's eventually-consistent
+/// contents API and pinning a stale read.
 pub fn invalidate(key: &TargetKey) {
     if let Ok(mut guard) = cache().lock() {
+        if let Some(entry) = guard.get(key)
+            && entry.seeded
+            && entry.stored_at.elapsed() < SEED_GRACE
+        {
+            return;
+        }
         guard.remove(key);
     }
 }
@@ -65,8 +88,12 @@ pub fn invalidate(key: &TargetKey) {
 /// few hundred ms after `PUT /contents/{path}` returns success — long enough for
 /// the post-save reload to repopulate the cache with stale data and pin it for
 /// the 30s TTL.
+///
+/// Entries placed via this function are protected from `invalidate()` for
+/// `SEED_GRACE`, so the webhook fired by our own commit cannot race in and
+/// overwrite the seed with a stale GitHub read.
 pub fn store(key: &TargetKey, cfg: BrainConfig) {
-    cache_store(key, Arc::new(cfg));
+    cache_store(key, Arc::new(cfg), true);
 }
 
 #[derive(Deserialize)]
@@ -91,7 +118,7 @@ pub async fn load(target: &TargetConfig, token: &str) -> Arc<BrainConfig> {
         }
     };
     let arc = Arc::new(cfg);
-    cache_store(&key, arc.clone());
+    cache_store(&key, arc.clone(), false);
     arc
 }
 
@@ -164,11 +191,41 @@ mod tests {
         invalidate(&a);
         invalidate(&b);
 
-        cache_store(&a, Arc::new(BrainConfig::default()));
+        cache_store(&a, Arc::new(BrainConfig::default()), false);
         assert!(cache_get(&a).is_some());
         assert!(cache_get(&b).is_none());
 
         invalidate(&a);
         assert!(cache_get(&a).is_none());
+    }
+
+    #[test]
+    fn seeded_entry_survives_invalidate_within_grace() {
+        let k = TargetKey::from(&target("o", "cfg_seed_grace", "main"));
+        invalidate(&k);
+
+        store(&k, BrainConfig::default());
+        assert!(cache_get(&k).is_some(), "store seeds the cache");
+
+        invalidate(&k);
+        assert!(
+            cache_get(&k).is_some(),
+            "seed survives invalidate inside grace window"
+        );
+    }
+
+    #[test]
+    fn unseeded_entry_is_invalidated_normally() {
+        let k = TargetKey::from(&target("o", "cfg_unseeded", "main"));
+        invalidate(&k);
+
+        cache_store(&k, Arc::new(BrainConfig::default()), false);
+        assert!(cache_get(&k).is_some());
+
+        invalidate(&k);
+        assert!(
+            cache_get(&k).is_none(),
+            "unseeded entries (placed by load) are removed by invalidate"
+        );
     }
 }
