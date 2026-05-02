@@ -800,7 +800,7 @@ pub fn EditorPanel(
                     </Show>
                 </div>
                 <button
-                    class="w-full px-4 py-2 rounded-md bg-teal-500 text-slate-950 text-sm font-semibold hover:bg-teal-400 transition-colors focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-50"
+                    class="btn btn-primary btn-sm w-full font-semibold"
                     disabled=move || saving.get() || title.with(|t| t.is_empty()) || frontmatter_malformed.get()
                     on:click=on_submit
                 >

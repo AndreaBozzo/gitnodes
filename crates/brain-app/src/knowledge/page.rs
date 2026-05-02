@@ -443,7 +443,7 @@ pub(crate) fn KnowledgeView(
                     }
                     <RefreshButton graph_version=graph_version sync_status=sync_status />
                     <button
-                        class="ml-2 px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-medium hover:bg-teal-500/30 transition-colors"
+                        class="btn btn-primary btn-outline btn-xs ml-2"
                         on:click=move |_| {
                             edit_mode.update(|m| {
                                 *m = if matches!(m, EditMode::Closed) {
@@ -521,7 +521,7 @@ fn RefreshButton(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>
     let target = expect_context::<TargetRef>();
     view! {
         <button
-            class="px-3 py-1.5 rounded-md bg-slate-800/60 border border-slate-700 text-slate-300 text-xs font-medium hover:bg-slate-700/70 hover:text-slate-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
+            class="btn btn-ghost btn-xs"
             title="Rebuild the local graph projection from the repo."
             disabled=move || busy.get()
             on:click=move |_| {

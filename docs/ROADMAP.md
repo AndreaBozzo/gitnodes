@@ -252,6 +252,28 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Background job/outbox leggero per riconciliazioni costose o retryabili: provider sync, webhook replay, future blob cleanup. Non introdurre un job system pesante finché SQLite + tokio task supervisionato bastano.
     - Success criterion: quando una dipendenza esterna degrada, Brain UI mostra uno stato azionabile invece di un errore generico; gli operatori hanno log/audit sufficienti per capire se serve refresh, retry, re-login o fix di config.
 
+- [x] **3.7F Frontend Component Library Posture** — _baseline DONE 2026-05-02_
+
+    Razionale: la UI Leptos è cresciuta a forza di utility Tailwind hand-rolled (136 occorrenze color-utility censite in `crates/brain-app/src/`, banner/button/pill idiom ripetuti tra `editor.rs` 1469 LoC e `page.rs` 554 LoC). Il rischio non è estetico ma di drift: ogni nuova superficie reinventa il proprio bottone primario/ghost, e la coerenza visiva regredisce a ogni feature. La direzione scelta è installare DaisyUI come *capability* sopra Tailwind 3.4 — zero JS runtime, zero impatto su Leptos/SSR/hydration — senza retrofit di massa.
+
+    **Baseline shippata 2026-05-02:**
+    - DaisyUI 4 come devDep (`package.json`), plugin in `tailwind.config.js` con tema custom `brain` che mappa il palette esistente (primary teal `#2dd4bf`, accent violet, neutral slate). `base: false` per evitare override di global styles esistenti; `styled: true`, `utils: true`.
+    - `data-theme="brain"` attaccato a `<html>` in `crates/brain-app/src/app.rs` — l'unico touchpoint runtime.
+    - Polish chirurgico (3 swap, solo veri "button idiom"): submit primario in `editor.rs`, `+ New` / `Close Editor` in `page.rs`, `Refresh` in `page.rs`. Banner/pill/toggle/disclosure idiom **non toccati** — sono pattern visivi distinti che DaisyUI default appiattirebbe.
+
+    **Esplicitamente fuori da 3.7F:** retrofit massivo del palette (i 136 utility color usage restano), porting di banner/alert idiom a `alert alert-*` (perdono il look ghost-fill translucido attuale), introduzione di Headless UI Rust ports.
+
+    **Cosa fare in futuro (gated, non pianificato):**
+    - **Adozione incrementale, opt-in per nuova feature.** Ogni nuova superficie costruita in Fase 3.x/4.x dovrebbe usare componenti DaisyUI (`btn`, `modal`, `dropdown`, `toggle`, `tabs`) come default. Niente sweep dedicati di refactor: il vecchio rimane finché non viene toccato per altri motivi.
+    - **Modal/Dropdown sweep.** Quando arriva la prima feature che richiede un dialog non-banale (es. confirm di rename strutturale in 4.0 Admin Node Control, o conflict resolution UI in 4.4), usare `<dialog class="modal">` di DaisyUI invece di reinventare il pattern. Trigger: prima feature che genuinamente serve un dialog modale.
+    - **Web Components bridge → 4.x, gated.** Discussione conclusa 2026-05-02: porting di un bridge JS/TS via Custom Elements ha senso **solo** se l'editor Markdown hits a real Leptos ceiling (rich-text/WYSIWYG, embedding di CodeMirror/ProseMirror/TipTap, o un visualizzatore graph WebGL per >1k nodi). Decision gate: deve emergere un need utente concreto in Fase 3 (3.4 visual editor / 3.7 dogfooding feedback) o 4.x. Niente spike speculativi. Costo della preparazione: piccolo — `js-sys` e `wasm-bindgen` sono già nel `Cargo.toml` di `brain-app`, quindi quando arriva il momento il runtime è pronto, manca solo il build step JS.
+    - **D3/Cytoscape interop per `graph_canvas.rs` → backlog senza data.** Oggi `graph_canvas.rs` è 878 LoC di SVG hand-rolled con wheel/touch/pan-zoom: funziona, ma se serve force-directed layout o WebGL rendering sopra ~1k nodi, hand-off a libreria JS è preferibile a port Rust. Trigger: complaint utente concreto su perf/feature, non "perché si può".
+    - **Dark/light theme switch.** Non in roadmap: oggi `color-scheme: dark` è hardcoded in `tailwind.css` e in `<meta>`. Se in futuro serve light mode (es. embed in dashboard chiari), il theme `brain` può affiancarne uno light — DaisyUI gestisce via `data-theme` switch. Trigger: bisogno reale, non simmetria estetica.
+
+    **Caveat tecnico noto:** `base: false` significa che gli `<html>`/`<body>`/`<button>` di default Tailwind/browser restano. Se in futuro si abilita `base: true`, fare prima un audit visivo perché DaisyUI reset diversi default (focus rings, button padding, link colors) e i 136 utility color usage attuali potrebbero subire regressioni puntuali. Decisione: lasciare `base: false` finché non c'è una ragione esplicita per cambiare.
+
+    **Success criterion:** ogni nuova superficie UI dalla 3.8 in avanti riusa `btn`/`modal`/`tabs`/`alert` di DaisyUI quando il pattern è applicabile, riducendo divergenza visiva senza richiedere sweep dedicati. La review verifica che PR di feature non reintroducano button idiom hand-rolled quando esiste l'equivalente DaisyUI.
+
 - [ ] **3.8 Embedded Analytics Views**
 
     Razionale: Brain UI è un control plane su una knowledge base editoriale, ma una parte crescente del valore aziendale vive in dati operativi pesanti (Postgres/Supabase, ads Instagram via Airbyte, metriche prodotto) che non ha senso ingerire dentro la projection SQLite né renderizzare con charting library lato WASM. La via naturale è far convivere dashboard esterni (Metabase, Superset, PowerBI, Grafana) come *view* di prima classe accanto ai grafi/nodi, embeddati via iframe, configurati dallo stesso `.brain-config.yml` e gated dalla stessa RBAC. Brain UI resta agnostico rispetto al data source: non parla mai col DB, non sa cosa c'è dentro il dashboard, sa solo che esiste, chi può vederlo, e dove punta.
