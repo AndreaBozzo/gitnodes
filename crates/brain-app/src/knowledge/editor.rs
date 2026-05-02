@@ -1007,17 +1007,22 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
         })
     });
 
-    let add_tag = move |raw: String| {
-        for piece in raw.split(|c: char| c.is_whitespace() || c == ',') {
-            let t = piece.trim().trim_start_matches('#').trim().to_string();
-            if t.is_empty() {
-                continue;
+    let add_tag_token = move |raw: String| {
+        let t = normalize_tag(&raw);
+        if t.is_empty() {
+            return;
+        }
+        tags.update(|v| {
+            if !v.contains(&t) {
+                v.push(t);
             }
-            tags.update(|v| {
-                if !v.contains(&t) {
-                    v.push(t);
-                }
-            });
+        });
+        tag_input.set(String::new());
+    };
+
+    let add_tags_from_input = move |raw: String| {
+        for tag in tags_from_input(&raw) {
+            add_tag_token(tag);
         }
         tag_input.set(String::new());
     };
@@ -1050,18 +1055,22 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
                     let k = ev.key();
                     if k == "Enter" || k == "," || k == " " {
                         ev.prevent_default();
-                        add_tag(tag_input.get_untracked());
+                        add_tags_from_input(tag_input.get_untracked());
                     }
                 }
-                on:blur=move |_| add_tag(tag_input.get_untracked())
+                on:blur=move |_| add_tags_from_input(tag_input.get_untracked())
             />
             <div class="flex flex-wrap gap-1 mt-1">
                 {move || tag_suggestions.get().into_iter().map(|t| {
                     let t_click = t.clone();
                     view! {
                         <button
+                            type="button"
                             class="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 hover:text-teal-200 hover:border-teal-400/40 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
-                            on:click=move |_| add_tag(t_click.clone())
+                            on:mousedown=move |ev| {
+                                ev.prevent_default();
+                                add_tag_token(t_click.clone());
+                            }
                         >
                             {"+ #"}{t}
                         </button>
@@ -1070,6 +1079,17 @@ fn TagInput(tags: RwSignal<Vec<String>>, all_tags: StoredValue<Vec<String>>) -> 
             </div>
         </div>
     }
+}
+
+fn normalize_tag(raw: &str) -> String {
+    raw.trim().trim_start_matches('#').trim().to_string()
+}
+
+fn tags_from_input(raw: &str) -> Vec<String> {
+    raw.split(|c: char| c.is_whitespace() || c == ',')
+        .map(normalize_tag)
+        .filter(|tag| !tag.is_empty())
+        .collect()
 }
 
 /// Edit / preview toggle for the markdown body.
@@ -1280,6 +1300,15 @@ mod tests {
         );
         assert!(!fields.contains_key("author"));
         assert_eq!(fields.get("status").map(String::as_str), Some("accepted"));
+    }
+
+    #[test]
+    fn tag_helpers_split_manual_input_but_preserve_exact_suggestions() {
+        assert_eq!(
+            tags_from_input(" #brain-ui, rustlang  ops "),
+            vec!["brain-ui", "rustlang", "ops"]
+        );
+        assert_eq!(normalize_tag(" #customer success "), "customer success");
     }
 }
 
