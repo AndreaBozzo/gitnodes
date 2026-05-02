@@ -502,7 +502,16 @@ Sfruttare la maturazione del backend GitHub-first per standardizzare il boundary
     - Permettere l'esecuzione di Brain UI contro un `.git` locale o una working tree locale senza dipendere da Axum come proxy di un forge remoto.
     - Implementare un `LocalFileSystemAdapter`/`LocalGitAdapter` che offra la stessa superficie minima usata dal runtime: lettura snapshot, commit locali, branch locali, eventuale sync successivo verso remoto opzionale.
     - Evitare fork architetturali: stessa UI, stesso projection pipeline, diverso adapter.
-    - **Segnale di estrazione crate per `server/projection`** — quando 4.3 introduce `LocalGitAdapter`, `server/projection.rs` diventa consumato da due runtime distinti (forge remoto e filesystem locale). Quel momento è il trigger naturale per estrarre `brain-projection` come crate separato, non prima. Prima di allora il guadagno è zero e il costo è un confine di crate che vincola la firma delle query prima che emerga un secondo consumer reale. In preparazione: spezzare `server/projection.rs` (1800+ righe) in sottomoduli interni (`projection/nodes.rs`, `projection/work_items.rs`, `projection/files.rs`, `projection/rebuild.rs`) senza cambiare crate — questo si può fare già ora, costo basso, riduce la frizione di navigazione nel codebase.
+    - **Segnale di estrazione crate per `server/projection`** — quando 4.3 introduce `LocalGitAdapter`, `server/projection.rs` diventa consumato da due runtime distinti (forge remoto e filesystem locale). Quel momento è il trigger naturale per estrarre `brain-projection` come crate separato, non prima. Prima di allora il guadagno è zero e il costo è un confine di crate che vincola la firma delle query prima che emerga un secondo consumer reale.
+    - **Projection modularization prep** _(safe to do before 4.3, mechanical only,**02/05/2026 DONE**)_:
+        - [x] Convertire `crates/brain-app/src/server/projection.rs` in `projection/mod.rs` mantenendo invariato il public API usato da `api/*`, `webhook`, `routing`, `target_registry` e `main`.
+        - [x] Estrarre `migrations.rs` per `migrate` + helper schema, senza introdurre ancora versioned migrations.
+        - [x] Estrarre `target.rs` / `sync_state.rs` per `ensure_target_id`, `pool_handle` consumers e watermark/error state.
+        - [x] Estrarre `rebuild.rs` per `rebuild`, `ProjectionSnapshot`, backlink derivation e snapshot persistence orchestration.
+        - [x] Estrarre `bulk_insert.rs` per gli insert chunked SQLite e il limite `SQLITE_MAX_VARIABLES`.
+        - [x] Estrarre query modules `nodes.rs`, `files.rs`, `work_items.rs` con filters, row mapping e single-row work item mutations.
+        - [x] Lasciare fuori scope crate split, trait projection/repository, schema v2, FTS e behavioral changes; ogni commit deve essere verificabile come refactor-only.
+        - [x] Verifica minima per chiudere la prep: `cargo check -p brain-app --features ssr`, `cargo check -p brain-app --features hydrate`, `cargo test -p brain-app --features ssr`.
 - [ ] **4.4 Advanced Conflict Resolution**
     - La Fase 2B ha introdotto il banner `Stale Data`; con collaborazione reale e fallback via PR non basta più.
     - Quando webhook o ref update rivelano divergenze rispetto al draft locale o al branch corrente, servono diff e merge espliciti: vista side-by-side, scelta hunk-based o almeno `local / remote / apply anyway`.
