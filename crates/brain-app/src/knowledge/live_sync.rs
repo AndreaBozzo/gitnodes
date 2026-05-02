@@ -74,6 +74,33 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             )
         }
 
+        fn is_workspace_path(path: &str) -> bool {
+            if path == "/knowledge"
+                || path.starts_with("/knowledge/")
+                || path == "/admin"
+                || path.starts_with("/admin/")
+            {
+                return true;
+            }
+
+            let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+            match parts.as_slice() {
+                [org, repo, "knowledge", ..] | [org, repo, "admin", ..] => {
+                    !org.is_empty() && !repo.is_empty()
+                }
+                [org, repo, branch, "knowledge", ..] | [org, repo, branch, "admin", ..] => {
+                    !org.is_empty() && !repo.is_empty() && !branch.is_empty()
+                }
+                _ => false,
+            }
+        }
+
+        fn live_sync_enabled_for_location() -> bool {
+            web_sys::window()
+                .and_then(|window| window.location().pathname().ok())
+                .is_some_and(|path| is_workspace_path(&path))
+        }
+
         fn active_target_from_location() -> Option<brain_domain::TargetRef> {
             let path = web_sys::window()?.location().pathname().ok()?;
             let parts: Vec<&str> = path.trim_start_matches('/').splitn(5, '/').collect();
@@ -118,6 +145,11 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             let attempts = attempts.clone();
             let connect = connect.clone();
             move || {
+                if !live_sync_enabled_for_location() {
+                    sync_status.set(SyncStatus::Fresh);
+                    return;
+                }
+
                 let attempt = attempts.get().saturating_add(1);
                 attempts.set(attempt);
                 let delay_ms = reconnect_delay_ms(attempt);
@@ -155,6 +187,11 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             let attempts = attempts.clone();
             let schedule_reconnect = schedule_reconnect.clone();
             *connect.borrow_mut() = Some(Box::new(move || {
+                if !live_sync_enabled_for_location() {
+                    sync_status.set(SyncStatus::Fresh);
+                    return;
+                }
+
                 let Ok(source) = EventSource::new("/sse/events") else {
                     schedule_reconnect();
                     return;
