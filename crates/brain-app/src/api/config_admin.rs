@@ -13,7 +13,7 @@ use super::write_orchestrator::{rebuild_projection_after_write, save_file_permis
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
     pub target: TargetConfig,
     pub brand: BrandConfig,

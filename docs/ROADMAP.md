@@ -6,6 +6,8 @@ Questo documento delinea l'evoluzione di **Brain UI** da un visualizzatore di gr
 
 **Realignment 2026-04-26:** Fasi 3 e 4 non vanno più trattate come estensioni speculative. La base costruita in Fase 2B (projection SQLite multi-tenant, target-scoped cache, `brain_id` stabile, rename atomici via Git Data API) consente di pianificare il lavoro successivo come evoluzione concreta del runtime esistente. In pratica: Fase 3 diventa la fase del **workspace multi-tenant collaborativo**, Fase 4 quella della **standardizzazione forge/time-travel/local mode**.
 
+**Realignment 2026-05-02:** Fase 3 è ora una fase di **shipping e dogfooding**, non un contenitore per ogni idea corretta emersa dall'architecture review. Il core collaborativo è già shippable: routing multi-target, work item sync, PR fallback, saved views, graph polish, repo structure, target identity, UI posture e sidebar posture sono chiusi. Le nuove superfici grandi (embed analytics, BYOB/blob, FTS, activity stream, advisory lock, local/offline, forge abstraction) restano tracciate, ma non sono gate di Fase 3. Il gate attuale è: usare il prodotto con un contributor limitato, raccogliere attrito reale, correggere solo bug/UX blocker piccoli, poi aprire la prossima fase con priorità esplicita.
+
 ---
 
 ## 🟢 Fase 1: Astrazione e Configurabilità
@@ -122,6 +124,8 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
 **Principio guida:** il backend ha già le primitive giuste (`TargetKey`, projection SQLite per target, `brain_id` stabile, write path GitHub centralizzato). La Fase 3 deve evitare nuove scorciatoie single-target e introdurre ogni nuova capability come target-aware fin dal primo commit.
 
+**Scope freeze 2026-05-02:** Fase 3 non accetta più nuove capability platform. Da qui alla chiusura entrano solo: bugfix, polish piccolo, documentazione operativa, e follow-up estratti dal dogfooding se bloccano davvero l'uso con contributor limitato. Tutto il resto viene spostato in "Next hardening" o "Future product expansion".
+
 - [x] **3.1 Multi-Tenant Workspace Routing**
     - Evolvere il router Leptos da path statici (`/knowledge`, `/admin`) a path dinamici `/{org}/{repo}/knowledge` e `/{org}/{repo}/admin`, mantenendo eventuali redirect dal target di default solo come compat layer temporaneo.
     - Spostare la risoluzione del `TargetConfig` dal boot statico del server al contesto della request/pagina. `GithubHttp` pooled è già target-agnostic; ciò che manca è togliere l'assunzione che asset proxy, SSR context e webhook state puntino a un solo repo definito da env.
@@ -156,7 +160,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
       - Audit dedicato per `propose_write`, `propose_delete`, `propose_rename`, `propose_work_item_mutation`.
     - Follow-up non bloccanti:
       - Il futuro Visual Configuration Editor di 3.4 deve riusare lo stesso orchestratore.
-      - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; chiusura prevista in 3.9-α (BlobAdapter + R2 → la PR contiene solo diff Markdown, preview live funzionante).
+      - L'upload asset resta direct-write oriented perché un asset proposto via PR non è immediatamente referenziabile dal markdown live; chiusura prevista nella slice BYOB α (BlobAdapter + R2 → la PR contiene solo diff Markdown, preview live funzionante).
 - [x] **3.4 Visual Configuration Editor** _(spostato da Fase 1)_
 
     **Realignment 2026-04-27:** la fase viene spezzata in slice verticali (α → β → γ) invece di un singolo drop visual editor completo. Razionale: la roundtrip GUI ↔ YAML ↔ orchestratore di scrittura è il vero rischio architetturale; isolarlo sulla dimensione di config più piccola consente di iterare sui feedback prima di estendere la GUI all'intera superficie di `BrainConfig`. Ogni slice è indipendentemente shippabile e dogfoodabile.
@@ -222,36 +226,6 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - [x] **3.7B-γ — Webhook routing per TargetRef reale + SSE target-scoped** — **DONE 2026-05-01**. I webhook push estraggono `TargetRef` da `repository.full_name` + `refs/heads/*` e lo confrontano con il target registrato; item event (`issues`/`pull_request`) risolvono il target via registry repo, non più da `WebhookState.target`. Target non registrati o branch mismatch rispondono `202 Accepted` con audit/debug e non rebuildano il target env. `BrainEvent` ora include `target: TargetRef` in ogni payload; `LiveSync` filtra lato client contro il target canonico corrente, così tab su target diversi non si invalidano a vicenda.
     - Success criterion: aprendo due target diversi in tab diverse, ogni server fn, asset proxy, SSE/refetch e webhook opera sul target corretto senza dipendere dal `Referer`; il branch è parte dell'identità canonica, non un dettaglio nascosto.
 
-- [ ] **3.7C Security & Content Trust Hardening** _(pre-embed / pre-blob / pre-AI)_
-
-    Razionale: Brain UI renderizza contenuto controllato dal repository e da provider esterni (Markdown, commenti issue, asset, in futuro iframe e AI-generated text). Finché l'app era un editor interno GitHub-first il rischio era gestibile; con dashboard embed, BYOB e assistant diventa un vero trust boundary. Questo lavoro va fatto prima o insieme a 3.8/3.9, non dopo.
-
-    - Markdown rendering policy esplicita: decidere se disabilitare raw HTML a monte o sanitizzare l'HTML generato prima di `inner_html`. La policy deve coprire documenti Brain, preview editor e commenti GitHub renderizzati nel detail panel.
-    - CSP baseline globale: `default-src 'self'`, `script-src` compatibile con Leptos/hydration, `img-src` limitato a self/data/blob e domini configurati, `frame-src` derivato dall'allowlist di 3.8, `object-src 'none'`, `base-uri 'none'`. La 3.8 estende questa policy, non la inventa.
-    - Upload safety: validare content-type e magic bytes lato server, non solo estensione; limitare SVG upload finché non esiste un sanitizer/policy dedicata. **Micro-fix 2026-05-01:** `UploadAsset` non accetta più nuovi `.svg`; gli SVG storici restano serviti dal proxy come asset legacy.
-    - CSRF per mutazioni server fn: `SameSite=Lax` protegge bene il callback OAuth, ma le mutazioni POST autenticate meritano un token anti-CSRF o un header same-origin verificato, soprattutto prima di iframe e automazioni.
-    - Session/token posture: decidere esplicitamente tra OAuth token utente, GitHub App installation token e token scoped per MCP. Tracciare TTL, revoca, cifratura at-rest della session store e rotazione dei secret.
-    - Success criterion: esiste una test matrix di sicurezza che prova XSS da Markdown/commenti, upload asset ostili, server fn cross-site e iframe non allowlistati; nessuna nuova superficie esterna può bypassare questa policy.
-
-- [ ] **3.7D Projection Schema v2 & SQLite Operations**
-
-    Razionale: le prossime feature usano SQLite non più solo come read model minimale. FTS5 richiede corpo/titolo/tag indicizzabili; Activity Stream e co-authorship richiedono commit metadata; Watch/Follow e advisory locks introducono dati user-scoped; Temporal Graph userà projection effimere. Prima di appoggiare tutto questo sulla tabella corrente, serve una piccola maturazione del layer dati.
-
-    - Versionare le migrazioni SQLite invece di affidarsi solo a `CREATE TABLE IF NOT EXISTS`; ogni schema change deve essere ripetibile su deploy Railway/prod e testabile in CI.
-    - Estendere `files`/`nodes` con i dati che servono davvero alle feature pianificate: `body_text` o tabella FTS separata, `frontmatter_json`, `commit_author`, `commit_message`, `last_commit_at`, e un modello chiaro per `node_authors`.
-    - Definire retention/cleanup per audit log, sessioni scadute, editing locks, watch notifications e projection temporanee. SQLite resta leggero solo se il ciclo di vita dei dati è esplicito.
-    - Aggiungere una vista admin/status della projection: schema version, last success/error per target, file/node/work item count, rebuild duration, webhook lag, rate-limit snapshot quando disponibile.
-    - Success criterion: 3.10 FTS5, Activity Stream, Watch/Follow e 4.2 Temporal Graph hanno una base dati coerente e migrabile; un deploy nuovo o esistente può aggiornarsi senza rebuild manuale cieco.
-
-- [ ] **3.7E Failure-Mode Matrix & Operational Readiness**
-
-    Razionale: il roadmap copre bene le capability, ma le feature collaborative diventano affidabili solo se i failure mode sono disegnati come percorsi di prodotto. Ogni nuova slice dovrebbe dichiarare cosa succede quando GitHub non risponde, il branch si muove, il permesso cambia, il provider sync fallisce, la projection è stale o il config è invalido.
-
-    - Aggiungere una tabella `feature → failure mode → UX → audit/log → retry/recovery` per le superfici principali: save, rename, work item sync, webhook rebuild, config editor, embed URL, blob URL, FTS rebuild.
-    - Health endpoint operativo (`/healthz`/`/readyz`) che distingua app boot, SQLite raggiungibile, session store migrato, projection pool pronto e config target leggibile quando esiste un target default.
-    - Background job/outbox leggero per riconciliazioni costose o retryabili: provider sync, webhook replay, future blob cleanup. Non introdurre un job system pesante finché SQLite + tokio task supervisionato bastano.
-    - Success criterion: quando una dipendenza esterna degrada, Brain UI mostra uno stato azionabile invece di un errore generico; gli operatori hanno log/audit sufficienti per capire se serve refresh, retry, re-login o fix di config.
-
 - [x] **3.7F Frontend Component Library Posture** — _baseline DONE 2026-05-02_
 
     Razionale: la UI Leptos è cresciuta a forza di utility Tailwind hand-rolled (136 occorrenze color-utility censite in `crates/brain-app/src/`, banner/button/pill idiom ripetuti tra `editor.rs` 1469 LoC e `page.rs` 554 LoC). Il rischio non è estetico ma di drift: ogni nuova superficie reinventa il proprio bottone primario/ghost, e la coerenza visiva regredisce a ogni feature. La direzione scelta è installare DaisyUI come *capability* sopra Tailwind 3.4 — zero JS runtime, zero impatto su Leptos/SSR/hydration — senza retrofit di massa.
@@ -272,7 +246,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     **Caveat tecnico noto:** `base: false` significa che gli `<html>`/`<body>`/`<button>` di default Tailwind/browser restano. Se in futuro si abilita `base: true`, fare prima un audit visivo perché DaisyUI reset diversi default (focus rings, button padding, link colors) e i 136 utility color usage attuali potrebbero subire regressioni puntuali. Decisione: lasciare `base: false` finché non c'è una ragione esplicita per cambiare.
 
-    **Success criterion:** ogni nuova superficie UI dalla 3.8 in avanti riusa `btn`/`modal`/`tabs`/`alert` di DaisyUI quando il pattern è applicabile, riducendo divergenza visiva senza richiedere sweep dedicati. La review verifica che PR di feature non reintroducano button idiom hand-rolled quando esiste l'equivalente DaisyUI.
+    **Success criterion:** ogni nuova superficie UI futura riusa `btn`/`modal`/`tabs`/`alert` di DaisyUI quando il pattern è applicabile, riducendo divergenza visiva senza richiedere sweep dedicati. La review verifica che PR di feature non reintroducano button idiom hand-rolled quando esiste l'equivalente DaisyUI.
 
 - [x] **3.7G Sidebar Real-Estate & No-Clutter Posture** — _baseline DONE 2026-05-02_
 
@@ -286,7 +260,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     **Esplicitamente fuori da 3.7G:** sidebar collapsibility/icon-rail in stile VS Code (è engineering reale: icone, tooltip, animazione, tutto da costruire — rivedere solo se utenti reclamano larghezza su small screen o se nasce una seconda tool sidebar), draggable splitter tra filter pane e history slot (rinviato a 4.2, quando saremo davvero a riempire lo slot e si potrà calibrare il rapporto), tag-frequency ranking (oggi ordine alfabetico — predicibile; ranking by count è cosa che si può aggiungere se l'ordine alfabetico cessa di essere utile in pratica).
 
-    **Posture vincolante per le slice future (3.8 → 4.x):**
+    **Posture vincolante per le slice future:**
     - **No nuove sezioni nella sidebar senza un budget esplicito di altezza.** Ogni proposta che aggiunge una sezione a `FilterPanel` deve dichiarare: (a) sta sostituendo qualcosa di esistente, (b) sta vivendo nel filter pane scrollabile sopra, o (c) ha bisogno di un proprio split-pane. Niente "appendi in fondo al filter pane".
     - **Bottom slot è prenotato per 4.2.** Il `HISTORY_SLOT_ENABLED` flag non viene flippato finché non c'è un componente reale dietro. Nel mentre lo slot resta dimensionalmente reclamato dal filter pane.
     - **Real-estate review per ogni feature UI.** Prima di disegnare una nuova superficie nel layout knowledge (sidebar, header, detail panel), il PR deve spiegare dove vive nel layout esistente e cosa cede spazio. Il default è "no": se non c'è uno spot ovvio, la feature aspetta o trova un altro layout (es. modal, dedicated route, tab).
@@ -294,7 +268,62 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     **Success criterion:** la sidebar resta navigabile a colpo d'occhio anche con repo da centinaia di nodi e decine di tag; il bottom slot di 4.2 si attiva flippando una const senza ridisegnare il layout; le PR di nuove superfici UI dichiarano esplicitamente l'impatto sul real-estate prima di mergiare.
 
-- [ ] **3.8 Embedded Analytics Views**
+### Fase 3 Closeout: dogfooding collaborativo
+
+- [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_
+    - Creare una mini knowledge base Pokemon come target/sandbox config-driven, senza riusare la tassonomia del Brain principale: `.brain-config.yml` custom, tipi come `pokemon`/`trainer`/`gym`/`route`/`battle-report`/`quest`, template dedicati e saved view proprie.
+    - Esercitare le feature shippate in Fase 3: routing target-aware, config loader YAML, node types custom, work item mutations, binding a GitHub Issue, saved view/config flow quando permesso, direct-write vs branch+PR fallback, webhook/SSE reconciliation e graph canvas polish.
+    - Usare i commenti della GitHub Issue bindata come thread QA/collaborazione e validare la nuova sezione `Comments` del detail panel; eventuali gap rimasti vanno estratti come follow-up (`issue_comment` SSE/cache timeline).
+    - Vincolo operativo: `@JacoTube` lavora da contributor non-admin; `main` resta protetto e ogni modifica finale passa da PR review di Andrea/Matteo.
+    - Success criterion: PR aperta dal contributor con note QA su cosa ha funzionato, cosa e' stato confuso e quali follow-up vanno estratti prima della prossima fase.
+- [ ] **Release note / operator checklist Fase 3**
+    - Documentare cosa è shippato, quali caveat restano accettati temporaneamente e quali env/config devono essere verificati prima di far usare il prodotto a un contributor limitato.
+    - Aggiornare README/ROADMAP in modo che il prossimo lavoro parta da feedback reale, non da un'altra lista di "sarebbe giusto".
+    - Success criterion: un maintainer può spiegare in 10 minuti cosa Brain UI fa oggi, cosa non promette ancora, e come recuperare dai failure mode noti senza scavare nel codice.
+
+---
+
+## 🟤 Next Hardening Lane: prima di nuove superfici esterne
+
+Questa lane nasce dai finding corretti emersi durante l'architecture review, ma **non blocca la chiusura di Fase 3**. Diventa il primo candidato per la prossima fase se il dogfooding conferma che il core collaborativo regge.
+
+- [ ] **Security & Content Trust Baseline** _(pre-embed / pre-blob / pre-AI)_
+
+    Razionale: Brain UI renderizza contenuto controllato dal repository e da provider esterni (Markdown, commenti issue, asset, in futuro iframe e AI-generated text). Finché l'app era un editor interno GitHub-first il rischio era gestibile; con dashboard embed, BYOB e assistant diventa un vero trust boundary. Questo lavoro va fatto prima di embedded analytics, BYOB/blob e AI, ma non è un prerequisito per dogfoodare il core già chiuso.
+
+    - Markdown rendering policy esplicita: decidere se disabilitare raw HTML a monte o sanitizzare l'HTML generato prima di `inner_html`. La policy deve coprire documenti Brain, preview editor e commenti GitHub renderizzati nel detail panel.
+    - CSP baseline globale: `default-src 'self'`, `script-src` compatibile con Leptos/hydration, `img-src` limitato a self/data/blob e domini configurati, `frame-src` derivato dall'allowlist futura, `object-src 'none'`, `base-uri 'none'`.
+    - Upload safety: validare content-type e magic bytes lato server, non solo estensione; limitare SVG upload finché non esiste un sanitizer/policy dedicata. **Micro-fix 2026-05-01:** `UploadAsset` non accetta più nuovi `.svg`; gli SVG storici restano serviti dal proxy come asset legacy.
+    - CSRF per mutazioni server fn: `SameSite=Lax` protegge bene il callback OAuth, ma le mutazioni POST autenticate meritano un token anti-CSRF o un header same-origin verificato, soprattutto prima di iframe e automazioni.
+    - Session/token posture: decidere esplicitamente tra OAuth token utente, GitHub App installation token e token scoped per MCP. Tracciare TTL, revoca, cifratura at-rest della session store e rotazione dei secret.
+    - Success criterion: esiste una test matrix di sicurezza che prova XSS da Markdown/commenti, upload asset ostili, server fn cross-site e iframe non allowlistati; nessuna nuova superficie esterna può bypassare questa policy.
+
+- [ ] **Failure-Mode Matrix & Operational Readiness**
+
+    Razionale: il roadmap copre bene le capability, ma le feature collaborative diventano affidabili solo se i failure mode sono disegnati come percorsi di prodotto. Ogni nuova slice dovrebbe dichiarare cosa succede quando GitHub non risponde, il branch si muove, il permesso cambia, il provider sync fallisce, la projection è stale o il config è invalido.
+
+    - Aggiungere una tabella `feature → failure mode → UX → audit/log → retry/recovery` per le superfici principali: save, rename, work item sync, webhook rebuild, config editor, embed URL, blob URL, FTS rebuild.
+    - Health endpoint operativo (`/healthz`/`/readyz`) che distingua app boot, SQLite raggiungibile, session store migrato, projection pool pronto e config target leggibile quando esiste un target default.
+    - Background job/outbox leggero per riconciliazioni costose o retryabili: provider sync, webhook replay, future blob cleanup. Non introdurre un job system pesante finché SQLite + tokio task supervisionato bastano.
+    - Success criterion: quando una dipendenza esterna degrada, Brain UI mostra uno stato azionabile invece di un errore generico; gli operatori hanno log/audit sufficienti per capire se serve refresh, retry, re-login o fix di config.
+
+- [ ] **Projection Schema v2 & SQLite Operations**
+
+    Razionale: le prossime feature usano SQLite non più solo come read model minimale. FTS5 richiede corpo/titolo/tag indicizzabili; Activity Stream e co-authorship richiedono commit metadata; Watch/Follow e advisory locks introducono dati user-scoped; Temporal Graph userà projection effimere. Prima di appoggiare tutto questo sulla tabella corrente, serve una piccola maturazione del layer dati.
+
+    - Versionare le migrazioni SQLite invece di affidarsi solo a `CREATE TABLE IF NOT EXISTS`; ogni schema change deve essere ripetibile su deploy Railway/prod e testabile in CI.
+    - Estendere `files`/`nodes` con i dati che servono davvero alle feature pianificate: `body_text` o tabella FTS separata, `frontmatter_json`, `commit_author`, `commit_message`, `last_commit_at`, e un modello chiaro per `node_authors`.
+    - Definire retention/cleanup per audit log, sessioni scadute, editing locks, watch notifications e projection temporanee. SQLite resta leggero solo se il ciclo di vita dei dati è esplicito.
+    - Aggiungere una vista admin/status della projection: schema version, last success/error per target, file/node/work item count, rebuild duration, webhook lag, rate-limit snapshot quando disponibile.
+    - Success criterion: FTS5, Activity Stream, Watch/Follow e Temporal Graph hanno una base dati coerente e migrabile; un deploy nuovo o esistente può aggiornarsi senza rebuild manuale cieco.
+
+---
+
+## 🧊 Future Product Expansion: tracked, not current phase
+
+Queste sono direzioni valide, ma tornano in gioco solo dopo il closeout di Fase 3 e la hardening lane minima. Ognuna deve rientrare come slice autonoma con un trigger reale, non come accumulo automatico sulla fase corrente.
+
+- [ ] **Embedded Analytics Views**
 
     Razionale: Brain UI è un control plane su una knowledge base editoriale, ma una parte crescente del valore aziendale vive in dati operativi pesanti (Postgres/Supabase, ads Instagram via Airbyte, metriche prodotto) che non ha senso ingerire dentro la projection SQLite né renderizzare con charting library lato WASM. La via naturale è far convivere dashboard esterni (Metabase, Superset, PowerBI, Grafana) come *view* di prima classe accanto ai grafi/nodi, embeddati via iframe, configurati dallo stesso `.brain-config.yml` e gated dalla stessa RBAC. Brain UI resta agnostico rispetto al data source: non parla mai col DB, non sa cosa c'è dentro il dashboard, sa solo che esiste, chi può vederlo, e dove punta.
 
@@ -309,7 +338,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Zero charting/visualization library aggiunte al bundle WASM. Se uno use case sembra richiederlo, è il segnale che dovrebbe essere un dashboard esterno embeddato, non nativo.
     - Editor visuale: il pattern `iframe` view va supportato esplicitamente in 3.4-β (o γ se si preferisce raggrupparlo coi long-tail), non lasciato a raw YAML, perché l'allowlist e il `requires_role` sono campi che gli admin devono poter modificare in UI.
 
-    - **3.8-α Whitelist-based iframe views** _(scope minimo per validare il pattern)_
+    - **α Whitelist-based iframe views** _(scope minimo per validare il pattern)_
         - Estensione schema: `ViewSpec` accetta `type: iframe` con `url`, `requires_role`. Allowlist `embed_allowed_origins` a livello root del config. Validazione `BrainConfig::parse`: ogni `iframe` view deve avere `url` il cui host è in allowlist; slug unici come per 3.4-α.
         - Server fn `GetEmbedUrl(target, slug) → Result<EmbedUrlResponse, ServerFnError>`: legge config cached, verifica esistenza view + match slug, verifica `requires_role` contro la capability matrix dell'utente, ri-valida il dominio contro allowlist (defense in depth), ritorna URL + eventuali sandbox flags. Audit log `embed_url_issued { slug, target }`.
         - Componente `<EmbeddedAnalytics/>` in `brain-app/frontend`: `create_resource` su `GetEmbedUrl`, `<Suspense>` con skeleton, render `<iframe>` full-content-area al success. Errore esplicito (non blank) su `Blocked by permissions` / `Domain not allowlisted` / `View not found`.
@@ -317,14 +346,14 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
         - Esplicitamente fuori da α: JWT signing, secret management, provider-specific (Metabase signed embeds, Superset guest tokens, ecc.), audit del *contenuto* visto dall'utente, multi-tenancy a livello dashboard (un dashboard Metabase per org).
         - Success criterion: un admin aggiunge un dashboard Metabase pubblico (o un Grafana share link) all'allowlist e come `iframe` view, lo vede comparire nella sidebar con il giusto `requires_role`, l'utente target apre la view e il dashboard è renderizzato dentro Brain UI senza che il backend abbia mai parlato col data source.
 
-    - **3.8-β Signed embeds (provider-aware)** _(post-feedback expansion)_
+    - **β Signed embeds (provider-aware)** _(post-feedback expansion)_
         - Estensione `ViewSpec` con `provider: metabase | superset | powerbi | grafana | none` e blocco `signing_config` per-view (resource id, embed type, scope params).
         - Secret per-target in env var (`BRAIN_EMBED_SECRET_<TARGET_ID>` o equivalente — schema esatto da disegnare quando arriviamo qui). Mai nel config file, mai nel bundle WASM.
         - `GetEmbedUrl` esteso: per provider che lo supportano, firma payload JWT/HMAC con TTL corto (≤ 10min), include user id e role per provider che fanno row-level security via embed params. URL firmato non cachato lato server (TTL applicato lato provider).
         - Audit esteso: `embed_url_issued` include `provider`, `expires_at`, `signed: true`. Sufficiente per accountability senza loggare il contenuto visto.
         - Forma esatta dei `signing_config` per-provider va disegnata alla luce di α in produzione e dei provider effettivamente richiesti dagli utenti, non pre-pianificata.
 
-    Esplicitamente fuori da 3.8 (entrambi gli slice):
+    Esplicitamente fuori dagli embedded analytics (entrambi gli slice):
     - Charting nativo / visualizzazioni custom dentro Brain UI — anti-goal esplicito.
     - Embed bidirezionale (iframe che pubblica eventi al parent Brain UI via `postMessage`) — superficie di sicurezza e UX troppo grande per questo scope.
     - Auto-discovery dei dashboard disponibili sul provider (es. listing di tutti i dashboard Metabase visibili all'utente) — manuale via config.
@@ -333,13 +362,13 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 
     Vincolo trasversale: se l'iframe pattern non basta per uno use case (es. l'utente vuole filtri Brain UI che si propagano nel dashboard), la risposta di default è "documenta il limite" non "estendi Brain UI". L'integrazione cross-frame è una superficie di rischio sproporzionata rispetto al valore di un control plane.
 
-- [ ] **3.9 BYOB (Bring Your Own Blob) & External Asset Strategy**
+- [ ] **BYOB (Bring Your Own Blob) & External Asset Strategy**
 
     Razionale: Git è la Single Source of Truth perfetta per semantica, testo e metadati, ma è storicamente pessimo per i file binari. Oggi l'editor di Brain UI committa le immagini in `assets/YYYY/MM/`: questo gonfia il repository e — soprattutto — rompe l'esperienza della Fase 3.3 (follow-up esplicito a [ROADMAP.md:159](docs/ROADMAP.md#L159)): un asset caricato in un branch temporaneo via PR non è immediatamente referenziabile dal markdown live, quindi la preview del draft è rotta finché la PR non viene mergiata. In parallelo, il team ha bisogno di integrare nativamente documenti e spreadsheet ospitati su Google Workspace senza passarli per Git.
 
     Obiettivo: separare il Data Plane (i blob binari) dal Control Plane (i file Markdown su Git). Introdurre l'astrazione `BlobAdapter` prima del `ForgeAdapter` di 4.1, garantendo che i commit contengano sempre e solo testo. Chiude il debito aperto da 3.3 sul fallback PR per asset.
 
-    **Realignment ex-ante:** la slice viene spezzata in α (R2/S3 + chiusura debito 3.3) → β (frontmatter agnostico + UI consumer) → γ (Google Workspace come provider redirect-only), coerente con il precedente di 3.2/3.4/3.8. α deve essere end-to-end shippabile da solo — la fix del fallback PR ha valore immediato anche senza UI dedicata e senza Google Workspace.
+    **Realignment ex-ante:** la slice viene spezzata in α (R2/S3 + chiusura debito 3.3) → β (frontmatter agnostico + UI consumer) → γ (Google Workspace come provider redirect-only), coerente col pattern di vertical slice già usato nel progetto. α deve essere end-to-end shippabile da solo — la fix del fallback PR ha valore immediato anche senza UI dedicata e senza Google Workspace.
 
     Vincoli condivisi (validi per α/β/γ):
     - Secret di provider esclusivamente in env var (`BRAIN_BLOB_<PROVIDER_ID>_*` — schema esatto da disegnare in α). Mai nel `.brain-config.yml`, mai nel bundle WASM.
@@ -347,9 +376,9 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - `resolve_url` ritorna URL a tempo (presigned R2/S3 o redirect link Google) ma **non** è cachato server-side: il TTL è applicato dal provider, l'auditability vive nel log.
     - Audit `blob_url_issued { provider_id, ref_id, target, user, expires_at }` per ogni risoluzione, sufficiente per accountability senza loggare il contenuto.
     - Capability gating coerente con 3.3: upload asset gated su `can_write_default_branch || can_review_via_pr`; risoluzione URL gated su `can_read`; admin del blocco `blob_providers` nel config gated su `can_admin_config` (fluisce dall'editor visuale di 3.4-γ quando arriva, raw YAML nel frattempo).
-    - Editor visuale: il blocco `blob_providers` è long-tail config — vive in 3.4-γ, non blocca 3.9. Raw YAML è l'escape hatch durante α/β.
+    - Editor visuale: il blocco `blob_providers` è long-tail config — vive nell'espansione futura del visual config editor, non blocca BYOB. Raw YAML è l'escape hatch durante α/β.
 
-    - **3.9-α BlobAdapter trait + R2/S3 provider + fallback PR fix** _(scope minimo, chiude debito 3.3)_
+    - **α BlobAdapter trait + R2/S3 provider + fallback PR fix** _(scope minimo, chiude debito 3.3)_
         - `BlobAdapter` trait in `brain-storage` con responsabilità iniziale singola: `resolve_url(provider_id, ref_id) → Result<ResolvedUrl, BlobError>` + `upload(provider_id, bytes, content_type) → Result<BlobRef, BlobError>`. Implementazione `S3Adapter` (Cloudflare R2 via API S3-compatibile) come unico provider di α.
         - Estensione `BrainConfig`: blocco `blob_providers: [{ id, type: s3, bucket, region, public_base_url? }]`. Validazione in `BrainConfig::parse`: id univoci, `type` riconosciuto, env var corrispondenti presenti al boot (warning, non error, per non bloccare repo che non usano blob).
         - Server fn `UploadAsset(target, provider_id, bytes, content_type) → Result<BlobRef, ServerFnError>`: gated su capability matrix, audita `blob_uploaded`, ritorna `{ provider_id, ref_id, url }` per riuso immediato lato editor.
@@ -357,25 +386,25 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
         - Esplicitamente fuori da α: `external_assets` frontmatter (β), UI dedicata nel detail panel (β), Google Workspace (γ), migrazione asset vecchi.
         - Success criterion: un utente senza write access carica un'immagine nell'editor; il blob finisce su R2 con URL stabile, la PR generata contiene solo il diff Markdown, la preview live nel branch funziona come per i file di testo. Audit `blob_uploaded` e `blob_url_issued` presenti.
 
-    - **3.9-β Frontmatter agnostico + UI consumer** _(post-α, abilita allegati strutturati)_
+    - **β Frontmatter agnostico + UI consumer** _(post-α, abilita allegati strutturati)_
         - Schema frontmatter: blocco `external_assets: [{ provider, ref_id, name, kind? }]` come campo first-class, non più link markdown crudi per gli allegati complessi (preventivi, task con report PDF, ecc.). Round-trip preservato dal save path esistente.
         - Server fn `ResolveAssetUrl(target, provider_id, ref_id) → Result<ResolvedUrl, ServerFnError>` thin wrapper su `BlobAdapter::resolve_url`, gated su `can_read`, audita `blob_url_issued`.
-        - UI: sezione "External Assets" nel detail panel e nell'editor che legge il frontmatter, risolve gli URL in tempo reale via server fn, renderizza link diretti o — quando opportuno — iframe riusando l'allowlist di 3.8 (no schema parallelo: il dominio dell'URL risolto deve passare la validazione `embed_allowed_origins` se renderizzato come iframe).
+        - UI: sezione "External Assets" nel detail panel e nell'editor che legge il frontmatter, risolve gli URL in tempo reale via server fn, renderizza link diretti o — quando opportuno — iframe riusando l'allowlist di Embedded Analytics (no schema parallelo: il dominio dell'URL risolto deve passare la validazione `embed_allowed_origins` se renderizzato come iframe).
         - Success criterion: un documento con `external_assets: [...]` mostra gli allegati nel detail panel e nell'editor con URL freschi a ogni apertura; un asset con dominio non in allowlist viene reso come link aperto in nuova tab, non iframe; nessuna chiave di provider raggiunge il bundle frontend.
 
-    - **3.9-γ Google Workspace provider** _(redirect-only, no upload)_
+    - **γ Google Workspace provider** _(redirect-only, no upload)_
         - Estensione `BlobAdapter` con `GoogleWorkspaceAdapter`: `resolve_url` ritorna il link di redirect nativo Google Drive/Docs/Sheets per `ref_id` = file id; `upload` non implementato (Google Workspace non è uno store di blob owned, è un sistema esterno).
         - Schema config: `blob_providers: [{ id, type: google_workspace, ... }]`. L'utente referenzia file via `external_assets: [{ provider: "gworkspace", ref_id: "<drive-file-id>", name: "Q3 Plan" }]`.
         - Permessi: l'accesso al file Drive è governato dalle share policy di Google. Brain UI fornisce solo il link/iframe e non sincronizza nulla. Documentato come anti-goal esplicito.
         - Forma esatta del flusso auth (service account vs OAuth delegato) va disegnata alla luce di α/β in produzione e dei requisiti effettivi del team, non pre-pianificata.
 
-    Esplicitamente fuori da 3.9 (tutti gli slice):
+    Esplicitamente fuori da BYOB (tutti gli slice):
     - Migrazione automatica dei vecchi asset in `assets/YYYY/MM/` verso i nuovi provider. I vecchi file restano serviti dal proxy Contents API esistente (caveat #16, già DONE 2026-04-29 — il proxy funziona, non c'è urgenza di migrare).
     - Sincronizzazione permessi tra Brain UI e Google Drive (vedi γ, è anti-goal).
     - Versioning custom dei blob (R2 ha le sue versioning policy, non duplicarle).
     - Pre-rendering/thumbnail di asset binari server-side — fuori scope, vive eventualmente in un servizio separato.
 
-- [ ] **3.10 Full-Text Search (FTS5)**
+- [ ] **Full-Text Search (FTS5)**
 
     Razionale: i filtri per tag, tipo e cartella (3.7) coprono la navigazione strutturata, ma non il recupero per contenuto. Un utente che ricorda una frase specifica, un codice di errore, o un paragrafo non ha oggi nessun percorso diretto — deve aprire GitHub o fare `grep` locale. La projection SQLite è già il punto di aggancio naturale: FTS5 è un'estensione built-in di SQLite, zero dipendenze aggiuntive, indicizzazione incrementale sopra `nodes.body`/`files.content_path` + frontmatter.
 
@@ -387,7 +416,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - **Candidato naturale per l'endpoint MCP di Fase 5**: `SearchBrain` esposta come tool MCP-compliant è uno dei casi d'uso più ovvi per un AI assistant che interroga la knowledge base. La firma va disegnata coerentemente con la query layer di 3.5 fin da subito.
     - Success criterion: un utente digita una frase nella search bar e vede in <200ms una lista di nodi con snippet contestuale; i risultati sono filtrabili per tipo/tag via filter panel; l'URL `?q=` è condivisibile e sopravvive a refresh.
 
-- [ ] **3.11 Advisory Edit Lock (ottimistico)**
+- [ ] **Advisory Edit Lock (ottimistico)**
 
     Razionale: la 3.3 gestisce i conflitti *dopo* che si verificano (direct-write vs PR fallback). Con più contributor che lavorano in parallelo sullo stesso repo, è preferibile segnalare *prima* che qualcuno stia già modificando un nodo, riducendo il numero di PR di conflitto che richiedono review manuale. L'obiettivo non è un lock bloccante (che creerebbe deadlock editoriali) ma un **advisory signal**: visibile, ignorabile, non vincolante.
 
@@ -398,14 +427,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Gating: il lock è visibile solo a utenti con `can_read`; acquisito solo da utenti con `can_write_default_branch || can_review_via_pr`. Un utente senza capability di scrittura non acquisisce il lock ma vede il banner se qualcun altro lo ha.
     - Success criterion: se Andrea apre `runbooks/foo.md` in edit mode, Matteo — aprendo lo stesso nodo entro i 10 minuti successivi — vede il banner "Andrea sta modificando questo file". Nessun comportamento bloccante; il salvataggio successivo di Matteo segue il percorso normale di 3.3.
 
-### Post-Fase 3: Dogfooding collaborativo
-
-- [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_
-    - Creare una mini knowledge base Pokemon come target/sandbox config-driven, senza riusare la tassonomia del Brain principale: `.brain-config.yml` custom, tipi come `pokemon`/`trainer`/`gym`/`route`/`battle-report`/`quest`, template dedicati e saved view proprie.
-    - Esercitare le feature shippate in Fase 3: routing target-aware, config loader YAML, node types custom, work item mutations, binding a GitHub Issue, saved view/config flow quando permesso, direct-write vs branch+PR fallback, webhook/SSE reconciliation e graph canvas polish.
-    - Usare i commenti della GitHub Issue bindata come thread QA/collaborazione e validare la nuova sezione `Comments` del detail panel; eventuali gap rimasti vanno estratti come follow-up (`issue_comment` SSE/cache timeline).
-    - Vincolo operativo: `@JacoTube` lavora da contributor non-admin; `main` resta protetto e ogni modifica finale passa da PR review di Andrea/Matteo.
-    - Success criterion: PR aperta dal contributor con note QA su cosa ha funzionato, cosa e' stato confuso e quali follow-up vanno estratti prima della Fase 4.
+### Future UX Backlog: post-dogfooding signals
 - [ ] **Task Inbox e segnali operativi sui nodi** _(follow-up UX emerso dal dogfooding, 2026-04-29)_
     - Aggiungere una sezione o pannello “My Tasks” nella Knowledge UI che usa il read model già esistente (`list_work_items`) per mostrare le task assegnate all'utente corrente GitHub, escludendo di default `done` e `cancelled`.
     - MVP: lista compatta con titolo, stato, assignee, path/binding GitHub e click-to-focus sul nodo/file. Deve riusare `WorkItem.assignees`, `WorkItem.state`, `content_path` ed eventuale `external_binding`, senza introdurre un secondo modello task.
@@ -416,7 +438,7 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 - [ ] **Repo structure: evoluzioni post-MVP** _(follow-up di 3.7, da pianificare dopo dogfooding)_
     - **Heatmap strutturale** — overlay nel tree view che mostra densità di link entranti/uscenti per cartella o età media dei file. Distingue cartelle "vive" da cartelle stagnanti senza richiedere drill-down manuale. Da disegnare solo dopo aver visto come gli utenti usano il tree base di 3.7.
     - **Vista "directory ↔ node type" come matrice** — diagnostica admin che mostra distribuzione: quali tipi di nodo finiscono in quali cartelle, quali cartelle hanno mix sospetti (es. `runbook` in `concepts/`). Utile per accorgersi di drift editoriale prima che diventi rumore.
-    - **Sezione `Recently created/modified` come feed semantico** — derivata da `files.commit_author`/`commit_message`/`last_commit_at` già presenti nella projection. Non una lista di file: un feed in stile "cosa è successo mentre ero via" con avatar dell'autore, file toccato, messaggio commit sintetizzato e — quando 3.10 (FTS5) è disponibile — snippet del contenuto aggiunto/modificato estratto da `fts5_snippet()`. Risponde alla domanda editoriale "chi ha fatto cosa, su cosa, di recente" senza esporre SHA o `git log`.
+    - **Sezione `Recently created/modified` come feed semantico** — derivata da `files.commit_author`/`commit_message`/`last_commit_at` già presenti nella projection. Non una lista di file: un feed in stile "cosa è successo mentre ero via" con avatar dell'autore, file toccato, messaggio commit sintetizzato e — quando FTS5 è disponibile — snippet del contenuto aggiunto/modificato estratto da `fts5_snippet()`. Risponde alla domanda editoriale "chi ha fatto cosa, su cosa, di recente" senza esporre SHA o `git log`.
     - **Ristrutturazione bulk admin-only** — UI per move-by-pattern (es. "tutti i `runbook` di Q1 in `runbooks/2026/q1/`"), riusa `BranchTransaction` di 4.0 per atomicità + preview via `transaction.plan()`. Solo dopo che 4.0 è chiusa.
     - **Path collision detection in edit mode** — durante rename/move, evidenziare in tempo reale se il path target collide con un file esistente, è soggetto a case-insensitive collision (rilevante su filesystem case-folding), o supera limiti di profondità ragionevoli. Reuse parziale della logica `expect_absent` di `GitTransaction`.
     - **Dead link discovery** — la projection ha già `edges` con `source_path` e `target_path`; un edge verso un path non presente in `files.content_path` è un link rotto. Al rebuild, materializzare `broken_edges` come view o colonna flag. Superficie admin: vista diagnostica "Broken Links" con lista `source → target (missing)` e CTA diretta all'editor del nodo sorgente. Complementare al banner orphan di 3.7 (che copre file senza link *entranti*); questo copre link che puntano *a niente*. Da implementare come estensione del rebuild della projection, non come scansione separata.
@@ -557,6 +579,6 @@ Trasformare la Brain UI in un assistente attivo tramite IA e trigger di automazi
 
 18. **Graph canvas DOM scalability** — Il canvas SVG renderizza ogni nodo e arco come elemento DOM distinto gestito dalla reattività Leptos. Fino a ~300–500 nodi simultaneamente visibili le performance sono accettabili; oltre quella soglia — su repo reali con 1000+ nodi senza filtro attivo — il layout force-directed e i re-render reattivi possono introdurre frame drop percepibile. **Threshold di intervento:** se il dogfooding su repo reali con filtro rimosso mostra jank a >500 nodi, la risposta è virtualizzazione del viewport (render solo dei nodi dentro il viewBox corrente + buffer) prima di considerare Canvas 2D API. WebGL è overkill per un grafo 2D statico e richiede interop JS non banale da WASM. Da rivalutare dopo 4.2 (Temporal Graph View), che introdurrà un secondo render path e renderà più chiaro il vero collo di bottiglia.
 
-19. **Content trust boundary before embeds/blob/AI** — **PARTIAL 2026-05-01**. Brain UI usa `inner_html` per Markdown renderizzato e commenti issue: corretto per preservare formattazione, ma va trattato come trust boundary esplicito prima di iframe, BYOB e AI-generated content. Tracciato in **3.7C Security & Content Trust Hardening**. Micro-fix già applicata: i nuovi upload `.svg` non sono più accettati da `UploadAsset` finché non esiste sanitizer/policy dedicata; gli SVG storici restano serviti dal proxy come asset legacy.
+19. **Content trust boundary before embeds/blob/AI** — **PARTIAL 2026-05-01**. Brain UI usa `inner_html` per Markdown renderizzato e commenti issue: corretto per preservare formattazione, ma va trattato come trust boundary esplicito prima di iframe, BYOB e AI-generated content. Tracciato nella **Next Hardening Lane / Security & Content Trust Baseline**. Micro-fix già applicata: i nuovi upload `.svg` non sono più accettati da `UploadAsset` finché non esiste sanitizer/policy dedicata; gli SVG storici restano serviti dal proxy come asset legacy.
 
 20. ~~Target identity still has ambient edges~~ — **DONE 2026-05-01**. Chiuso con **3.7B Canonical TargetRef & Trust Boundary Preflight**: branch nel path canonico, `TargetRef { org, repo, branch }` esplicito nelle server fn target-scoped principali, branch/default branch persistiti nel registry, webhook risolti dal payload reale e SSE filtrata per target.

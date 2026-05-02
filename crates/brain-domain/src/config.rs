@@ -421,7 +421,7 @@ impl From<TargetConfig> for GithubClient {
 }
 
 /// User-facing branding copy (landing page title, access-denied messages).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrandConfig {
     /// Display name shown in the header, e.g. "Dritara Brain".
     pub name: String,

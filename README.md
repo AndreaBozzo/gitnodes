@@ -10,8 +10,11 @@ Current architecture: Git remains the source of truth; SQLite now backs sessions
 audit logs, and a target-scoped local projection for graph/work-item reads.
 Phase 3 has moved the app from a single-target editor into a multi-tenant
 collaborative workspace with target-aware routing, bidirectional work-item sync,
-and permission-aware direct-write vs PR flows. The current focus is post-ship
-dogfooding with a real limited contributor before starting Phase 4.
+permission-aware direct-write vs PR flows, saved views, repo-structure
+navigation, graph polish, canonical target identity, and UI/sidebar posture.
+The current focus is shipping discipline: dogfood the closed collaborative core
+with a real limited contributor, fix only real blockers, and choose the next
+phase from feedback rather than continuing to grow Phase 3.
 
 ## Stack
 
@@ -147,18 +150,23 @@ Webhook-driven projection rebuilds need a server-side credential — set either 
 
 - **Phase 1 closed** — config-driven node types, frontmatter round-trip, `WorkItem` model, real `.brain-config.yml` dogfooding on the Brain repo.
 - **Phase 2A/2B closed** — pooled GitHub HTTP client, target-scoped caches, SQLite projection, webhook + SSE baseline, atomic rename via Git Data API, and work-item projection materialization.
-- **Phase 3 closed** — multi-tenant routing, Brain Switcher, bidirectional work-item sync, permission-aware branch/PR orchestration, saved views, rate-limit shielding, and graph canvas polish are landed.
-- **Current gap** — validate the collaborative workflow with a real limited contributor on the Brain repo before Phase 4 hardens forge abstraction, history, local mode, and conflict resolution.
+- **Phase 3 core closed / closeout active** — multi-tenant routing, Brain Switcher, bidirectional work-item sync, permission-aware branch/PR orchestration, saved views, rate-limit shielding, graph canvas polish, repo structure, canonical `TargetRef`, and UI/sidebar posture are landed. Phase 3 is now frozen to bugfixes, small polish, operator docs, and true dogfooding blockers.
+- **Current gate** — validate the collaborative workflow with a real limited contributor on the Brain repo, using the Pokemon mock as a bounded QA artifact.
+- **Next hardening lane** — before embeds/blob/AI or larger product expansion: content trust/security baseline, operational failure-mode matrix, and projection schema v2.
 
 ## Known caveats & roadmap
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-04-28, post-Phase-3 dogfooding is explicitly framed around:
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-05-02, Phase 3 closeout is explicitly framed around:
 
 - a limited contributor using Brain UI against the Brain repo
 - branch/PR contribution instead of direct writes to protected `main`
 - a Pokemon-themed mock knowledge base with its own `.brain-config.yml`, custom node types/templates, links, assets, work items, saved views, graph controls, and sync
+- a short release/operator checklist that says what Brain UI does today, what it does not promise yet, and how to recover from known failure modes
 
-Phase 4 then standardizes the forge boundary (`ForgeAdapter`), temporal graph views, local/offline execution, and richer conflict resolution.
+Embedded analytics, BYOB/blob storage, FTS, advisory locks, activity streams,
+forge abstraction, temporal graph views, local/offline execution, and richer
+conflict resolution remain tracked, but are no longer Phase 3 commitments by
+default.
 
 ## License
 

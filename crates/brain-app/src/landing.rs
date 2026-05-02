@@ -9,28 +9,39 @@ pub fn Landing() -> impl IntoView {
 
     let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
 
-    let brand_name = move || {
+    let resolved_config = Memo::new(move |_| {
         app_config
-            .and_then(|r| r.get())
-            .and_then(|r| r.ok())
-            .map(|c| c.brand.name)
-            .unwrap_or_else(|| "Brain".to_string())
+            .and_then(|resource| resource.get())
+            .and_then(Result::ok)
+    });
+
+    let brand_name = move || {
+        resolved_config.with(|config| {
+            config
+                .as_ref()
+                .map(|c| c.brand.name.clone())
+                .unwrap_or_else(|| "Brain".to_string())
+        })
     };
 
     let brand_org = move || {
-        app_config
-            .and_then(|r| r.get())
-            .and_then(|r| r.ok())
-            .map(|c| c.brand.org_label)
-            .unwrap_or_default()
+        resolved_config.with(|config| {
+            config
+                .as_ref()
+                .map(|c| c.brand.org_label.clone())
+                .filter(|label| !label.trim().is_empty())
+                .or_else(|| config.as_ref().map(|c| c.target.org.clone()))
+                .unwrap_or_else(|| "configured".to_string())
+        })
     };
 
     let target_label = move || {
-        app_config
-            .and_then(|r| r.get())
-            .and_then(|r| r.ok())
-            .map(|c| format!("{}/{}/{}", c.target.org, c.target.repo, c.target.branch))
-            .unwrap_or_else(|| "configured GitHub repository".to_string())
+        resolved_config.with(|config| {
+            config
+                .as_ref()
+                .map(|c| format!("{}/{}/{}", c.target.org, c.target.repo, c.target.branch))
+                .unwrap_or_else(|| "configured GitHub repository".to_string())
+        })
     };
 
     let error_msg = move || {
