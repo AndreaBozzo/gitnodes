@@ -25,23 +25,17 @@ pub fn KnowledgePage() -> impl IntoView {
     // SyncStatusBanner stays in sync with this page's data fetches.
     let graph_version = expect_context::<GraphVersion>().0;
     let sync_status = expect_context::<SyncStatusSignal>().0;
-    let graph = Resource::new_blocking(
+    // Single sequential resource: graph first (triggers bootstrap if cold),
+    // then config + files. Prevents the race where list_brain_files queries
+    // an empty DB while load_brain_graph's bootstrap is still in progress.
+    let data = Resource::new_blocking(
         move || graph_version.get(),
-        |_| async { load_brain_graph().await },
-    );
-
-    // Key the config Resource on `graph_version` too. Without this, the
-    // refresh button (and any future webhook) would invalidate the server
-    // cache and re-fetch the graph against the new config while the UI's
-    // type metadata, filter panel, and orphan banner stay frozen on the old
-    // config until a full page reload.
-    let config = Resource::new_blocking(
-        move || graph_version.get(),
-        |_| async { load_brain_config().await },
-    );
-    let files = Resource::new_blocking(
-        move || graph_version.get(),
-        |_| async { list_brain_files(FileQueryFilters::default()).await },
+        |_| async {
+            let graph = load_brain_graph().await?;
+            let config = load_brain_config().await?;
+            let files = list_brain_files(FileQueryFilters::default()).await?;
+            Ok::<_, ServerFnError>((graph, config, files))
+        },
     );
     let app_config = expect_context::<Resource<Result<AppConfig, ServerFnError>>>();
 
@@ -52,12 +46,10 @@ pub fn KnowledgePage() -> impl IntoView {
             </div>
         }>
             {move || {
-                let g = graph.get();
-                let c = config.get();
-                let f = files.get();
+                let d = data.get();
                 let a = app_config.get();
-                match (g, c, f, a) {
-                    (Some(Ok((nodes, edges))), Some(Ok(cfg)), Some(Ok(files)), Some(Ok(app))) => {
+                match (d, a) {
+                    (Some(Ok(((nodes, edges), cfg, files))), Some(Ok(app))) => {
                         KnowledgeView(KnowledgeViewProps {
                             nodes,
                             edges,
@@ -68,7 +60,7 @@ pub fn KnowledgePage() -> impl IntoView {
                             target_ref: TargetRef::from(app.target),
                         }).into_any()
                     }
-                    (Some(Err(e)), _, _, _) | (_, Some(Err(e)), _, _) | (_, _, Some(Err(e)), _) | (_, _, _, Some(Err(e))) => view! {
+                    (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
                         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
                             {format!("Failed to load graph/config: {e}")}
                         </div>
