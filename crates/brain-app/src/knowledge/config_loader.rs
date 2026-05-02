@@ -60,6 +60,15 @@ pub fn invalidate(key: &TargetKey) {
     }
 }
 
+/// Seed the cache with a canonical config we just wrote. Avoids a read-after-write
+/// race against GitHub's contents API, which can serve the pre-write blob for a
+/// few hundred ms after `PUT /contents/{path}` returns success — long enough for
+/// the post-save reload to repopulate the cache with stale data and pin it for
+/// the 30s TTL.
+pub fn store(key: &TargetKey, cfg: BrainConfig) {
+    cache_store(key, Arc::new(cfg));
+}
+
 #[derive(Deserialize)]
 struct ContentResponse {
     content: String,

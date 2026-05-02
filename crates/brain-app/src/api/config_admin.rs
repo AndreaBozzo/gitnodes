@@ -122,7 +122,6 @@ pub async fn save_views(
             match result.mode {
                 WriteMode::Direct => {
                     crate::server::audit::log("update_views", Some(&user), CONFIG_PATH).await;
-                    config_loader::invalidate(&(&target).into());
                     rebuild_projection_after_write(
                         &storage,
                         &target,
@@ -131,6 +130,12 @@ pub async fn save_views(
                         "update_views",
                     )
                     .await;
+                    // Seed the loader cache with the canonical post-write config
+                    // *after* the projection rebuild, since rebuild calls
+                    // `config_loader::invalidate` + `load`, which races GitHub's
+                    // eventually-consistent contents API and could otherwise
+                    // pin the pre-write view list for the 30s TTL.
+                    config_loader::store(&(&target).into(), cfg);
                 }
                 WriteMode::PullRequest => {
                     crate::server::audit::log(
