@@ -89,11 +89,32 @@ pub fn RepoStructureTree(
     let root = StoredValue::new(build_tree(files));
     let total = root.with_value(|node| node.stats());
     let storage_key = storage_key(&current_org, &current_repo);
-    let expanded = RwSignal::new(read_expanded(&storage_key));
+    let expanded = RwSignal::new(HashSet::new());
+    let expanded_loaded = RwSignal::new(false);
+
+    #[cfg(feature = "hydrate")]
+    Effect::new({
+        let storage_key = storage_key.clone();
+        move |_| {
+            if expanded_loaded.get() {
+                return;
+            }
+            expanded.set(read_expanded(&storage_key));
+            expanded_loaded.set(true);
+        }
+    });
+
+    #[cfg(not(feature = "hydrate"))]
+    expanded_loaded.set(true);
 
     Effect::new({
         let storage_key = storage_key.clone();
-        move |_| write_expanded(&storage_key, &expanded.get())
+        move |_| {
+            if !expanded_loaded.get() {
+                return;
+            }
+            write_expanded(&storage_key, &expanded.get())
+        }
     });
 
     let clear_prefix = move |_| active_path_prefix.set(None);
