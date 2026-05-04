@@ -1,14 +1,14 @@
 use axum::{
     extract::State,
     response::{
-        Sse,
+        IntoResponse, Sse,
         sse::{Event, KeepAlive},
     },
 };
 use std::convert::Infallible;
 use std::sync::OnceLock;
 use tokio::sync::broadcast;
-use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
 use brain_domain::TargetRef;
 
@@ -120,9 +120,7 @@ impl EventBus {
 ///
 /// Long-lived SSE stream. Each connected Leptos client gets typed events so it
 /// can react without a full page reload.
-pub async fn handle(
-    State(bus): State<EventBus>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+pub async fn handle(State(bus): State<EventBus>) -> impl IntoResponse {
     let rx = bus.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| {
         let event = result.ok()?;
@@ -132,5 +130,11 @@ pub async fn handle(
         Some(Ok::<Event, Infallible>(sse_event))
     });
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    // X-Accel-Buffering: no tells nginx/Railway's proxy not to buffer this
+    // stream. Without it the proxy holds chunks until its buffer fills, then
+    // closes the HTTP/2 stream with ERR_HTTP2_PROTOCOL_ERROR.
+    (
+        [("X-Accel-Buffering", "no")],
+        Sse::new(stream).keep_alive(KeepAlive::default()),
+    )
 }
