@@ -31,10 +31,24 @@ pub fn KnowledgePage() -> impl IntoView {
     let data = Resource::new_blocking(
         move || graph_version.get(),
         |_| async {
-            let graph = load_brain_graph().await?;
-            let config = load_brain_config().await?;
-            let files = list_brain_files(FileQueryFilters::default()).await?;
-            Ok::<_, ServerFnError>((graph, config, files))
+            #[cfg(feature = "ssr")]
+            {
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    let graph = load_brain_graph().await?;
+                    let config = load_brain_config().await?;
+                    let files = list_brain_files(FileQueryFilters::default()).await?;
+                    Ok::<_, ServerFnError>((graph, config, files))
+                })
+                .await
+                .map_err(|_| ServerFnError::new("upstream timeout – try refreshing"))?
+            }
+            #[cfg(not(feature = "ssr"))]
+            {
+                let graph = load_brain_graph().await?;
+                let config = load_brain_config().await?;
+                let files = list_brain_files(FileQueryFilters::default()).await?;
+                Ok::<_, ServerFnError>((graph, config, files))
+            }
         },
     );
     let app_config = expect_context::<Resource<Result<AppConfig, ServerFnError>>>();
