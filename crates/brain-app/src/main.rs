@@ -15,6 +15,7 @@ async fn main() {
         Router,
         body::Body,
         extract::Request,
+        http::header::{CACHE_CONTROL, PRAGMA},
         middleware::{self, Next},
         response::{IntoResponse, Redirect, Response},
     };
@@ -187,6 +188,39 @@ async fn main() {
         }
     }
 
+    async fn cache_control(request: Request<Body>, next: Next) -> Response {
+        let path = request.uri().path().to_string();
+        let mut response = next.run(request).await;
+        let headers = response.headers_mut();
+
+        if path.starts_with("/pkg/") {
+            // Build outputs use stable filenames (`brain_ui.js`, `brain_ui.wasm`,
+            // `brain_ui.css`), so browsers must revalidate them on every load
+            // or a new SSR HTML page can hydrate against an older client bundle.
+            headers.insert(
+                CACHE_CONTROL,
+                "no-cache, no-store, must-revalidate"
+                    .parse()
+                    .expect("valid cache-control header"),
+            );
+            headers.insert(PRAGMA, "no-cache".parse().expect("valid pragma header"));
+        } else if !path.starts_with("/assets/")
+            && !path.starts_with("/api/")
+            && !path.starts_with("/sse/")
+            && !path.starts_with("/webhook/")
+        {
+            headers.insert(
+                CACHE_CONTROL,
+                "no-cache, no-store, must-revalidate"
+                    .parse()
+                    .expect("valid cache-control header"),
+            );
+            headers.insert(PRAGMA, "no-cache".parse().expect("valid pragma header"));
+        }
+
+        response
+    }
+
     fn is_multi_tenant_protected(path: &str) -> bool {
         // Match both 3-segment legacy (`/{org}/{repo}/{knowledge|admin|assets}[/...]`)
         // and 4-segment canonical (`/{org}/{repo}/{branch}/{knowledge|admin}[/...]`).
@@ -319,6 +353,7 @@ async fn main() {
             }
         })
         .fallback(leptos_axum::file_and_error_handler(shell))
+        .layer(middleware::from_fn(cache_control))
         .layer(middleware::from_fn(protect_knowledge))
         .layer(session_layer)
         .with_state(leptos_options);
