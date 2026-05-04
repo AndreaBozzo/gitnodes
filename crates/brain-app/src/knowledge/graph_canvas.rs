@@ -17,8 +17,8 @@ const BASE_VIEW_SIZE: f32 = 100.0;
 const NODE_HOVER_BUMP: f32 = 0.5;
 const NODE_SELECTED_BUMP: f32 = 0.8;
 const NODE_HIT_TARGET_BUFFER: f32 = 0.35;
-#[cfg(feature = "hydrate")]
-const NODE_HOVER_LEAVE_GRACE_MS: u32 = 90;
+#[cfg(any(feature = "hydrate", test))]
+const NODE_HOVER_HYSTERESIS: f32 = 0.9;
 #[cfg(feature = "hydrate")]
 const VIEWPORT_TWEEN_MS: f64 = 300.0;
 
@@ -124,12 +124,92 @@ fn node_visual_radius(base_r: f32, is_selected: bool, is_hovered: bool) -> f32 {
     base_r + bump
 }
 
+fn node_base_radius(is_tag: bool, degree: usize) -> f32 {
+    if is_tag {
+        0.9_f32 + (degree as f32).min(4.0) * 0.12
+    } else {
+        1.5_f32 + (degree as f32).min(6.0) * 0.18
+    }
+}
+
 fn node_hit_radius(base_r: f32) -> f32 {
     base_r + NODE_SELECTED_BUMP + NODE_HIT_TARGET_BUFFER
 }
 
+#[cfg(any(feature = "hydrate", test))]
+fn node_hover_leave_radius(base_r: f32) -> f32 {
+    node_hit_radius(base_r) + NODE_HOVER_HYSTERESIS
+}
+
 fn viewport_focus_id(selected: Option<u32>, _hovered: Option<u32>) -> Option<u32> {
     selected
+}
+
+#[cfg(any(feature = "hydrate", test))]
+fn hover_node_at(
+    nodes: &[Node],
+    visible_ids: &HashSet<u32>,
+    degrees: &HashMap<u32, usize>,
+    tag_type: Option<&str>,
+    current: Option<u32>,
+    x: f32,
+    y: f32,
+) -> Option<u32> {
+    let node_distance_sq = |node: &Node| {
+        let dx = node.x - x;
+        let dy = node.y - y;
+        dx * dx + dy * dy
+    };
+    let base_radius = |node: &Node| {
+        let degree = *degrees.get(&node.id).unwrap_or(&0);
+        node_base_radius(tag_type == Some(node.node_type.as_str()), degree)
+    };
+
+    if let Some(current_id) = current
+        && let Some(node) = nodes
+            .iter()
+            .find(|node| node.id == current_id && visible_ids.contains(&node.id))
+    {
+        let radius = node_hover_leave_radius(base_radius(node));
+        if node_distance_sq(node) <= radius * radius {
+            return Some(current_id);
+        }
+    }
+
+    nodes
+        .iter()
+        .filter(|node| visible_ids.contains(&node.id))
+        .filter_map(|node| {
+            let distance_sq = node_distance_sq(node);
+            let radius = node_hit_radius(base_radius(node));
+            (distance_sq <= radius * radius).then_some((node.id, distance_sq))
+        })
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(id, _)| id)
+}
+
+#[cfg(feature = "hydrate")]
+fn pointer_graph_coords(ev: &web_sys::PointerEvent, viewport: Viewport) -> Option<(f32, f32)> {
+    let target = ev.current_target()?;
+    let element = target.dyn_into::<web_sys::Element>().ok()?;
+    let rect = element.get_bounding_client_rect();
+    let width = rect.width();
+    let height = rect.height();
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+
+    let rendered_side = width.min(height);
+    let offset_x = (width - rendered_side) * 0.5;
+    let offset_y = (height - rendered_side) * 0.5;
+    let local_x = f64::from(ev.client_x()) - rect.left() - offset_x;
+    let local_y = f64::from(ev.client_y()) - rect.top() - offset_y;
+    let (view_x, view_y, view_w, view_h) = viewport.rect();
+
+    Some((
+        view_x + (local_x / rendered_side) as f32 * view_w,
+        view_y + (local_y / rendered_side) as f32 * view_h,
+    ))
 }
 
 fn clamp_viewport(viewport: Viewport, bounds: GraphBounds) -> Viewport {
@@ -312,11 +392,7 @@ fn visible_label_ids(
                 return None;
             }
 
-            let base_r = if is_tag {
-                0.9_f32 + (deg as f32).min(4.0) * 0.12
-            } else {
-                1.5_f32 + (deg as f32).min(6.0) * 0.18
-            };
+            let base_r = node_base_radius(is_tag, deg);
             let label_size = if is_tag { 1.1 } else { 1.55 };
             let is_focus = focus == Some(n.id);
             let label = compact_label(&n.title, is_tag, is_focus);
@@ -462,11 +538,29 @@ pub fn GraphCanvas(
 
     let degrees: StoredValue<HashMap<u32, usize>> =
         StoredValue::new(adjacency.with_value(|a| a.iter().map(|(k, v)| (*k, v.len())).collect()));
+
     #[cfg(feature = "hydrate")]
-    let hover_clear_timer: StoredValue<
-        Option<gloo_timers::callback::Timeout>,
-        leptos::prelude::LocalStorage,
-    > = StoredValue::new_local(None);
+    let update_hover_from_pointer = {
+        let config_for_hover = config.clone();
+        move |ev: web_sys::PointerEvent| {
+            let Some((x, y)) = pointer_graph_coords(&ev, rendered_viewport.get_untracked()) else {
+                return;
+            };
+            let visible = visible_ids.get_untracked();
+            let current = hovered.get_untracked();
+            let tag_type = config_for_hover
+                .synthetic_tag_spec()
+                .map(|spec| spec.name.clone());
+            let next = nodes.with_value(|ns| {
+                degrees.with_value(|d| {
+                    hover_node_at(ns, &visible, d, tag_type.as_deref(), current, x, y)
+                })
+            });
+            if next != current {
+                hovered.set(next);
+            }
+        }
+    };
 
     let edges_view = move || {
         let vis = visible_ids.get();
@@ -547,11 +641,7 @@ pub fn GraphCanvas(
                     let x = n.x;
                     let y = n.y;
                     let deg = degrees.with_value(|d| *d.get(&id).unwrap_or(&0));
-                    let base_r = if is_tag {
-                        0.9_f32 + (deg as f32).min(4.0) * 0.12
-                    } else {
-                        1.5_f32 + (deg as f32).min(6.0) * 0.18
-                    };
+                    let base_r = node_base_radius(is_tag, deg);
 
                     let bright = Memo::new(move |_| match visual_focus.get() {
                         None => true,
@@ -572,22 +662,6 @@ pub fn GraphCanvas(
                         <g
                             class="cursor-pointer"
                             style=move || format!("opacity:{}; transition: opacity 200ms ease;", if bright.get() { 1.0 } else { 0.15 })
-                            on:mouseenter=move |_| {
-                                #[cfg(feature = "hydrate")]
-                                hover_clear_timer.set_value(None);
-                                hovered.set(Some(id));
-                            }
-                            on:mouseleave=move |_| {
-                                #[cfg(feature = "hydrate")]
-                                {
-                                    let timer = gloo_timers::callback::Timeout::new(NODE_HOVER_LEAVE_GRACE_MS, move || {
-                                        hovered.update(|h| if *h == Some(id) { *h = None; });
-                                    });
-                                    hover_clear_timer.set_value(Some(timer));
-                                }
-                                #[cfg(not(feature = "hydrate"))]
-                                hovered.update(|h| if *h == Some(id) { *h = None; });
-                            }
                             on:click={
                                 let path = n.path.clone();
                                 move |_| {
@@ -677,6 +751,13 @@ pub fn GraphCanvas(
                 viewBox=move || view_box.get()
                 preserveAspectRatio="xMidYMid meet"
                 class="absolute inset-0 w-full h-full"
+                on:pointermove=move |ev: web_sys::PointerEvent| {
+                    #[cfg(feature = "hydrate")]
+                    update_hover_from_pointer(ev);
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = ev;
+                }
+                on:pointerleave=move |_| hovered.set(None)
                 on:wheel=move |ev: web_sys::WheelEvent| {
                     ev.prevent_default();
                     let factor = if ev.delta_y() < 0.0 { 1.12 } else { 1.0 / 1.12 };
@@ -806,6 +887,43 @@ mod tests {
         assert!(hit > idle);
         assert!(hit > hovered);
         assert!(hit > selected);
+    }
+
+    #[test]
+    fn hover_node_at_keeps_current_inside_hysteresis_ring() {
+        let nodes = vec![
+            node(1, "Current", "concept", 10.0, 10.0),
+            node(2, "Other", "concept", 30.0, 10.0),
+        ];
+        let visible_ids = HashSet::from([1, 2]);
+        let degrees = HashMap::from([(1, 0), (2, 0)]);
+        let base_r = node_base_radius(false, 0);
+        let just_outside_enter = node_hit_radius(base_r) + 0.25;
+
+        assert_eq!(
+            hover_node_at(
+                &nodes,
+                &visible_ids,
+                &degrees,
+                None,
+                Some(1),
+                10.0 + just_outside_enter,
+                10.0
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            hover_node_at(
+                &nodes,
+                &visible_ids,
+                &degrees,
+                None,
+                None,
+                10.0 + just_outside_enter,
+                10.0
+            ),
+            None
+        );
     }
 
     #[test]
