@@ -48,7 +48,7 @@ crates/
         page.rs                 # /knowledge route composition
         graph_canvas.rs         # SVG graph view
         filter_panel.rs         # Tag + type filters (dynamic from config)
-        editor.rs               # Create/update form with live preview
+        editor/                 # Create/update form split into focused submodules
         detail_bar.rs           # Bottom strip: hover/selection summary
         detail_panel.rs         # Right-hand slide-out: rendered markdown + work-item card
         orphan_banner.rs        # Amber advisory for unknown node types
