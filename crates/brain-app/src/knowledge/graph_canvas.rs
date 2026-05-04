@@ -18,6 +18,8 @@ const NODE_HOVER_BUMP: f32 = 0.5;
 const NODE_SELECTED_BUMP: f32 = 0.8;
 const NODE_HIT_TARGET_BUFFER: f32 = 0.35;
 #[cfg(feature = "hydrate")]
+const NODE_HOVER_LEAVE_GRACE_MS: u32 = 90;
+#[cfg(feature = "hydrate")]
 const VIEWPORT_TWEEN_MS: f64 = 300.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -460,6 +462,11 @@ pub fn GraphCanvas(
 
     let degrees: StoredValue<HashMap<u32, usize>> =
         StoredValue::new(adjacency.with_value(|a| a.iter().map(|(k, v)| (*k, v.len())).collect()));
+    #[cfg(feature = "hydrate")]
+    let hover_clear_timer: StoredValue<
+        Option<gloo_timers::callback::Timeout>,
+        leptos::prelude::LocalStorage,
+    > = StoredValue::new_local(None);
 
     let edges_view = move || {
         let vis = visible_ids.get();
@@ -565,8 +572,22 @@ pub fn GraphCanvas(
                         <g
                             class="cursor-pointer"
                             style=move || format!("opacity:{}; transition: opacity 200ms ease;", if bright.get() { 1.0 } else { 0.15 })
-                            on:mouseenter=move |_| hovered.set(Some(id))
-                            on:mouseleave=move |_| hovered.update(|h| if *h == Some(id) { *h = None; })
+                            on:mouseenter=move |_| {
+                                #[cfg(feature = "hydrate")]
+                                hover_clear_timer.set_value(None);
+                                hovered.set(Some(id));
+                            }
+                            on:mouseleave=move |_| {
+                                #[cfg(feature = "hydrate")]
+                                {
+                                    let timer = gloo_timers::callback::Timeout::new(NODE_HOVER_LEAVE_GRACE_MS, move || {
+                                        hovered.update(|h| if *h == Some(id) { *h = None; });
+                                    });
+                                    hover_clear_timer.set_value(Some(timer));
+                                }
+                                #[cfg(not(feature = "hydrate"))]
+                                hovered.update(|h| if *h == Some(id) { *h = None; });
+                            }
                             on:click={
                                 let path = n.path.clone();
                                 move |_| {
