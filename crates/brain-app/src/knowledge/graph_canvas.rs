@@ -126,6 +126,10 @@ fn node_hit_radius(base_r: f32) -> f32 {
     base_r + NODE_SELECTED_BUMP + NODE_HIT_TARGET_BUFFER
 }
 
+fn viewport_focus_id(selected: Option<u32>, _hovered: Option<u32>) -> Option<u32> {
+    selected
+}
+
 fn clamp_viewport(viewport: Viewport, bounds: GraphBounds) -> Viewport {
     let scale = viewport.scale.clamp(MIN_SCALE, MAX_SCALE);
     let size = BASE_VIEW_SIZE / scale;
@@ -382,7 +386,7 @@ pub fn GraphCanvas(
         m
     });
 
-    let focus = Memo::new(move |_| selected.get().or_else(|| hovered.get()));
+    let visual_focus = Memo::new(move |_| selected.get().or_else(|| hovered.get()));
 
     let positions: StoredValue<HashMap<u32, (f32, f32)>> =
         StoredValue::new(nodes.with_value(|ns| ns.iter().map(|n| (n.id, (n.x, n.y))).collect()));
@@ -398,7 +402,11 @@ pub fn GraphCanvas(
 
     Effect::new(move |_| {
         let current_scale = target_viewport.get_untracked().scale;
-        let next = match focus.get() {
+        // Hover is intentionally excluded here. Re-centering the viewBox while
+        // the pointer is over a node moves the hit target underneath the cursor,
+        // which can create a mouseenter/mouseleave loop. Selection is stable
+        // enough to drive camera movement; hover remains visual-only.
+        let next = match viewport_focus_id(selected.get(), None) {
             Some(id) => positions
                 .with_value(|p| p.get(&id).copied())
                 .map(|(cx, cy)| Viewport {
@@ -455,7 +463,7 @@ pub fn GraphCanvas(
 
     let edges_view = move || {
         let vis = visible_ids.get();
-        let f = focus.get();
+        let f = visual_focus.get();
         edges.with_value(|es| {
             positions.with_value(|pos| {
                 es.iter()
@@ -506,13 +514,15 @@ pub fn GraphCanvas(
     let config_for_nodes = config.clone();
     let nodes_view = move || {
         let vis = visible_ids.get();
-        let f = focus.get();
+        let label_focus = selected.get();
         let tag_type = config_for_nodes
             .synthetic_tag_spec()
             .map(|s| s.name.clone());
         let label_ids = nodes.with_value(|ns| {
             degrees.with_value(|d| {
-                adjacency.with_value(|a| visible_label_ids(ns, &vis, d, a, f, tag_type.as_deref()))
+                adjacency.with_value(|a| {
+                    visible_label_ids(ns, &vis, d, a, label_focus, tag_type.as_deref())
+                })
             })
         });
         nodes.with_value(|ns| {
@@ -536,7 +546,7 @@ pub fn GraphCanvas(
                         1.5_f32 + (deg as f32).min(6.0) * 0.18
                     };
 
-                    let bright = Memo::new(move |_| match focus.get() {
+                    let bright = Memo::new(move |_| match visual_focus.get() {
                         None => true,
                         Some(f) if f == id => true,
                         Some(f) => adjacency
@@ -549,7 +559,7 @@ pub fn GraphCanvas(
                     let label_offset = base_r + 2.4;
                     let label_fill = if is_tag { "#cbd5e1" } else { "#e2e8f0" };
                     let is_label_visible = label_ids.contains(&id);
-                    let label = compact_label(&title, is_tag, f == Some(id));
+                    let label = compact_label(&title, is_tag, label_focus == Some(id));
 
                     view! {
                         <g
@@ -775,6 +785,12 @@ mod tests {
         assert!(hit > idle);
         assert!(hit > hovered);
         assert!(hit > selected);
+    }
+
+    #[test]
+    fn viewport_focus_ignores_hover() {
+        assert_eq!(viewport_focus_id(None, Some(7)), None);
+        assert_eq!(viewport_focus_id(Some(3), Some(7)), Some(3));
     }
 
     #[test]
