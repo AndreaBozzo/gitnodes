@@ -183,7 +183,7 @@ pub async fn load_audit_log(
     limit: Option<i64>,
 ) -> Result<Vec<AuditEntry>, ServerFnError> {
     use crate::server::session;
-    let _ = session::require_authenticated().await.map_err(sfe)?;
+    let _ = session::require_target_admin_session().await.map_err(sfe)?;
     let rows = crate::server::audit::recent(limit.unwrap_or(200), kind.as_deref())
         .await
         .map_err(|e| sfe(BrainError::other(format!("DB: {e}"))))?;
@@ -202,7 +202,7 @@ pub async fn load_audit_log(
 #[server(ListSessions, "/api", endpoint = "list_sessions")]
 pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
     use crate::server::session;
-    let _ = session::require_authenticated().await.map_err(sfe)?;
+    let _ = session::require_target_admin_session().await.map_err(sfe)?;
     let rows = crate::server::audit::list_sessions(100)
         .await
         .map_err(|e| sfe(BrainError::other(format!("DB: {e}"))))?;
@@ -218,7 +218,7 @@ pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
 #[server(RevokeSession, "/api", endpoint = "revoke_session")]
 pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
     use crate::server::session;
-    let s = session::require_authenticated().await.map_err(sfe)?;
+    let s = session::require_target_admin_session().await.map_err(sfe)?;
     let actor = crate::server::auth::get_session_user(&s).await;
     let n = crate::server::audit::revoke_session(&id)
         .await

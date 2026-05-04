@@ -124,9 +124,20 @@ async fn main() {
     let event_bus = brain_app::server::sse::EventBus::new();
     brain_app::server::sse::init(event_bus.clone());
 
+    let allow_insecure_webhooks = std::env::var("ALLOW_INSECURE_WEBHOOKS")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(cfg!(debug_assertions));
     let webhook_secret = std::env::var("WEBHOOK_SECRET").ok();
     if webhook_secret.is_none() {
-        tracing::warn!("WEBHOOK_SECRET not set — webhook endpoint will accept unsigned payloads");
+        if allow_insecure_webhooks {
+            tracing::warn!(
+                "WEBHOOK_SECRET not set — webhook endpoint will accept unsigned payloads because ALLOW_INSECURE_WEBHOOKS is enabled"
+            );
+        } else {
+            panic!(
+                "WEBHOOK_SECRET must be set in non-dev environments unless ALLOW_INSECURE_WEBHOOKS=1"
+            );
+        }
     }
     let webhook_state = brain_app::server::webhook::WebhookState {
         bus: event_bus.clone(),
@@ -138,7 +149,7 @@ async fn main() {
     // Secure=false allows http://127.0.0.1 in dev; set SESSION_COOKIE_SECURE=1 in prod.
     let cookie_secure = std::env::var("SESSION_COOKIE_SECURE")
         .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(false);
+        .unwrap_or(!cfg!(debug_assertions));
     let session_layer = SessionManagerLayer::new(session_store)
         .with_same_site(SameSite::Lax)
         .with_secure(cookie_secure);

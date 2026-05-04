@@ -91,9 +91,10 @@ Optional:
 | `SESSION_DB_URL`          | `sqlite://data/sessions.db` | SQLite database URL for sessions, audit log, and local projection |
 | `LEPTOS_SITE_ADDR`        | `127.0.0.1:3000`       | Bind address                                     |
 | `LEPTOS_SITE_ROOT`        | `target/site`          | Static asset root (prod)                         |
-| `SESSION_COOKIE_SECURE`   | `0`                    | Set to `1` in HTTPS prod                         |
+| `SESSION_COOKIE_SECURE`   | `1` in release, `0` in debug | Marks the session cookie Secure. Override to `0` only for local HTTP dev. |
 | `RUST_LOG`                | `brain_ui=info,warn`   | tracing-subscriber env filter                    |
-| `WEBHOOK_SECRET`          | _(unset)_              | HMAC-SHA256 secret matching the GitHub webhook config; if unset the `/webhook/github` endpoint accepts unsigned payloads (dev only) |
+| `WEBHOOK_SECRET`          | _(required in release)_ | HMAC-SHA256 secret matching the GitHub webhook config. Required unless `ALLOW_INSECURE_WEBHOOKS=1`. |
+| `ALLOW_INSECURE_WEBHOOKS` | `1` in debug, `0` in release | Explicitly allows unsigned `/webhook/github` requests. Dev-only escape hatch. |
 | `GITHUB_APP_ID`           | _(unset)_              | GitHub App ID. With `GITHUB_APP_INSTALLATION_ID` and a private key, webhooks authenticate as the App (preferred over PAT). |
 | `GITHUB_APP_INSTALLATION_ID` | _(unset)_           | Installation ID from the App's `…/settings/installations/<id>` URL after installing on the target org. |
 | `GITHUB_APP_PRIVATE_KEY`  | _(unset)_              | Inline PEM of the App's private key. Newlines may be encoded as `\n` for single-line `.env` values. |

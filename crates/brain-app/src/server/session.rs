@@ -74,3 +74,30 @@ pub async fn require_authenticated() -> Result<Session, BrainError> {
         Err(BrainError::Unauthenticated)
     }
 }
+
+/// Gate privileged admin surfaces on a live session that still belongs to the
+/// current target org and has admin or maintain access on the target repo.
+pub async fn require_target_admin_session() -> Result<Session, BrainError> {
+    let (session, token) = require_session_and_token().await?;
+    let target = target_cfg()?;
+    let storage = storage_for(target.clone())?;
+    let permissions = storage.repository_permissions(&token).await?;
+    if !(permissions.admin || permissions.maintain) {
+        return Err(BrainError::other(
+            "admin or maintain access on the target repository is required",
+        ));
+    }
+
+    let client = reqwest::Client::new();
+    let login = match auth::get_session_user(&session).await {
+        Some(login) => login,
+        None => brain_auth::fetch_user_login(&client, &token).await?,
+    };
+
+    if !brain_auth::is_org_member(&client, &token, &target.org, &login).await {
+        let _ = session.flush().await;
+        return Err(BrainError::Unauthenticated);
+    }
+
+    Ok(session)
+}
