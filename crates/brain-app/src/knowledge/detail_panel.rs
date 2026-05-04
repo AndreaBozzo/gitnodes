@@ -498,7 +498,9 @@ pub fn DetailPanel(
                                 <div class="text-slate-500 text-xs">"Loading document…"</div>
                             }>
                                 {move || match file.get() {
-                                    None => ().into_any(),
+                                    None => view! {
+                                        <div class="text-slate-500 text-xs">"Loading document…"</div>
+                                    }.into_any(),
                                     Some(Err(e)) => view! {
                                         <div class="text-amber-300 text-xs">
                                             {format!("Failed to load: {e}")}
@@ -734,7 +736,9 @@ fn WorkItemComments(
                 <p class="mt-3 text-xs text-slate-500">"Loading comments..."</p>
             }>
                 {move || match comments.get() {
-                    None => ().into_any(),
+                    None => view! {
+                        <p class="mt-3 text-xs text-slate-500">"Loading comments..."</p>
+                    }.into_any(),
                     Some(Err(error)) => view! {
                         <div class="mt-3 rounded-md border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
                             {format!("Failed to load comments: {error}")}

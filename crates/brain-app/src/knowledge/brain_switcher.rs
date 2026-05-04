@@ -16,6 +16,14 @@ use crate::api::{
 use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, decode_path_segment, encode_path_segment};
 
+fn knowledge_loading_view() -> impl IntoView {
+    view! {
+        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
+            "Loading knowledge graph…"
+        </div>
+    }
+}
+
 // ---------------------------------------------------------------------------
 // KnowledgePageForTarget
 // ---------------------------------------------------------------------------
@@ -58,11 +66,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
     );
 
     view! {
-        <Suspense fallback=|| view! {
-            <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-                "Loading knowledge graph…"
-            </div>
-        }>
+        <Suspense fallback=knowledge_loading_view>
             {move || {
                 match data.get() {
                     Some(Ok((target, nodes, edges, cfg, files))) => {
@@ -83,7 +87,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                             {format!("Failed to load graph/config for target: {e}")}
                         </div>
                     }.into_any(),
-                    _ => view! { <div></div> }.into_any(),
+                    _ => knowledge_loading_view().into_any(),
                 }
             }}
         </Suspense>

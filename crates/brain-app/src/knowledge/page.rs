@@ -19,6 +19,14 @@ use crate::api::{
 use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, encode_path_segment};
 
+fn knowledge_loading_view() -> impl IntoView {
+    view! {
+        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
+            "Loading knowledge graph…"
+        </div>
+    }
+}
+
 #[component]
 pub fn KnowledgePage() -> impl IntoView {
     // Both signals are owned by `App` and shared via context so the global
@@ -54,11 +62,7 @@ pub fn KnowledgePage() -> impl IntoView {
     let app_config = expect_context::<Resource<Result<AppConfig, ServerFnError>>>();
 
     view! {
-        <Suspense fallback=|| view! {
-            <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-                "Loading knowledge graph…"
-            </div>
-        }>
+        <Suspense fallback=knowledge_loading_view>
             {move || {
                 let d = data.get();
                 let a = app_config.get();
@@ -79,7 +83,7 @@ pub fn KnowledgePage() -> impl IntoView {
                             {format!("Failed to load graph/config: {e}")}
                         </div>
                     }.into_any(),
-                    _ => view! { <div></div> }.into_any(),
+                    _ => knowledge_loading_view().into_any(),
                 }
             }}
         </Suspense>
