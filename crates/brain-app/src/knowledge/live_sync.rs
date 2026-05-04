@@ -47,6 +47,7 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
         #[derive(Default)]
         struct LiveSyncRuntime {
             source: Option<EventSource>,
+            startup_timer: Option<Timeout>,
             reconnect_timer: Option<Timeout>,
             on_open: Option<Closure<dyn FnMut(Event)>>,
             on_updated: Option<Closure<dyn FnMut(MessageEvent)>>,
@@ -164,6 +165,7 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 if let Some(source) = state.source.take() {
                     source.close();
                 }
+                state.startup_timer = None;
                 state.on_open = None;
                 state.on_updated = None;
                 state.on_failed = None;
@@ -295,8 +297,16 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             }));
         }
 
-        if let Some(connect) = connect.borrow().as_ref() {
-            connect();
+        {
+            let runtime = runtime.clone();
+            let connect = connect.clone();
+            let runtime_for_timer = runtime.clone();
+            runtime.borrow_mut().startup_timer = Some(Timeout::new(0, move || {
+                runtime_for_timer.borrow_mut().startup_timer = None;
+                if let Some(connect) = connect.borrow().as_ref() {
+                    connect();
+                }
+            }));
         }
 
         // Anchor the runtime in the Leptos reactive tree so it lives for the
