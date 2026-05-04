@@ -366,11 +366,6 @@ fn read_expanded(key: &str) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-#[cfg(not(feature = "hydrate"))]
-fn read_expanded(_key: &str) -> HashSet<String> {
-    HashSet::new()
-}
-
 #[cfg(feature = "hydrate")]
 fn write_expanded(key: &str, expanded: &HashSet<String>) {
     if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
