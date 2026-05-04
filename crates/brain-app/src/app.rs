@@ -47,7 +47,7 @@ pub fn App() -> impl IntoView {
     // App config is loaded once and shared via context so any component
     // (landing, detail panel, etc.) can read `brand.name`, `target` (wrapped in
     // `GithubClient` for URL building) etc. without its own server-fn round-trip.
-    let app_config = Resource::new(|| (), |_| async move { get_app_config().await });
+    let app_config = Resource::new_blocking(|| (), |_| async move { get_app_config().await });
     provide_context(app_config);
 
     // Global sync state. `LiveSync` (mounted below) keeps these in sync with
