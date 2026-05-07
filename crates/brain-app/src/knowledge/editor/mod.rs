@@ -466,12 +466,17 @@ pub fn EditorPanel(
             leptos::task::spawn_local(async move {
                 match save_brain_file(_payload).await {
                     Ok(result) => {
-                        status_msg.set(match result.mode {
+                        status_msg.set(match result.mode.clone() {
                             WriteMode::Direct => {
+                                let saved_path = result.path.clone();
+                                edit_path.set(Some(saved_path.clone()));
+                                if let Some(fresh_sha) = result.sha.clone() {
+                                    edit_sha.set(Some(fresh_sha));
+                                }
                                 if updating {
-                                    format!("Updated: {}", result.path)
+                                    format!("Updated: {}", saved_path)
                                 } else {
-                                    format!("Created: {}", result.path)
+                                    format!("Created: {}", saved_path)
                                 }
                             }
                             WriteMode::PullRequest => {

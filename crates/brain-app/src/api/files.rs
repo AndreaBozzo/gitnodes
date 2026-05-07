@@ -64,6 +64,10 @@ pub enum WriteMode {
 pub struct WriteResult {
     pub path: String,
     pub mode: WriteMode,
+    /// Fresh blob SHA for direct file writes. The editor uses this to keep an
+    /// open edit session committable after a successful save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,6 +106,7 @@ impl WriteResult {
         Self {
             path: path.into(),
             mode: WriteMode::Direct,
+            sha: None,
             branch: None,
             pr_url: None,
             pr_number: None,
@@ -117,6 +122,7 @@ impl WriteResult {
         Self {
             path: path.into(),
             mode: WriteMode::PullRequest,
+            sha: None,
             branch: Some(branch.into()),
             pr_url: Some(pr_url.into()),
             pr_number: Some(pr_number),
@@ -199,6 +205,7 @@ pub async fn list_brain_files(filters: FileQueryFilters) -> Result<Vec<RepoFile>
 )]
 pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, ServerFnError> {
     use crate::server::session;
+    use brain_storage::Storage;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -271,14 +278,27 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, S
     )
     .await
     {
-        Ok(result) => {
+        Ok(mut result) => {
             let kind = if payload.sha.is_some() {
                 "update"
             } else {
                 "create"
             };
-            match result.mode {
+            match result.mode.clone() {
                 WriteMode::Direct => {
+                    match storage.read_file(&token, &file_path).await {
+                        Ok((_content, fresh_sha)) => {
+                            result.sha = Some(fresh_sha);
+                        }
+                        Err(error) => {
+                            crate::server::audit::log(
+                                "post_save_sha_error",
+                                Some(&user),
+                                &format!("{file_path}: {error}"),
+                            )
+                            .await;
+                        }
+                    }
                     crate::server::audit::log(kind, Some(&user), &file_path).await;
                     rebuild_projection_after_write(
                         &storage,
