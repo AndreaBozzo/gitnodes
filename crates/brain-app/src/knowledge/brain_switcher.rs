@@ -11,7 +11,7 @@ use leptos_router::hooks::use_params_map;
 
 use crate::api::{
     AccessibleTargetState, FileQueryFilters, list_accessible_targets, list_brain_files,
-    load_brain_config_for_target, load_brain_graph_for_target, resolve_legacy_target,
+    load_brain_config_status_for_target, load_brain_graph_for_target, resolve_legacy_target,
 };
 use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, decode_path_segment, encode_path_segment};
@@ -53,7 +53,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                 TargetRef::new(o, r, decode_path_segment(&b))
             };
             let (nodes, edges) = load_brain_graph_for_target(target.clone()).await?;
-            let cfg = load_brain_config_for_target(target.clone()).await?;
+            let config_status = load_brain_config_status_for_target(target.clone()).await?;
             let files = list_brain_files(FileQueryFilters {
                 org: Some(target.org.clone()),
                 repo: Some(target.repo.clone()),
@@ -61,7 +61,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                 ..Default::default()
             })
             .await?;
-            Ok::<_, ServerFnError>((target, nodes, edges, cfg, files))
+            Ok::<_, ServerFnError>((target, nodes, edges, config_status, files))
         },
     );
 
@@ -69,13 +69,14 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
         <Suspense fallback=knowledge_loading_view>
             {move || {
                 match data.get() {
-                    Some(Ok((target, nodes, edges, cfg, files))) => {
+                    Some(Ok((target, nodes, edges, config_status, files))) => {
                         use super::page::KnowledgeViewProps;
                         super::page::KnowledgeView(KnowledgeViewProps {
                             nodes,
                             edges,
                             files,
-                            config: cfg,
+                            config: config_status.config,
+                            config_diagnostic: config_status.diagnostic,
                             graph_version,
                             sync_status,
                             target_ref: target,

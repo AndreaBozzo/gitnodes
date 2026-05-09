@@ -86,6 +86,9 @@ pub async fn load_work_item_comments(
     target: TargetRef,
     brain_id: String,
 ) -> Result<Vec<WorkItemComment>, ServerFnError> {
+    use crate::server::session;
+
+    session::__assert_gated();
     load_work_item_comments_inner(target, brain_id)
         .await
         .map_err(sfe)
@@ -143,6 +146,9 @@ pub async fn transition_work_item(
     brain_id: String,
     new_state: WorkItemState,
 ) -> Result<WorkItemMutationResult, ServerFnError> {
+    use crate::server::session;
+
+    session::__assert_gated();
     apply_work_item_mutation(target, brain_id, WorkItemMutation::State(new_state))
         .await
         .map_err(sfe)
@@ -161,6 +167,9 @@ pub async fn assign_work_item(
     brain_id: String,
     assignees: Vec<String>,
 ) -> Result<WorkItemMutationResult, ServerFnError> {
+    use crate::server::session;
+
+    session::__assert_gated();
     apply_work_item_mutation(target, brain_id, WorkItemMutation::Assignees(assignees))
         .await
         .map_err(sfe)
@@ -178,6 +187,9 @@ pub async fn bind_work_item(
     brain_id: String,
     binding: Option<ExternalWorkItemBinding>,
 ) -> Result<WorkItemMutationResult, ServerFnError> {
+    use crate::server::session;
+
+    session::__assert_gated();
     apply_work_item_mutation(target, brain_id, WorkItemMutation::Binding(binding))
         .await
         .map_err(sfe)

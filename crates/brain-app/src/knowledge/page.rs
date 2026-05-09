@@ -13,8 +13,8 @@ use super::live_sync::SyncStatus;
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
 use crate::api::{
-    AppConfig, FileQueryFilters, RepoFile, list_brain_files, load_brain_config, load_brain_graph,
-    refresh_brain_graph,
+    AppConfig, ConfigLoadDiagnostic, FileQueryFilters, RepoFile, list_brain_files,
+    load_brain_config_status, load_brain_graph, refresh_brain_graph,
 };
 use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, encode_path_segment};
@@ -43,9 +43,9 @@ pub fn KnowledgePage() -> impl IntoView {
             {
                 tokio::time::timeout(std::time::Duration::from_secs(10), async {
                     let graph = load_brain_graph().await?;
-                    let config = load_brain_config().await?;
+                    let config_status = load_brain_config_status().await?;
                     let files = list_brain_files(FileQueryFilters::default()).await?;
-                    Ok::<_, ServerFnError>((graph, config, files))
+                    Ok::<_, ServerFnError>((graph, config_status, files))
                 })
                 .await
                 .map_err(|_| ServerFnError::new("upstream timeout – try refreshing"))?
@@ -53,9 +53,9 @@ pub fn KnowledgePage() -> impl IntoView {
             #[cfg(not(feature = "ssr"))]
             {
                 let graph = load_brain_graph().await?;
-                let config = load_brain_config().await?;
+                let config_status = load_brain_config_status().await?;
                 let files = list_brain_files(FileQueryFilters::default()).await?;
-                Ok::<_, ServerFnError>((graph, config, files))
+                Ok::<_, ServerFnError>((graph, config_status, files))
             }
         },
     );
@@ -67,12 +67,13 @@ pub fn KnowledgePage() -> impl IntoView {
                 let d = data.get();
                 let a = app_config.get();
                 match (d, a) {
-                    (Some(Ok(((nodes, edges), cfg, files))), Some(Ok(app))) => {
+                    (Some(Ok(((nodes, edges), config_status, files))), Some(Ok(app))) => {
                         KnowledgeView(KnowledgeViewProps {
                             nodes,
                             edges,
                             files,
-                            config: cfg,
+                            config: config_status.config,
+                            config_diagnostic: config_status.diagnostic,
                             graph_version,
                             sync_status,
                             target_ref: TargetRef::from(app.target),
@@ -100,6 +101,7 @@ pub(crate) fn KnowledgeView(
     edges: Vec<Edge>,
     files: Vec<RepoFile>,
     config: brain_domain::BrainConfig,
+    config_diagnostic: Option<ConfigLoadDiagnostic>,
     graph_version: RwSignal<u64>,
     sync_status: RwSignal<SyncStatus>,
     target_ref: TargetRef,
@@ -109,6 +111,7 @@ pub(crate) fn KnowledgeView(
     let nodes = StoredValue::new(nodes);
     let repo_files = StoredValue::new(files);
     let config = StoredValue::new(config);
+    let config_diagnostic = StoredValue::new(config_diagnostic);
     let edges = StoredValue::new(edges);
     let path_to_id: StoredValue<HashMap<String, u32>> = StoredValue::new(
         nodes.with_value(|ns| ns.iter().map(|n| (n.path.clone(), n.id)).collect()),
@@ -524,7 +527,7 @@ pub(crate) fn KnowledgeView(
                     </button>
                 </div>
             </header>
-            <OrphanBanner nodes=nodes config=config />
+            <OrphanBanner nodes=nodes config=config diagnostic=config_diagnostic />
             <div class="flex-1 flex min-h-0">
                 <FilterPanel
                     all_tags=all_tags.clone()

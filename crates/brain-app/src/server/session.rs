@@ -48,6 +48,11 @@ pub fn storage_for(target: TargetConfig) -> Result<GithubStorage, BrainError> {
     Ok(GithubStorage::new(github_http()?, target))
 }
 
+/// Source-audit marker for server fns that delegate their auth gate to an
+/// inner helper. The `api.rs` regression test requires each non-public
+/// `#[server]` fn body to contain a direct gate call or this marker.
+pub(crate) fn __assert_gated() {}
+
 /// Pull Session + GitHub token (fails with `Unauthenticated` if missing).
 pub async fn require_session_and_token() -> Result<(Session, String), BrainError> {
     let s = session()?;

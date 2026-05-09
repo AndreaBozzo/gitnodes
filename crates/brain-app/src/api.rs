@@ -20,13 +20,16 @@ pub(crate) use file_ops::{relativize, slugify, validate_markdown_path};
 
 mod config_admin;
 pub use config_admin::{
-    AppConfig, AuditEntry, SessionEntry, get_app_config, get_current_user, list_sessions,
-    list_views, load_audit_log, load_brain_config, load_brain_template, revoke_session, save_views,
+    AppConfig, AuditEntry, ConfigLoadDiagnostic, ConfigLoadStatus, SessionEntry, get_app_config,
+    get_current_user, list_sessions, list_views, load_audit_log, load_brain_config,
+    load_brain_config_status, load_brain_config_status_for_target, load_brain_template,
+    revoke_session, save_views,
 };
 #[cfg(feature = "ssr")]
 pub use config_admin::{
     GetAppConfig, GetCurrentUser, ListSessions, ListViews, LoadAuditLog, LoadBrainConfig,
-    LoadBrainTemplate, RevokeSession, SaveViews,
+    LoadBrainConfigStatus, LoadBrainConfigStatusForTarget, LoadBrainTemplate, RevokeSession,
+    SaveViews,
 };
 
 mod graph;
@@ -107,6 +110,8 @@ fn sanitize_commit_message(raw: Option<&str>) -> Option<String> {
 const SERVER_FNS: &[&str] = &[
     "GetAppConfig",
     "LoadBrainConfig",
+    "LoadBrainConfigStatus",
+    "LoadBrainConfigStatusForTarget",
     "LoadAuditLog",
     "ListSessions",
     "RevokeSession",
@@ -147,6 +152,8 @@ pub fn register_server_functions() {
     use leptos::server_fn::axum::register_explicit;
     register_explicit::<GetAppConfig>();
     register_explicit::<LoadBrainConfig>();
+    register_explicit::<LoadBrainConfigStatus>();
+    register_explicit::<LoadBrainConfigStatusForTarget>();
     register_explicit::<LoadAuditLog>();
     register_explicit::<ListSessions>();
     register_explicit::<RevokeSession>();
@@ -198,9 +205,24 @@ mod server_fn_registration_tests {
         include_str!("api/work_items.rs"),
     ];
 
+    const PUBLIC_SERVER_FNS: &[&str] = &["GetAppConfig"];
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ServerFnSource {
+        name: String,
+        body: String,
+    }
+
     /// Pull the struct name out of `#[server(Name, ...)]` or `#[server(\n    Name,\n ...`).
     fn extract_server_fn_names(src: &str) -> Vec<String> {
-        let mut names = Vec::new();
+        extract_server_fns(src)
+            .into_iter()
+            .map(|server_fn| server_fn.name)
+            .collect()
+    }
+
+    fn extract_server_fns(src: &str) -> Vec<ServerFnSource> {
+        let mut server_fns = Vec::new();
         let needle = "#[server(";
         for (idx, _) in src.match_indices(needle) {
             // Skip occurrences that are inside a string literal in this very
@@ -218,11 +240,232 @@ mod server_fn_registration_tests {
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
-            if !name.is_empty() {
-                names.push(name);
+            if name.is_empty() {
+                continue;
             }
+
+            let Some(fn_idx) = after
+                .find("pub async fn")
+                .map(|offset| idx + needle.len() + offset)
+            else {
+                continue;
+            };
+            let Some(open_idx) = src[fn_idx..].find('{').map(|offset| fn_idx + offset) else {
+                continue;
+            };
+            let Some(close_idx) = find_matching_brace(src, open_idx) else {
+                continue;
+            };
+            server_fns.push(ServerFnSource {
+                name,
+                body: src[open_idx + 1..close_idx].to_string(),
+            });
         }
-        names
+        server_fns
+    }
+
+    fn find_matching_brace(src: &str, open_idx: usize) -> Option<usize> {
+        #[derive(Clone, Copy)]
+        enum State {
+            Normal,
+            String { escaped: bool },
+            Char { escaped: bool },
+            LineComment,
+            BlockComment,
+        }
+
+        let bytes = src.as_bytes();
+        let mut state = State::Normal;
+        let mut depth = 0usize;
+        let mut i = open_idx;
+        while i < bytes.len() {
+            match state {
+                State::Normal => match bytes[i] {
+                    b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                        state = State::LineComment;
+                        i += 1;
+                    }
+                    b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                        state = State::BlockComment;
+                        i += 1;
+                    }
+                    b'"' => state = State::String { escaped: false },
+                    b'\'' => state = State::Char { escaped: false },
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth = depth.checked_sub(1)?;
+                        if depth == 0 {
+                            return Some(i);
+                        }
+                    }
+                    _ => {}
+                },
+                State::String { escaped } => {
+                    state = match (bytes[i], escaped) {
+                        (_, true) => State::String { escaped: false },
+                        (b'\\', false) => State::String { escaped: true },
+                        (b'"', false) => State::Normal,
+                        _ => State::String { escaped: false },
+                    };
+                }
+                State::Char { escaped } => {
+                    state = match (bytes[i], escaped) {
+                        (_, true) => State::Char { escaped: false },
+                        (b'\\', false) => State::Char { escaped: true },
+                        (b'\'', false) => State::Normal,
+                        _ => State::Char { escaped: false },
+                    };
+                }
+                State::LineComment => {
+                    if bytes[i] == b'\n' {
+                        state = State::Normal;
+                    }
+                }
+                State::BlockComment => {
+                    if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        state = State::Normal;
+                        i += 1;
+                    }
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    fn push_masked(out: &mut String, bytes: &[u8]) {
+        for byte in bytes {
+            out.push(if *byte == b'\n' { '\n' } else { ' ' });
+        }
+    }
+
+    fn raw_string_bounds(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+        let mut quote_idx = start.checked_add(1)?;
+        if bytes.get(start) == Some(&b'b') && bytes.get(start + 1) == Some(&b'r') {
+            quote_idx += 1;
+        } else if bytes.get(start) != Some(&b'r') {
+            return None;
+        }
+
+        let mut hashes = 0usize;
+        while bytes.get(quote_idx) == Some(&b'#') {
+            quote_idx += 1;
+            hashes += 1;
+        }
+        if bytes.get(quote_idx) != Some(&b'"') {
+            return None;
+        }
+
+        let mut i = quote_idx + 1;
+        while i < bytes.len() {
+            if bytes[i] == b'"'
+                && (0..hashes).all(|offset| bytes.get(i + 1 + offset) == Some(&b'#'))
+            {
+                return Some((quote_idx, i + hashes));
+            }
+            i += 1;
+        }
+        Some((quote_idx, bytes.len().saturating_sub(1)))
+    }
+
+    fn code_without_comments_and_literals(src: &str) -> String {
+        #[derive(Clone, Copy)]
+        enum State {
+            Normal,
+            String { escaped: bool },
+            LineComment,
+            BlockComment { depth: usize },
+        }
+
+        let bytes = src.as_bytes();
+        let mut out = String::with_capacity(src.len());
+        let mut state = State::Normal;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match state {
+                State::Normal => {
+                    if let Some((_quote_idx, end_idx)) = raw_string_bounds(bytes, i) {
+                        push_masked(&mut out, &bytes[i..=end_idx]);
+                        i = end_idx + 1;
+                        continue;
+                    }
+
+                    match bytes[i] {
+                        b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                            push_masked(&mut out, &bytes[i..i + 2]);
+                            state = State::LineComment;
+                            i += 2;
+                            continue;
+                        }
+                        b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                            push_masked(&mut out, &bytes[i..i + 2]);
+                            state = State::BlockComment { depth: 1 };
+                            i += 2;
+                            continue;
+                        }
+                        b'b' if bytes.get(i + 1) == Some(&b'"') => {
+                            push_masked(&mut out, &bytes[i..i + 2]);
+                            state = State::String { escaped: false };
+                            i += 2;
+                            continue;
+                        }
+                        b'"' => {
+                            push_masked(&mut out, &bytes[i..=i]);
+                            state = State::String { escaped: false };
+                        }
+                        byte => out.push(byte as char),
+                    }
+                }
+                State::String { escaped } => {
+                    push_masked(&mut out, &bytes[i..=i]);
+                    state = match (bytes[i], escaped) {
+                        (_, true) => State::String { escaped: false },
+                        (b'\\', false) => State::String { escaped: true },
+                        (b'"', false) => State::Normal,
+                        _ => State::String { escaped: false },
+                    };
+                }
+                State::LineComment => {
+                    push_masked(&mut out, &bytes[i..=i]);
+                    if bytes[i] == b'\n' {
+                        state = State::Normal;
+                    }
+                }
+                State::BlockComment { depth } => {
+                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                        push_masked(&mut out, &bytes[i..i + 2]);
+                        state = State::BlockComment { depth: depth + 1 };
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        push_masked(&mut out, &bytes[i..i + 2]);
+                        state = if depth == 1 {
+                            State::Normal
+                        } else {
+                            State::BlockComment { depth: depth - 1 }
+                        };
+                        i += 2;
+                        continue;
+                    }
+                    push_masked(&mut out, &bytes[i..=i]);
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    fn body_has_auth_gate(body: &str) -> bool {
+        let code = code_without_comments_and_literals(body);
+        [
+            "session::require_session_and_token",
+            "session::require_authenticated",
+            "session::require_target_admin_session",
+            "session::__assert_gated",
+        ]
+        .iter()
+        .any(|needle| code.contains(needle))
     }
 
     #[test]
@@ -247,6 +490,28 @@ mod server_fn_registration_tests {
     }
 
     #[test]
+    fn non_public_server_fns_have_auth_gate() {
+        let server_fns = API_SOURCES
+            .iter()
+            .flat_map(|src| extract_server_fns(src))
+            .collect::<Vec<_>>();
+        let mut offenders = server_fns
+            .iter()
+            .filter(|server_fn| !PUBLIC_SERVER_FNS.contains(&server_fn.name.as_str()))
+            .filter(|server_fn| !body_has_auth_gate(&server_fn.body))
+            .map(|server_fn| server_fn.name.clone())
+            .collect::<Vec<_>>();
+        offenders.sort();
+
+        assert!(
+            offenders.is_empty(),
+            "every non-public #[server(...)] fn must call a session auth gate \
+             or session::__assert_gated() when the gate is delegated to an inner helper. \
+             Intentionally public server fns belong in PUBLIC_SERVER_FNS. Missing: {offenders:?}"
+        );
+    }
+
+    #[test]
     fn extract_server_fn_names_ignores_string_literal_occurrences() {
         // Sanity: the literal needle in this test file should not be picked up
         // because it's not at start-of-line.
@@ -265,5 +530,30 @@ mod server_fn_registration_tests {
         let mut names = extract_server_fn_names(sample);
         names.sort();
         assert_eq!(names, vec!["Bar".to_string(), "Foo".to_string()]);
+    }
+
+    #[test]
+    fn body_has_auth_gate_accepts_direct_gate_or_marker() {
+        assert!(body_has_auth_gate(
+            "let _ = session::require_authenticated().await?;"
+        ));
+        assert!(body_has_auth_gate("session::__assert_gated();"));
+        assert!(!body_has_auth_gate("let target = session::target_cfg()?;"));
+    }
+
+    #[test]
+    fn body_has_auth_gate_ignores_comments_and_literals() {
+        assert!(!body_has_auth_gate(
+            "// session::require_authenticated().await?;\nlet x = 1;"
+        ));
+        assert!(!body_has_auth_gate(
+            "let s = \"session::require_authenticated\";"
+        ));
+        assert!(!body_has_auth_gate(
+            "let s = r#\"session::require_session_and_token\"#;"
+        ));
+        assert!(!body_has_auth_gate(
+            "/* session::__assert_gated(); */\nlet target = session::target_cfg()?;"
+        ));
     }
 }

@@ -19,6 +19,30 @@ pub struct AppConfig {
     pub brand: BrandConfig,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigLoadDiagnostic {
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConfigLoadStatus {
+    pub config: BrainConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<ConfigLoadDiagnostic>,
+}
+
+#[cfg(feature = "ssr")]
+fn config_load_status(
+    snapshot: crate::knowledge::config_loader::ConfigLoadSnapshot,
+) -> ConfigLoadStatus {
+    ConfigLoadStatus {
+        config: (*snapshot.config).clone(),
+        diagnostic: snapshot.diagnostic.map(|diagnostic| ConfigLoadDiagnostic {
+            message: diagnostic.message,
+        }),
+    }
+}
+
 // Public on purpose: the landing page (rendered for anonymous visitors)
 // uses `brand.name`, `brand.org_label`, and the active `target` to advertise
 // the deployment ("Sign in with GitHub to open the {org} workspace"). Org +
@@ -42,6 +66,34 @@ pub async fn load_brain_config() -> Result<BrainConfig, ServerFnError> {
     let target = session::target_cfg().map_err(sfe)?;
     let cfg = config_loader::load(&target, &token).await;
     Ok((*cfg).clone())
+}
+
+#[server(LoadBrainConfigStatus, "/api", endpoint = "load_brain_config_status")]
+pub async fn load_brain_config_status() -> Result<ConfigLoadStatus, ServerFnError> {
+    use crate::knowledge::config_loader;
+    use crate::server::session;
+
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let target = session::target_cfg().map_err(sfe)?;
+    let snapshot = config_loader::load_with_diagnostic(&target, &token).await;
+    Ok(config_load_status(snapshot))
+}
+
+#[server(
+    LoadBrainConfigStatusForTarget,
+    "/api",
+    endpoint = "load_brain_config_status_for_target"
+)]
+pub async fn load_brain_config_status_for_target(
+    target: TargetRef,
+) -> Result<ConfigLoadStatus, ServerFnError> {
+    use crate::knowledge::config_loader;
+    use crate::server::session;
+
+    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let snapshot = config_loader::load_with_diagnostic(&target, &token).await;
+    Ok(config_load_status(snapshot))
 }
 
 /// Read-only list of saved views for the active target. Backed by the same

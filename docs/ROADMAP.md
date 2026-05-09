@@ -280,11 +280,11 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
     - Documentare cosa è shippato, quali caveat restano accettati temporaneamente e quali env/config devono essere verificati prima di far usare il prodotto a un contributor limitato.
     - Aggiornare README/ROADMAP in modo che il prossimo lavoro parta da feedback reale, non da un'altra lista di "sarebbe giusto".
     - Success criterion: un maintainer può spiegare in 10 minuti cosa Brain UI fa oggi, cosa non promette ancora, e come recuperare dai failure mode noti senza scavare nel codice.
-- [ ] **Audit follow-up 2026-05-09 — server-fn auth gating regression guard** _(unblocked by audit, low-risk closure item)_
+- [x] **Audit follow-up 2026-05-09 — server-fn auth gating regression guard** _(DONE 2026-05-09)_
     - Tutte le 24+ server fn ripetono manualmente `session::require_session_and_token().await.map_err(sfe)?` (alcune `require_authenticated`, alcune `require_target_admin_session`). L'audit del 2026-05-09 ha trovato `GetCurrentUser` senza gate (corretto in-line); `GetAppConfig` rimane intenzionalmente public (la landing page lo legge anonima per mostrare brand/target). Ogni nuova server fn re-inventa il gate: precisamente come la regressione si è infilata.
     - Direzioni alternative: (a) un attribute proc-macro `#[require_session]` che inietta il gate prima del corpo, (b) un extractor Axum tipato `AuthenticatedSession` che sostituisce la coppia `(session, token)`, (c) un test `cargo expand`-based che fallisce se una `#[server]` fn non chiama una funzione marker `__assert_gated`. Scegliere la più economica al momento del lavoro.
     - Success criterion: aggiungere una nuova server fn senza il gate fallisce in CI; l'audit del 2026-05-09 (lista `#[server]` ↔ guard) si automatizza invece di restare grep-driven.
-- [ ] **Audit follow-up 2026-05-09 — config-parse banner UX**
+- [x] **Audit follow-up 2026-05-09 — config-parse banner UX** _(DONE 2026-05-09)_
     - `knowledge/config_loader::load` ricade silenziosamente su `BrainConfig::default()` quando `.brain-config.yml` non parsea: l'admin che rompe l'YAML non vede feedback diretto, scopre il problema solo quando i tipi "scompaiono" dal grafo.
     - Estendere il banner orphan esistente in `orphan_banner.rs` con una variante `Config invalid` — testo dell'errore di parse + link al file su GitHub. Coerente col pattern dei banner attuali, niente stato globale nuovo.
     - Success criterion: rompere `.brain-config.yml` su un branch di test produce un banner con il diagnostic preciso entro il TTL di 30s del config cache.

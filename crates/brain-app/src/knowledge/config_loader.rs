@@ -30,10 +30,22 @@ const SEED_GRACE: Duration = Duration::from_secs(5);
 
 struct CacheEntry {
     cfg: Arc<BrainConfig>,
+    diagnostic: Option<ConfigLoadDiagnostic>,
     stored_at: Instant,
     /// True when this entry was placed by `store()` (post-save canonical seed).
     /// Cleared when the entry is replaced by a normal `cache_store` from `load`.
     seeded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigLoadDiagnostic {
+    pub message: String,
+}
+
+#[derive(Clone)]
+pub struct ConfigLoadSnapshot {
+    pub config: Arc<BrainConfig>,
+    pub diagnostic: Option<ConfigLoadDiagnostic>,
 }
 
 fn cache() -> &'static Mutex<HashMap<TargetKey, CacheEntry>> {
@@ -41,22 +53,31 @@ fn cache() -> &'static Mutex<HashMap<TargetKey, CacheEntry>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn cache_get(key: &TargetKey) -> Option<Arc<BrainConfig>> {
+fn cache_get(key: &TargetKey) -> Option<ConfigLoadSnapshot> {
     let guard = cache().lock().ok()?;
     let entry = guard.get(key)?;
     if entry.stored_at.elapsed() < TTL {
-        Some(entry.cfg.clone())
+        Some(ConfigLoadSnapshot {
+            config: entry.cfg.clone(),
+            diagnostic: entry.diagnostic.clone(),
+        })
     } else {
         None
     }
 }
 
-fn cache_store(key: &TargetKey, cfg: Arc<BrainConfig>, seeded: bool) {
+fn cache_store(
+    key: &TargetKey,
+    cfg: Arc<BrainConfig>,
+    diagnostic: Option<ConfigLoadDiagnostic>,
+    seeded: bool,
+) {
     if let Ok(mut guard) = cache().lock() {
         guard.insert(
             key.clone(),
             CacheEntry {
                 cfg,
+                diagnostic,
                 stored_at: Instant::now(),
                 seeded,
             },
@@ -93,7 +114,7 @@ pub fn invalidate(key: &TargetKey) {
 /// `SEED_GRACE`, so the webhook fired by our own commit cannot race in and
 /// overwrite the seed with a stale GitHub read.
 pub fn store(key: &TargetKey, cfg: BrainConfig) {
-    cache_store(key, Arc::new(cfg), true);
+    cache_store(key, Arc::new(cfg), None, true);
 }
 
 #[derive(Deserialize)]
@@ -105,21 +126,35 @@ struct ContentResponse {
 /// failure. Never returns `Err` from the caller's perspective — a malformed
 /// `.brain-config.yml` must not take the whole app down.
 pub async fn load(target: &TargetConfig, token: &str) -> Arc<BrainConfig> {
+    load_with_diagnostic(target, token).await.config
+}
+
+pub async fn load_with_diagnostic(target: &TargetConfig, token: &str) -> ConfigLoadSnapshot {
     let key = TargetKey::from(target);
     if let Some(hit) = cache_get(&key) {
         return hit;
     }
-    let cfg = match fetch_and_parse(target, token).await {
-        Ok(Some(cfg)) => cfg,
-        Ok(None) => BrainConfig::default(),
+    let (cfg, diagnostic) = match fetch_and_parse(target, token).await {
+        Ok(Some(cfg)) => (cfg, None),
+        Ok(None) => (BrainConfig::default(), None),
+        Err(BrainError::Parse(message)) => {
+            tracing::warn!(error = %message, "brain config invalid, using default");
+            (
+                BrainConfig::default(),
+                Some(ConfigLoadDiagnostic { message }),
+            )
+        }
         Err(e) => {
             tracing::warn!(error = %e, "brain config load failed, using default");
-            BrainConfig::default()
+            (BrainConfig::default(), None)
         }
     };
     let arc = Arc::new(cfg);
-    cache_store(&key, arc.clone(), false);
-    arc
+    cache_store(&key, arc.clone(), diagnostic.clone(), false);
+    ConfigLoadSnapshot {
+        config: arc,
+        diagnostic,
+    }
 }
 
 /// Returns `Ok(Some(cfg))` on a valid file, `Ok(None)` on 404 (file absent),
@@ -191,7 +226,7 @@ mod tests {
         invalidate(&a);
         invalidate(&b);
 
-        cache_store(&a, Arc::new(BrainConfig::default()), false);
+        cache_store(&a, Arc::new(BrainConfig::default()), None, false);
         assert!(cache_get(&a).is_some());
         assert!(cache_get(&b).is_none());
 
@@ -219,7 +254,7 @@ mod tests {
         let k = TargetKey::from(&target("o", "cfg_unseeded", "main"));
         invalidate(&k);
 
-        cache_store(&k, Arc::new(BrainConfig::default()), false);
+        cache_store(&k, Arc::new(BrainConfig::default()), None, false);
         assert!(cache_get(&k).is_some());
 
         invalidate(&k);
@@ -227,5 +262,29 @@ mod tests {
             cache_get(&k).is_none(),
             "unseeded entries (placed by load) are removed by invalidate"
         );
+    }
+
+    #[test]
+    fn cache_retains_parse_diagnostic_until_invalidated() {
+        let k = TargetKey::from(&target("o", "cfg_diag", "main"));
+        invalidate(&k);
+
+        cache_store(
+            &k,
+            Arc::new(BrainConfig::default()),
+            Some(ConfigLoadDiagnostic {
+                message: "node_types: invalid".to_string(),
+            }),
+            false,
+        );
+
+        let hit = cache_get(&k).expect("diagnostic entry cached");
+        assert_eq!(
+            hit.diagnostic.as_ref().map(|d| d.message.as_str()),
+            Some("node_types: invalid")
+        );
+
+        invalidate(&k);
+        assert!(cache_get(&k).is_none());
     }
 }
