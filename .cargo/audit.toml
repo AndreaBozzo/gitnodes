@@ -1,0 +1,20 @@
+# Configuration for `cargo audit` (and the `rustsec/audit-check` GitHub Action).
+# Listed advisories are accepted because they are upstream-blocked at the
+# moment we vetted them; revisit when the upstream chain bumps.
+
+[advisories]
+ignore = [
+    # Marvin Attack timing sidechannel in `rsa`. Pulled in only via
+    # `sqlx-macros-core -> sqlx-mysql` at proc-macro compile time. We use
+    # `sqlx` with `default-features = false, features = ["sqlite"]`, so the
+    # crate is not present in the runtime binary. No upstream fix yet
+    # (2026-05-09). Re-evaluate once `rsa` ships a constant-time path or
+    # `sqlx-macros-core` factors out the per-backend deps.
+    "RUSTSEC-2023-0071",
+
+    # `paste` declared unmaintained. Transitive via Leptos
+    # (tachys / reactive_graph / either_of). Not actionable here until the
+    # Leptos chain replaces it. Track upstream and drop this entry when
+    # `paste` is no longer in `Cargo.lock`.
+    "RUSTSEC-2024-0436",
+]

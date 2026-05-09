@@ -31,6 +31,7 @@ pub enum WorkItemKind {
     Decision,
     Incident,
     Change,
+    Quote,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]

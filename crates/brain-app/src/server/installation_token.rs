@@ -121,6 +121,10 @@ pub async fn get(http: &GithubHttp) -> Result<Option<String>, String> {
     if let Some(config) = config {
         match mint(http, &config).await {
             Ok(fresh) => {
+                tracing::info!(
+                    auth_tier = "app",
+                    "github auth: minted fresh installation token"
+                );
                 let mut guard = cache().lock().await;
                 guard.cached = Some(fresh.clone());
                 return Ok(Some(fresh.token));
@@ -139,10 +143,12 @@ pub async fn get(http: &GithubHttp) -> Result<Option<String>, String> {
     {
         let trimmed = pat.trim();
         if !trimmed.is_empty() {
+            tracing::info!(auth_tier = "pat", "github auth: using PAT fallback");
             return Ok(Some(trimmed.to_string()));
         }
     }
 
+    tracing::info!(auth_tier = "none", "github auth: no credentials configured");
     Ok(None)
 }
 

@@ -19,6 +19,12 @@ pub struct AppConfig {
     pub brand: BrandConfig,
 }
 
+// Public on purpose: the landing page (rendered for anonymous visitors)
+// uses `brand.name`, `brand.org_label`, and the active `target` to advertise
+// the deployment ("Sign in with GitHub to open the {org} workspace"). Org +
+// repo + branch is the same info that would be in a deployment's public
+// README/marketing — no auth gate. Anything truly sensitive belongs in a
+// separate, gated server fn.
 #[server(GetAppConfig, "/api", endpoint = "get_app_config")]
 pub async fn get_app_config() -> Result<AppConfig, ServerFnError> {
     use crate::server::session;
@@ -230,7 +236,7 @@ pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
 #[server(GetCurrentUser, "/api", endpoint = "get_current_user")]
 pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
     use crate::server::session;
-    let s = session::session().map_err(sfe)?;
+    let s = session::require_authenticated().await.map_err(sfe)?;
     Ok(crate::server::auth::get_session_user(&s).await)
 }
 

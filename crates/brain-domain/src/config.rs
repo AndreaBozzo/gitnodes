@@ -535,7 +535,7 @@ pub struct BrainConfig {
     pub default_type: String,
     /// Machine-readable taxonomy of Work Item labels. Drives forge-label sync
     /// and UI filters without hardcoding provider strings anywhere else.
-    /// Defaults to the five built-in kinds with `brain:*` label names.
+    /// Defaults to the built-in kinds with `brain:*` label names.
     #[serde(
         default = "default_label_taxonomy",
         skip_serializing_if = "Vec::is_empty"
@@ -723,6 +723,15 @@ fn default_label_taxonomy() -> Vec<WorkItemLabelSpec> {
             &[(InProgress, "brain:in-progress"), (Done, "brain:done")],
         ),
         entry(Change, "brain:change", &[(Done, "brain:done")]),
+        entry(
+            Quote,
+            "brain:quote",
+            &[
+                (InProgress, "brain:in-progress"),
+                (Blocked, "brain:blocked"),
+                (Done, "brain:done"),
+            ],
+        ),
     ]
 }
 
@@ -1089,9 +1098,9 @@ node_types:
     }
 
     #[test]
-    fn default_label_taxonomy_has_five_kinds() {
+    fn default_label_taxonomy_has_builtin_kinds() {
         let cfg = BrainConfig::default();
-        assert_eq!(cfg.label_taxonomy.len(), 5);
+        assert_eq!(cfg.label_taxonomy.len(), 6);
         let task_spec = cfg.labels_for_kind(&WorkItemKind::Task).unwrap();
         assert_eq!(task_spec.kind_label, "brain:task");
         assert!(
@@ -1099,9 +1108,17 @@ node_types:
                 .state_labels
                 .contains_key(&WorkItemState::InProgress)
         );
+        let quote_spec = cfg.labels_for_kind(&WorkItemKind::Quote).unwrap();
+        assert_eq!(quote_spec.kind_label, "brain:quote");
+        assert!(
+            quote_spec
+                .state_labels
+                .contains_key(&WorkItemState::InProgress)
+        );
         let all: Vec<&str> = cfg.all_kind_labels().collect();
         assert!(all.contains(&"brain:task"));
         assert!(all.contains(&"brain:incident"));
+        assert!(all.contains(&"brain:quote"));
     }
 
     #[test]
@@ -1120,7 +1137,7 @@ node_types:
   - { name: concept, label: Concept, directory: concepts, accent: "#112233" }
 "##;
         let cfg = BrainConfig::parse(yaml).unwrap();
-        assert_eq!(cfg.label_taxonomy.len(), 5);
+        assert_eq!(cfg.label_taxonomy.len(), 6);
     }
 
     #[test]
@@ -1369,6 +1386,25 @@ node_types:
             Some(WorkItemKind::Task)
         );
         assert!(cfg.lookup("task").is_some_and(|s| s.is_work_item()));
+    }
+
+    #[test]
+    fn parses_quote_work_item_kind() {
+        let yaml = r##"
+default_type: preventivo
+node_types:
+  - name: preventivo
+    label: Preventivo
+    directory: preventivi
+    accent: "#38bdf8"
+    work_item_kind: quote
+"##;
+        let cfg = BrainConfig::parse(yaml).unwrap();
+        assert_eq!(
+            cfg.lookup("preventivo")
+                .and_then(|s| s.work_item_kind.clone()),
+            Some(WorkItemKind::Quote)
+        );
     }
 
     fn gh(org: &str, repo: &str, branch: &str) -> GithubClient {

@@ -5,7 +5,20 @@
 fn required_env_with_legacy(primary: &str, legacy: &str) -> String {
     std::env::var(primary)
         .or_else(|_| std::env::var(legacy))
-        .unwrap_or_else(|_| panic!("{primary} or legacy {legacy} must be set"))
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                "missing required environment variable: set {primary} (or legacy {legacy})"
+            );
+            std::process::exit(1)
+        })
+}
+
+#[cfg(feature = "ssr")]
+fn required_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| {
+        tracing::error!("missing required environment variable: {name}");
+        std::process::exit(1)
+    })
 }
 
 #[cfg(feature = "ssr")]
@@ -15,6 +28,7 @@ async fn main() {
         Router,
         body::Body,
         extract::Request,
+        http::HeaderValue,
         http::header::{CACHE_CONTROL, PRAGMA},
         middleware::{self, Next},
         response::{IntoResponse, Redirect, Response},
@@ -36,6 +50,21 @@ async fn main() {
 
     dotenvy::dotenv().ok();
 
+    // Structured logging. Level controlled by RUST_LOG (defaults to info for our
+    // crate, warn elsewhere). Audit log stays as the domain-event stream; this is
+    // for operational visibility.
+    //
+    // MUST be initialized before any `required_env*` call: those helpers exit(1)
+    // via `tracing::error!` on missing env, and without a subscriber installed
+    // the diagnostic line vanishes — container logs would show only "exit 1"
+    // with no clue which variable was missing.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "brain_app=info,warn".into()),
+        )
+        .init();
+
     // Runtime config from env — fail fast if any are missing so a misconfigured
     // deploy can't silently write to the wrong repo.
     let target_cfg = TargetConfig {
@@ -44,19 +73,9 @@ async fn main() {
         branch: required_env_with_legacy("TARGET_GITHUB_BRANCH", "GITHUB_BRANCH"),
     };
     let brand_cfg = BrandConfig {
-        name: std::env::var("BRAND_NAME").expect("BRAND_NAME must be set"),
-        org_label: std::env::var("BRAND_ORG_LABEL").expect("BRAND_ORG_LABEL must be set"),
+        name: required_env("BRAND_NAME"),
+        org_label: required_env("BRAND_ORG_LABEL"),
     };
-
-    // Structured logging. Level controlled by RUST_LOG (defaults to info for our
-    // crate, warn elsewhere). Audit log stays as the domain-event stream; this is
-    // for operational visibility.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "brain_app=info,warn".into()),
-        )
-        .init();
 
     // Single pooled, **target-agnostic** HTTP client for the whole process.
     // Threaded through Leptos context so server fns and the asset proxy share
@@ -82,12 +101,14 @@ async fn main() {
             && !parent.as_os_str().is_empty()
         {
             // Do not swallow the error! Fail fast if permissions are wrong.
-            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                panic!(
-                    "Failed to create session DB directory at {:?}: {}",
-                    parent, e
-                )
-            });
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::error!(
+                    parent = ?parent,
+                    error = %e,
+                    "failed to create session DB directory"
+                );
+                std::process::exit(1);
+            }
         }
     }
 
@@ -134,9 +155,10 @@ async fn main() {
                 "WEBHOOK_SECRET not set — webhook endpoint will accept unsigned payloads because ALLOW_INSECURE_WEBHOOKS is enabled"
             );
         } else {
-            panic!(
+            tracing::error!(
                 "WEBHOOK_SECRET must be set in non-dev environments unless ALLOW_INSECURE_WEBHOOKS=1"
             );
+            std::process::exit(1);
         }
     }
     let webhook_state = brain_app::server::webhook::WebhookState {
@@ -229,6 +251,33 @@ async fn main() {
             headers.insert(PRAGMA, "no-cache".parse().expect("valid pragma header"));
         }
 
+        response
+    }
+
+    // Baseline browser-side hardening. Does NOT include CSP — that's still
+    // tracked under "Security & Content Trust Baseline" in the roadmap and
+    // requires the embed allowlist work to compute `frame-src` correctly.
+    // HSTS is only emitted when the app is actually serving over HTTPS
+    // (signalled by `SESSION_COOKIE_SECURE`); on local http://127.0.0.1
+    // dev it would force the browser to https and break the dev loop.
+    async fn security_headers(cookie_secure: bool, request: Request<Body>, next: Next) -> Response {
+        let mut response = next.run(request).await;
+        let headers = response.headers_mut();
+        headers.insert(
+            "X-Content-Type-Options",
+            HeaderValue::from_static("nosniff"),
+        );
+        headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
+        headers.insert(
+            "Referrer-Policy",
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        );
+        if cookie_secure {
+            headers.insert(
+                "Strict-Transport-Security",
+                HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+            );
+        }
         response
     }
 
@@ -364,15 +413,28 @@ async fn main() {
             }
         })
         .fallback(leptos_axum::file_and_error_handler(shell))
-        .layer(middleware::from_fn(cache_control))
+        // Layer order matters. In axum, later `.layer()` calls become OUTER
+        // wrappers. We want `security_headers` (and `cache_control`) to decorate
+        // ALL responses — including the redirect/401 short-circuits emitted by
+        // `protect_knowledge` itself — so they must wrap that middleware.
+        // Registration order therefore goes innermost → outermost:
+        //   protect_knowledge  → cache_control  → security_headers  → session.
         .layer(middleware::from_fn(protect_knowledge))
+        .layer(middleware::from_fn(cache_control))
+        .layer(middleware::from_fn(move |req, next| {
+            security_headers(cookie_secure, req, next)
+        }))
         .layer(session_layer)
         .with_state(leptos_options);
 
     tracing::info!(%addr, "brain_app listening");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| panic!("bind TCP listener on {addr}: {e}"));
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(%addr, error = %e, "failed to bind TCP listener");
+            std::process::exit(1);
+        }
+    };
     axum::serve(listener, app.into_make_service())
         .await
         .expect("axum serve loop terminated with error");

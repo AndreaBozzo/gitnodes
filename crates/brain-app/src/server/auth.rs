@@ -15,18 +15,30 @@ use tower_sessions::Session;
 // Re-exported session helpers so existing callers keep working.
 pub use brain_auth::{get_session_token, get_session_user, is_authenticated};
 
+fn required_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| {
+        tracing::error!("missing required environment variable: {name}");
+        std::process::exit(1)
+    })
+}
+
 fn client_id() -> String {
-    std::env::var("GITHUB_CLIENT_ID").expect("GITHUB_CLIENT_ID must be set")
+    required_env("GITHUB_CLIENT_ID")
 }
 
 fn client_secret() -> String {
-    std::env::var("GITHUB_CLIENT_SECRET").expect("GITHUB_CLIENT_SECRET must be set")
+    required_env("GITHUB_CLIENT_SECRET")
 }
 
 fn required_env_with_legacy(primary: &str, legacy: &str) -> String {
     std::env::var(primary)
         .or_else(|_| std::env::var(legacy))
-        .unwrap_or_else(|_| panic!("{primary} or legacy {legacy} must be set"))
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                "missing required environment variable: set {primary} (or legacy {legacy})"
+            );
+            std::process::exit(1)
+        })
 }
 
 fn required_org() -> String {
