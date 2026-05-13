@@ -93,13 +93,7 @@ pub fn EditorPanel(
             tags.set(p.tags);
             body.set(p.body);
             selected_related.set(p.related);
-            wi_state.set(
-                p.frontmatter
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("todo")
-                    .to_string(),
-            );
+            wi_state.set(work_item_status_from_frontmatter(&p.frontmatter));
             wi_system_of_record.set(
                 p.frontmatter
                     .get("system_of_record")
@@ -799,3 +793,38 @@ fn write_custom_msg_pref(open: bool) {
 
 #[cfg(feature = "ssr")]
 fn write_custom_msg_pref(_open: bool) {}
+
+fn work_item_status_from_frontmatter(frontmatter: &BTreeMap<String, serde_yaml::Value>) -> String {
+    frontmatter
+        .get("status")
+        .or_else(|| frontmatter.get("state"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("todo")
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn work_item_status_prefers_status_over_legacy_state() {
+        let mut frontmatter = BTreeMap::new();
+        frontmatter.insert("status".into(), serde_yaml::Value::String("done".into()));
+        frontmatter.insert(
+            "state".into(),
+            serde_yaml::Value::String("in-progress".into()),
+        );
+
+        assert_eq!(work_item_status_from_frontmatter(&frontmatter), "done");
+    }
+
+    #[test]
+    fn work_item_status_keeps_legacy_state_fallback() {
+        let mut frontmatter = BTreeMap::new();
+        frontmatter.insert("state".into(), serde_yaml::Value::String("blocked".into()));
+
+        assert_eq!(work_item_status_from_frontmatter(&frontmatter), "blocked");
+    }
+}

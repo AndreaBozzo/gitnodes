@@ -61,6 +61,7 @@ pub fn DetailPanel(
     );
 
     let deleting = RwSignal::new(false);
+    let image_modal = RwSignal::new(Option::<(String, String)>::None);
     let delete_error = RwSignal::new(String::new());
     let rename_input = RwSignal::new(Option::<String>::None);
     let rename_msg = RwSignal::new(String::new());
@@ -164,6 +165,31 @@ pub fn DetailPanel(
         #[cfg(feature = "ssr")]
         {
             let _ = (path, sha, &graph_version);
+        }
+    };
+    let open_clicked_image = move |ev: leptos::ev::MouseEvent| {
+        #[cfg(feature = "hydrate")]
+        {
+            use wasm_bindgen::JsCast;
+
+            let Some(target) = ev
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            else {
+                return;
+            };
+            if !target.tag_name().eq_ignore_ascii_case("img") {
+                return;
+            }
+            let Some(src) = target.get_attribute("src").filter(|src| !src.is_empty()) else {
+                return;
+            };
+            let alt = target.get_attribute("alt").unwrap_or_default();
+            image_modal.set(Some((src, alt)));
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = ev;
         }
     };
 
@@ -523,8 +549,50 @@ pub fn DetailPanel(
                                             </Show>
                                             <article
                                                 class="prose prose-invert max-w-prose"
+                                                on:click=open_clicked_image
                                                 inner_html=bf.rendered_html
                                             ></article>
+                                            <Show when=move || image_modal.with(|image| image.is_some())>
+                                                {move || {
+                                                    let (src, alt) = image_modal.get().unwrap_or_default();
+                                                    let caption = alt.clone();
+                                                    let has_caption = !caption.is_empty();
+                                                    view! {
+                                                        <div
+                                                            class="fixed inset-0 z-50 bg-slate-950/90 p-6 flex items-center justify-center"
+                                                            role="dialog"
+                                                            aria-modal="true"
+                                                            on:click=move |_| image_modal.set(None)
+                                                        >
+                                                            <div
+                                                                class="max-w-[92vw] max-h-[92vh] flex flex-col gap-3"
+                                                                on:click=move |ev| ev.stop_propagation()
+                                                            >
+                                                                <div class="flex justify-end">
+                                                                    <button
+                                                                        type="button"
+                                                                        class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-slate-600 text-slate-200 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
+                                                                        aria-label="Close image preview"
+                                                                        on:click=move |_| image_modal.set(None)
+                                                                    >
+                                                                        "Close"
+                                                                    </button>
+                                                                </div>
+                                                                <img
+                                                                    src=src
+                                                                    alt=alt
+                                                                    class="max-w-[92vw] max-h-[84vh] object-contain rounded border border-slate-700 bg-slate-900"
+                                                                />
+                                                                <Show when=move || has_caption>
+                                                                    <div class="text-xs text-slate-300 text-center">
+                                                                        {caption.clone()}
+                                                                    </div>
+                                                                </Show>
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                }}
+                                            </Show>
                                         </>
                                     }.into_any(),
                                 }}
