@@ -348,7 +348,9 @@ pub(super) fn project_work_item(
         .unwrap_or_else(|_| BTreeMap::new());
 
     let brain_id = string_field(&map, "brain_id").unwrap_or_else(|| file.path.clone());
-    let state = enum_field::<WorkItemState>(&map, "state").unwrap_or(WorkItemState::Todo);
+    let state = enum_field::<WorkItemState>(&map, "status")
+        .or_else(|| enum_field::<WorkItemState>(&map, "state"))
+        .unwrap_or(WorkItemState::Todo);
     let assignees = string_list_field(&map, "assignees");
     let binding = enum_object_field::<ExternalWorkItemBinding>(&map, "external_binding");
     let system_of_record = enum_field::<WorkItemSystemOfRecord>(&map, "system_of_record")

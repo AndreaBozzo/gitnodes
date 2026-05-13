@@ -405,7 +405,8 @@ pub fn EditorPanel(
         if is_work_item {
             use serde_yaml::Value;
             let state_val = wi_state.get_untracked();
-            frontmatter.insert("state".into(), Value::String(state_val));
+            frontmatter.insert("status".into(), Value::String(state_val));
+            frontmatter.remove("state");
             let sor_val = wi_system_of_record.get_untracked();
             frontmatter.insert("system_of_record".into(), Value::String(sor_val));
             let assignees: Vec<Value> = wi_assignees

@@ -923,7 +923,7 @@ fn WorkItemControls(
             </summary>
             <div class="mt-3 flex flex-col gap-4">
                 <div class="flex flex-col gap-1.5">
-                    <label class="text-[11px] uppercase tracking-widest text-slate-500">"State"</label>
+                    <label class="text-[11px] uppercase tracking-widest text-slate-500">"Status"</label>
                     <div class="flex gap-2">
                         <select
                             class="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
@@ -954,7 +954,7 @@ fn WorkItemControls(
                                 }
                             }
                         >
-                            "Save state"
+                            "Save status"
                         </button>
                     </div>
                 </div>

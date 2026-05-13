@@ -188,7 +188,7 @@ node_types:
         &[raw(
             "tasks/api-read.md",
             "sha-task",
-            "---\ntype: task\ntopic: API read\nbrain_id: task-api-1\nstate: done\nassignees: [andrea]\nexternal_binding:\n  system: github\n  project: AndreaBozzo/Brain_UI\n  item_key: \"77\"\n  provider_id: I_kwDO123\n  url: https://github.com/AndreaBozzo/Brain_UI/issues/77\nsystem_of_record: split\n---\n# Task: API read\n",
+            "---\ntype: task\ntopic: API read\nbrain_id: task-api-1\nstatus: done\nassignees: [andrea]\nexternal_binding:\n  system: github\n  project: AndreaBozzo/Brain_UI\n  item_key: \"77\"\n  provider_id: I_kwDO123\n  url: https://github.com/AndreaBozzo/Brain_UI/issues/77\nsystem_of_record: split\n---\n# Task: API read\n",
         )],
         &config,
     );

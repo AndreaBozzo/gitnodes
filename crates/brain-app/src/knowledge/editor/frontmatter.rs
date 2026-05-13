@@ -26,6 +26,7 @@ pub(super) fn frontmatter_string_fields(
     }
     if spec.is_work_item() {
         managed.insert("brain_id".to_string());
+        managed.insert("status".to_string());
         managed.insert("state".to_string());
         managed.insert("system_of_record".to_string());
         managed.insert("assignees".to_string());

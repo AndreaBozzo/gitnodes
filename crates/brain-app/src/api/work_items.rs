@@ -418,7 +418,8 @@ async fn apply_work_item_mutation_inner(
         WorkItemMutation::State(state) => {
             let serialized = serde_yaml::to_value(state)
                 .map_err(|error| BrainError::parse(format!("state serialize: {error}")))?;
-            map.insert("state".to_string(), serialized);
+            map.insert("status".to_string(), serialized);
+            map.remove("state");
         }
         WorkItemMutation::Assignees(assignees) => {
             let serialized = serde_yaml::to_value(assignees)
