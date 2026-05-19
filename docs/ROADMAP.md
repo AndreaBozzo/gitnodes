@@ -271,11 +271,11 @@ Abilitare un workspace realmente multi-tenant e collaborativo sopra le fondament
 ### Fase 3 Closeout: dogfooding collaborativo
 
 - [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_
-    - Creare una mini knowledge base Pokemon come target/sandbox config-driven, senza riusare la tassonomia del Brain principale: `.brain-config.yml` custom, tipi come `pokemon`/`trainer`/`gym`/`route`/`battle-report`/`quest`, template dedicati e saved view proprie.
-    - Esercitare le feature shippate in Fase 3: routing target-aware, config loader YAML, node types custom, work item mutations, binding a GitHub Issue, saved view/config flow quando permesso, direct-write vs branch+PR fallback, webhook/SSE reconciliation e graph canvas polish.
-    - Usare i commenti della GitHub Issue bindata come thread QA/collaborazione e validare la nuova sezione `Comments` del detail panel; eventuali gap rimasti vanno estratti come follow-up (`issue_comment` SSE/cache timeline).
-    - Vincolo operativo: `@JacoTube` lavora da contributor non-admin; `main` resta protetto e ogni modifica finale passa da PR review di Andrea/Matteo.
-    - Success criterion: PR aperta dal contributor con note QA su cosa ha funzionato, cosa e' stato confuso e quali follow-up vanno estratti prima della prossima fase.
+    - Repo sandbox dedicato creato il 2026-05-19: `Dritara-Digital/Brain-Pokemon-Mock`, con `.brain-config.yml` custom, tipi `pokemon`/`trainer`/`gym`/`route`/`battle-report`/`strategy`/`quest`, template dedicati, seed content, saved view e issue QA bindata.
+    - Decisione operativa temporanea: prima iterazione **Git/GitHub-first**, non Brain UI-first. L'org oggi ha limiti su permessi/branch protection per repo privati; per non bloccare il contributor e non sembrare che il prodotto sia il collo di bottiglia, `@JacoTube` lavora sul branch `jacotube-pokemon-mock-qa` via Git/GitHub, espande i Markdown e apre PR verso `main`.
+    - Esercitare ora la parte content/graph/config del target: tipi custom, frontmatter coerente, link `Related / See also`, tag, asset referenziati quando pratico, quest/work-item in Markdown, issue comments come thread QA, review via PR. La verifica diretta da Brain UI di write orchestration, mutazioni work item, asset upload, webhook/SSE e saved view/config flow viene ripresa dopo upgrade/riassetto permessi GitHub.
+    - Vincolo operativo: `@JacoTube` lavora da contributor non-admin; `main` resta baseline bootstrap e ogni modifica finale passa da PR review di Andrea/Matteo. Finche' la branch protection tecnica non e' disponibile, il vincolo e' procedurale e documentato, non spacciato come enforcement GitHub.
+    - Success criterion: PR aperta dal contributor con note QA su cosa ha funzionato, cosa e' stato confuso e quali follow-up vanno estratti prima della prossima fase; secondo passaggio Brain UI esplicito quando i permessi org non falsano piu' il test.
 - [ ] **Release note / operator checklist Fase 3**
     - Documentare cosa è shippato, quali caveat restano accettati temporaneamente e quali env/config devono essere verificati prima di far usare il prodotto a un contributor limitato.
     - Aggiornare README/ROADMAP in modo che il prossimo lavoro parta da feedback reale, non da un'altra lista di "sarebbe giusto".
