@@ -330,8 +330,12 @@ async fn main() {
     let session_key = match std::env::var("SESSION_ENCRYPTION_KEY") {
         Ok(b64) => {
             use base64::Engine as _;
+            // Strip ALL whitespace, not just the ends: `openssl rand -base64 64`
+            // wraps its output at 64 cols, so a pasted value often carries an
+            // internal newline that `trim()` alone would leave in place.
+            let cleaned: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
             let raw = base64::engine::general_purpose::STANDARD
-                .decode(b64.trim())
+                .decode(&cleaned)
                 .unwrap_or_else(|e| {
                     tracing::error!(error = %e, "SESSION_ENCRYPTION_KEY is not valid base64");
                     std::process::exit(1);
@@ -345,7 +349,7 @@ async fn main() {
             if cookie_secure {
                 tracing::error!(
                     "SESSION_ENCRYPTION_KEY must be set in production (base64, >= 64 bytes). \
-                     Generate one with: openssl rand -base64 64"
+                     Generate one with: openssl rand -base64 64 | tr -d '\\n'"
                 );
                 std::process::exit(1);
             }
