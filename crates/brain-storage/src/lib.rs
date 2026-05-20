@@ -252,6 +252,12 @@ impl GithubStorage {
         self.gh.contents_url(path)
     }
 
+    fn get_contents(&self, token: &str, path: &str) -> reqwest::RequestBuilder {
+        self.http
+            .get(&self.contents_url(path), token)
+            .query(&[("ref", self.branch())])
+    }
+
     fn branch(&self) -> &str {
         &self.gh.target().branch
     }
@@ -404,11 +410,10 @@ impl GithubStorage {
 
         let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
         for path in &candidates {
-            let url = format!("{}?ref={}", self.contents_url(path), self.branch());
             // Propagate fetch errors so the caller never commits a partial
             // snapshot as "ready" when a transient GitHub error is the cause.
             let body: ContentResponse =
-                GithubHttp::send_json(self.http.get(&url, token), "content").await?;
+                GithubHttp::send_json(self.get_contents(token, path), "content").await?;
             let cleaned: String = body
                 .content
                 .chars()
@@ -710,13 +715,9 @@ impl Storage for GithubStorage {
         if let Some(hit) = template_cache_get(&key, filename) {
             return Ok(hit);
         }
-        let url = format!(
-            "{}?ref={}",
-            self.contents_url(&format!("templates/{filename}")),
-            self.branch()
-        );
+        let path = format!("templates/{filename}");
         let body: ContentResponse =
-            GithubHttp::send_json(self.http.get(&url, token), "template").await?;
+            GithubHttp::send_json(self.get_contents(token, &path), "template").await?;
         let cleaned: String = body
             .content
             .chars()
@@ -747,9 +748,8 @@ impl Storage for GithubStorage {
     }
 
     async fn read_file(&self, token: &str, path: &str) -> Result<(String, String), BrainError> {
-        let url = format!("{}?ref={}", self.contents_url(path), self.branch());
         let resp: ContentResponse =
-            GithubHttp::send_json(self.http.get(&url, token), "content").await?;
+            GithubHttp::send_json(self.get_contents(token, path), "content").await?;
 
         let cleaned: String = resp
             .content
@@ -872,9 +872,8 @@ impl Storage for GithubStorage {
     }
 
     async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError> {
-        let url = format!("{}?ref={}", self.contents_url(""), self.branch());
         let items: Vec<GhDirEntry> =
-            GithubHttp::send_json(self.http.get(&url, token), "list_folders").await?;
+            GithubHttp::send_json(self.get_contents(token, ""), "list_folders").await?;
 
         let folders: Vec<String> = items
             .iter()
@@ -980,6 +979,9 @@ impl Storage for InMemoryStorage {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+    use base64::Engine;
+    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn target(org: &str, repo: &str, branch: &str) -> TargetConfig {
         TargetConfig {
@@ -1070,6 +1072,72 @@ mod cache_tests {
             url.contains("/repos/acme/knowledge/contents/"),
             "url must come from the constructor target, got: {url}"
         );
+    }
+
+    #[tokio::test]
+    async fn read_file_encodes_content_path_and_ref_query() {
+        let server = MockServer::start().await;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("hello");
+        Mock::given(method("GET"))
+            .and(path(
+                "/repos/acme/knowledge/contents/notes/space%20name/%23draft%3F.md",
+            ))
+            .and(query_param("ref", "feature/foo #1"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": encoded,
+                "sha": "abc123"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = GithubHttp::new().expect("client");
+        let storage = GithubStorage {
+            http,
+            gh: GithubClient::new(target("acme", "knowledge", "feature/foo #1"))
+                .with_api_base(server.uri()),
+        };
+
+        let (body, sha) = storage
+            .read_file("test-token", "notes/space name/#draft?.md")
+            .await
+            .expect("read file");
+
+        assert_eq!(body, "hello");
+        assert_eq!(sha, "abc123");
+    }
+
+    #[tokio::test]
+    async fn read_file_keeps_dot_segments_under_contents_endpoint() {
+        let server = MockServer::start().await;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("hello");
+        Mock::given(method("GET"))
+            .and(path(
+                "/repos/acme/knowledge/contents/%252E%252E/branches/main",
+            ))
+            .and(query_param("ref", "main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": encoded,
+                "sha": "abc123"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = GithubHttp::new().expect("client");
+        let storage = GithubStorage {
+            http,
+            gh: GithubClient::new(target("acme", "knowledge", "main")).with_api_base(server.uri()),
+        };
+
+        let (body, sha) = storage
+            .read_file("test-token", "../branches/main")
+            .await
+            .expect("read file");
+
+        assert_eq!(body, "hello");
+        assert_eq!(sha, "abc123");
     }
 
     #[test]

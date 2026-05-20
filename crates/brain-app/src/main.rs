@@ -22,6 +22,77 @@ fn required_env(name: &str) -> String {
 }
 
 #[cfg(feature = "ssr")]
+fn is_protected_path(path: &str) -> bool {
+    path == "/knowledge"
+        || path.starts_with("/knowledge/")
+        || path == "/admin"
+        || path.starts_with("/admin/")
+        || path == "/assets"
+        || path.starts_with("/assets/")
+        || path == "/sse"
+        || path.starts_with("/sse/")
+        // Multi-tenant: /{org}/{repo}/knowledge, /admin, and /assets.
+        || is_multi_tenant_protected(path)
+}
+
+#[cfg(feature = "ssr")]
+fn is_multi_tenant_protected(path: &str) -> bool {
+    // Match both 3-segment legacy (`/{org}/{repo}/{knowledge|admin|assets}[/...]`)
+    // and 4-segment canonical (`/{org}/{repo}/{branch}/{knowledge|admin}[/...]`).
+    // Asset proxy stays 3-segment in alpha; branch-aware asset routing is
+    // deferred to beta.
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let legacy_target_route = segments
+        .get(2)
+        .is_some_and(|segment| matches!(*segment, "knowledge" | "admin" | "assets"));
+    let canonical_target_route = segments
+        .get(3)
+        .is_some_and(|segment| matches!(*segment, "knowledge" | "admin"));
+    legacy_target_route || canonical_target_route
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod route_protection_tests {
+    use super::is_protected_path;
+
+    #[test]
+    fn protected_path_contract_covers_workspace_surfaces() {
+        let cases = [
+            ("/knowledge", true),
+            ("/knowledge/node", true),
+            ("/admin", true),
+            ("/admin/views", true),
+            ("/assets", true),
+            ("/assets/2026/04/a.png", true),
+            ("/sse", true),
+            ("/sse/events", true),
+            ("/Dritara-Digital/Brain/knowledge", true),
+            ("/Dritara-Digital/Brain/knowledge/foo", true),
+            ("/Dritara-Digital/Brain/admin", true),
+            ("/Dritara-Digital/Brain/admin/views", true),
+            ("/Dritara-Digital/Brain/assets/2026/04/a.png", true),
+            ("/Dritara-Digital/Brain/main/knowledge", true),
+            ("/Dritara-Digital/Brain/main/knowledge/foo", true),
+            ("/Dritara-Digital/Brain/main/admin", true),
+            ("/", false),
+            ("/auth/login", false),
+            ("/auth/callback", false),
+            ("/webhook/github", false),
+            ("/api/get_current_user", false),
+            ("/pkg/brain_ui.js", false),
+        ];
+
+        for (path, expected) in cases {
+            assert_eq!(
+                is_protected_path(path),
+                expected,
+                "protected route classification changed for {path}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
     use axum::{
@@ -201,17 +272,8 @@ async fn main() {
     // reconnect-loop forever.
     async fn protect_knowledge(session: Session, request: Request<Body>, next: Next) -> Response {
         let path = request.uri().path();
-        // Static legacy paths plus assets/SSE.
-        let needs_auth = path == "/knowledge"
-            || path.starts_with("/knowledge/")
-            || path == "/admin"
-            || path.starts_with("/admin/")
-            || path.starts_with("/assets/")
-            || path.starts_with("/sse/")
-            // Multi-tenant: /{org}/{repo}/knowledge, /admin, and /assets.
-            || is_multi_tenant_protected(path);
-        if needs_auth && !auth::is_authenticated(&session).await {
-            if path.starts_with("/sse/") {
+        if is_protected_path(path) && !auth::is_authenticated(&session).await {
+            if path == "/sse" || path.starts_with("/sse/") {
                 axum::http::StatusCode::UNAUTHORIZED.into_response()
             } else {
                 Redirect::to("/").into_response()
@@ -279,28 +341,6 @@ async fn main() {
             );
         }
         response
-    }
-
-    fn is_multi_tenant_protected(path: &str) -> bool {
-        // Match both 3-segment legacy (`/{org}/{repo}/{knowledge|admin|assets}[/...]`)
-        // and 4-segment canonical (`/{org}/{repo}/{branch}/{knowledge|admin}[/...]`).
-        // Asset proxy stays 3-segment in α (see plan §9); branch-aware asset
-        // routing is deferred to β.
-        let segments: Vec<&str> = path.trim_start_matches('/').splitn(6, '/').collect();
-        matches!(
-            segments.as_slice(),
-            [_, _, "knowledge"]
-                | [_, _, "admin"]
-                | [_, _, "assets"]
-                | [_, _, "knowledge", _]
-                | [_, _, "admin", _]
-                | [_, _, "assets", _]
-                | [_, _, _, "knowledge"]
-                | [_, _, _, "admin"]
-                | [_, _, _, "knowledge", _]
-                | [_, _, _, "admin", _]
-                | [_, _, _, "admin", "views", _]
-        )
     }
 
     let options_for_ssr = leptos_options.clone();

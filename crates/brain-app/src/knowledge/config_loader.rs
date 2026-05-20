@@ -174,9 +174,10 @@ async fn fetch_and_parse(
         None => GithubHttp::new()?,
     };
     let gh = GithubClient::new(target.clone());
-    let url = format!("{}?ref={}", gh.contents_url(CONFIG_PATH), target.branch);
+    let url = gh.contents_url(CONFIG_PATH);
     let resp = http
         .get(&url, token)
+        .query(&[("ref", target.branch.as_str())])
         .send()
         .await
         .map_err(|e| BrainError::github(format!("config fetch: {e}")))?;

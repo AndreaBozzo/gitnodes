@@ -17,7 +17,7 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use brain_domain::{GithubClient, TargetConfig};
+use brain_domain::{GithubClient, TargetConfig, decode_path_segment};
 use brain_storage::GithubHttp;
 use tower_sessions::Session;
 
@@ -54,7 +54,10 @@ pub async fn serve_asset(
     let Some(asset_subpath) = subpath_after_assets(uri.path()) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
-    let repo_path = format!("assets/{}", asset_subpath.trim_start_matches('/'));
+    let repo_path = format!(
+        "assets/{}",
+        decode_repo_path(asset_subpath.trim_start_matches('/'))
+    );
     if repo_path.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
@@ -66,8 +69,15 @@ pub async fn serve_asset(
     // raw.githubusercontent.com. For private repos, raw.* silently 404s on
     // bearer auth (only the legacy `?token=` query param works there), while
     // the Contents API authenticates the same way as every other call we make.
-    let url = format!("{}?ref={}", gh.contents_url(&repo_path), target.branch);
-    fetch_and_serve(&state.http, &url, &token, mime_for(&repo_path)).await
+    let url = gh.contents_url(&repo_path);
+    fetch_and_serve(
+        &state.http,
+        &url,
+        &target.branch,
+        &token,
+        mime_for(&repo_path),
+    )
+    .await
 }
 
 /// Fetch raw bytes from a Contents API URL and turn them into the response we
@@ -77,12 +87,14 @@ pub async fn serve_asset(
 async fn fetch_and_serve(
     http: &GithubHttp,
     url: &str,
+    ref_name: &str,
     token: &str,
     content_type: &'static str,
 ) -> Response {
     let resp = match http
         .client()
         .get(url)
+        .query(&[("ref", ref_name)])
         .bearer_auth(token)
         .header(header::ACCEPT, "application/vnd.github.raw")
         .header(header::USER_AGENT, "brain-ui")
@@ -150,6 +162,13 @@ async fn fetch_and_serve(
 /// the URL does not contain that segment (which would be a routing bug).
 fn subpath_after_assets(uri_path: &str) -> Option<&str> {
     uri_path.split_once("/assets/").map(|(_, rest)| rest)
+}
+
+fn decode_repo_path(path: &str) -> String {
+    path.split('/')
+        .map(decode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn target_from_path(path: &str, fallback: &TargetConfig) -> Option<TargetConfig> {
@@ -220,11 +239,11 @@ mod tests {
 
         let http = GithubHttp::new().expect("http client");
         let url = format!(
-            "{}/repos/Dritara-Digital/Brain/contents/assets/2026/04/foo.png?ref=main",
+            "{}/repos/Dritara-Digital/Brain/contents/assets/2026/04/foo.png",
             server.uri()
         );
 
-        let resp = fetch_and_serve(&http, &url, "test-token", "image/png").await;
+        let resp = fetch_and_serve(&http, &url, "main", "test-token", "image/png").await;
 
         assert_eq!(resp.status(), StatusCode::OK);
         // Crucial: the browser refuses to render PNG bytes labeled as
@@ -250,11 +269,8 @@ mod tests {
             .mount(&server)
             .await;
         let http = GithubHttp::new().expect("http client");
-        let url = format!(
-            "{}/repos/x/y/contents/assets/missing.png?ref=main",
-            server.uri()
-        );
-        let resp = fetch_and_serve(&http, &url, "tok", "image/png").await;
+        let url = format!("{}/repos/x/y/contents/assets/missing.png", server.uri());
+        let resp = fetch_and_serve(&http, &url, "main", "tok", "image/png").await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -266,8 +282,8 @@ mod tests {
             .mount(&server)
             .await;
         let http = GithubHttp::new().expect("http client");
-        let url = format!("{}/repos/x/y/contents/assets/no.png?ref=main", server.uri());
-        let resp = fetch_and_serve(&http, &url, "tok", "image/png").await;
+        let url = format!("{}/repos/x/y/contents/assets/no.png", server.uri());
+        let resp = fetch_and_serve(&http, &url, "main", "tok", "image/png").await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 

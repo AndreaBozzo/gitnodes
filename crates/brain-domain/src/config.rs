@@ -204,6 +204,21 @@ pub fn encode_path_segment(s: &str) -> String {
     out
 }
 
+/// Percent-encode a repository path for use under GitHub's `/contents/{path}`.
+/// Slash remains a path separator; every segment is encoded independently.
+/// Dot-only segments are double-encoded because URL parsers normalize both
+/// literal `..` and `%2E%2E` before the request is sent.
+pub fn encode_repo_path(path: &str) -> String {
+    path.split('/')
+        .map(|segment| match segment {
+            "." => "%252E".to_string(),
+            ".." => "%252E%252E".to_string(),
+            _ => encode_path_segment(segment),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Decode one URL path segment, leaving invalid escape sequences untouched.
 pub fn decode_path_segment(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -262,7 +277,10 @@ impl GithubClient {
     pub fn contents_url(&self, path: &str) -> String {
         format!(
             "{}/repos/{}/{}/contents/{}",
-            self.api_base, self.target.org, self.target.repo, path
+            self.api_base,
+            self.target.org,
+            self.target.repo,
+            encode_repo_path(path)
         )
     }
 
@@ -1482,6 +1500,32 @@ node_types:
         assert_eq!(
             c.branch_url("feature/foo"),
             "https://example.test/api/repos/acme/kb/branches/feature%2Ffoo"
+        );
+    }
+
+    #[test]
+    fn contents_url_encodes_path_segments_but_preserves_slashes() {
+        let c = gh("acme", "kb", "main").with_api_base("https://example.test/api/");
+        assert_eq!(
+            c.contents_url("notes/space name/#draft?.md"),
+            "https://example.test/api/repos/acme/kb/contents/notes/space%20name/%23draft%3F.md"
+        );
+    }
+
+    #[test]
+    fn contents_url_double_encodes_dot_only_segments() {
+        let c = gh("acme", "kb", "main").with_api_base("https://example.test/api/");
+        assert_eq!(
+            c.contents_url("../branches/main"),
+            "https://example.test/api/repos/acme/kb/contents/%252E%252E/branches/main"
+        );
+        assert_eq!(
+            c.contents_url("./branches/main"),
+            "https://example.test/api/repos/acme/kb/contents/%252E/branches/main"
+        );
+        assert_eq!(
+            c.contents_url("notes/a.b.md"),
+            "https://example.test/api/repos/acme/kb/contents/notes/a.b.md"
         );
     }
 

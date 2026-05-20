@@ -223,18 +223,15 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
             repo: target.repo.clone(),
             branch: active_branch.clone(),
         };
-        let config_url = format!(
-            "{}?ref={}",
-            brain_domain::GithubClient::new(active_target.clone())
-                .contents_url(".brain-config.yml"),
-            active_target.branch
-        );
+        let config_url = brain_domain::GithubClient::new(active_target.clone())
+            .contents_url(".brain-config.yml");
         let branch_url = brain_domain::GithubClient::new(active_target.clone())
             .branch_url(&active_target.branch);
         let http = http.clone();
         let token = token.clone();
         set.spawn(async move {
-            let state = probe_brain_config(&http, &token, &config_url, &branch_url).await;
+            let state =
+                probe_brain_config(&http, &token, &config_url, &active_branch, &branch_url).await;
             AccessibleTarget {
                 org,
                 repo,
@@ -273,9 +270,15 @@ async fn probe_brain_config(
     http: &brain_storage::GithubHttp,
     token: &str,
     config_url: &str,
+    ref_name: &str,
     branch_url: &str,
 ) -> AccessibleTargetState {
-    let Ok(response) = http.get(config_url, token).send().await else {
+    let Ok(response) = http
+        .get(config_url, token)
+        .query(&[("ref", ref_name)])
+        .send()
+        .await
+    else {
         return AccessibleTargetState::Forbidden;
     };
     let status = response.status();
