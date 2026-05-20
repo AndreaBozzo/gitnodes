@@ -51,7 +51,44 @@ fn render_for_path(body: &str, file_path: Option<&str>, cfg: Option<&TargetConfi
     let parser = Parser::new_ext(body, opts).map(|event| rewrite_event(event, file_path, cfg));
     let mut out = String::with_capacity(body.len() + body.len() / 4);
     html::push_html(&mut out, parser);
-    out
+    sanitize(out)
+}
+
+/// Server-side defense-in-depth: run the generated HTML through ammonia with a
+/// tight allowlist so any HTML that slipped through (raw HTML in the source,
+/// crafted attributes) can't carry script/`on*`/`javascript:`/`iframe`. This is
+/// the real trust boundary for Brain docs and GitHub comments rendered into the
+/// detail panel via `inner_html`.
+///
+/// `ammonia` pulls in `html5ever`, which does not build for `wasm32`, so it is
+/// only compiled for the `ssr` server build. Raw HTML tags are already escaped
+/// upstream in `rewrite_event` (WASM-safe), so the client preview stays
+/// consistent with the sanitized server output without needing ammonia.
+#[cfg(feature = "ssr")]
+fn sanitize(html: String) -> String {
+    use ammonia::Builder;
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    static CLEANER: OnceLock<Builder<'static>> = OnceLock::new();
+    let cleaner = CLEANER.get_or_init(|| {
+        let mut b = Builder::default();
+        // Only http(s)/mailto/tel links survive; `javascript:` and friends are
+        // dropped. Repo-relative links were already rewritten to `/knowledge?…`
+        // and `/{org}/{repo}/assets/…` (relative URLs, allowed by default).
+        let schemes: HashSet<&str> = ["http", "https", "mailto", "tel"].into_iter().collect();
+        b.url_schemes(schemes);
+        b
+    });
+    cleaner.clean(&html).to_string()
+}
+
+/// Client (WASM) build has no ammonia. Raw HTML is escaped upstream in
+/// `rewrite_event`, so the preview HTML is already free of active markup; this
+/// is a passthrough that keeps `render_for_path` identical across builds.
+#[cfg(not(feature = "ssr"))]
+fn sanitize(html: String) -> String {
+    html
 }
 
 fn rewrite_event<'a>(
@@ -62,6 +99,12 @@ fn rewrite_event<'a>(
     use pulldown_cmark::{CowStr, Event, Tag};
 
     match event {
+        // Drop raw HTML to plain text so `html::push_html` escapes it. This
+        // neutralizes `<script>`, `<iframe>`, `<img onerror=…>` etc. before they
+        // reach the DOM, on both the server render and the WASM editor preview
+        // (where ammonia is unavailable). Server output is additionally cleaned
+        // by `sanitize()`.
+        Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
         Event::Start(Tag::Link {
             link_type,
             dest_url,
@@ -98,7 +141,18 @@ fn rewrite_link_destination(
     cfg: Option<&TargetConfig>,
     is_image: bool,
 ) -> String {
-    if dest.is_empty() || dest.starts_with('#') || has_url_scheme(dest) {
+    // Neutralize any link carrying a scheme that isn't on the safe allowlist
+    // (e.g. `javascript:`, `data:`, `vbscript:`). This runs in BOTH the SSR and
+    // WASM builds, so the editor preview — which renders via `inner_html`
+    // without ammonia — can't execute `[x](javascript:alert(1))`.
+    if let Some(scheme) = url_scheme(dest) {
+        if is_safe_scheme(scheme) {
+            return dest.to_string();
+        }
+        return "#".to_string();
+    }
+
+    if dest.is_empty() || dest.starts_with('#') {
         return dest.to_string();
     }
 
@@ -149,11 +203,37 @@ fn rewrite_link_destination(
     url
 }
 
-fn has_url_scheme(dest: &str) -> bool {
-    dest.starts_with("http://")
-        || dest.starts_with("https://")
-        || dest.starts_with("mailto:")
-        || dest.starts_with("tel:")
+/// Extract the URL scheme (the part before `:`) if `dest` is an absolute URL.
+/// Returns `None` for relative paths, fragments, and protocol-relative `//`
+/// links. A scheme is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` per RFC 3986
+/// and must come before any `/`, `?`, or `#`.
+fn url_scheme(dest: &str) -> Option<&str> {
+    let colon = dest.find(':')?;
+    let scheme = &dest[..colon];
+    if scheme.is_empty() {
+        return None;
+    }
+    // A `:` appearing after a path separator isn't a scheme (e.g. `foo/bar:baz`).
+    if scheme.contains(['/', '?', '#']) {
+        return None;
+    }
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    if chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+        Some(scheme)
+    } else {
+        None
+    }
+}
+
+fn is_safe_scheme(scheme: &str) -> bool {
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto" | "tel"
+    )
 }
 
 fn is_app_route(dest: &str) -> bool {
@@ -321,6 +401,94 @@ mod tests {
         assert!(
             html.contains(r#"src="/Dritara-Digital/Brain/assets/2026/04/foo-abc.png""#),
             "got: {html}"
+        );
+    }
+
+    // --- Security: XSS / content trust boundary ---------------------------
+
+    #[test]
+    fn render_escapes_script_tags() {
+        let html = render("hello <script>alert(1)</script> world");
+        assert!(!html.contains("<script>"), "got: {html}");
+        assert!(html.contains("&lt;script&gt;"), "got: {html}");
+    }
+
+    #[test]
+    fn render_escapes_iframe() {
+        let html = render(r#"<iframe src="https://evil.example"></iframe>"#);
+        assert!(!html.contains("<iframe"), "got: {html}");
+    }
+
+    #[test]
+    fn render_strips_onerror_image_handler() {
+        let html = render(r#"<img src=x onerror="alert(1)">"#);
+        // The raw <img> tag is escaped to inert text — no live element/attribute
+        // reaches the DOM. The literal string may survive, but only as `&lt;img…`.
+        assert!(!html.contains("<img"), "live img tag survived: {html}");
+        assert!(html.contains("&lt;img"), "expected escaped img: {html}");
+    }
+
+    #[test]
+    fn render_drops_javascript_scheme_links() {
+        // Link rewriting neutralizes `javascript:` in BOTH builds (no ammonia in
+        // WASM), so the editor preview can't execute it via inner_html.
+        let html = render("[click](javascript:alert(1))");
+        assert!(
+            !html.contains("javascript:alert"),
+            "javascript: scheme should not survive, got: {html}"
+        );
+    }
+
+    #[test]
+    fn render_neutralizes_dangerous_schemes() {
+        for payload in [
+            "[x](javascript:alert(1))",
+            "[x](JavaScript:alert(1))",
+            "[x](vbscript:msgbox(1))",
+            "[x](data:text/html,<script>alert(1)</script>)",
+            "![x](data:image/svg+xml;base64,PHN2Zz4=)",
+        ] {
+            let html = render(payload);
+            assert!(
+                !html.to_lowercase().contains("javascript:")
+                    && !html.to_lowercase().contains("vbscript:")
+                    && !html.to_lowercase().contains("data:"),
+                "dangerous scheme survived for {payload}: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_keeps_safe_schemes() {
+        // http(s)/mailto/tel must pass through untouched.
+        assert!(render("[s](https://example.com)").contains(r#"href="https://example.com""#));
+        assert!(render("[m](mailto:a@b.c)").contains(r#"href="mailto:a@b.c""#));
+        assert!(render("[t](tel:+15551234)").contains(r#"href="tel:+15551234""#));
+    }
+
+    #[test]
+    fn render_keeps_safe_formatting() {
+        // Sanitization must not strip legitimate markdown-generated formatting.
+        let html = render("# Title\n\n- [x] done\n- [ ] todo\n\n**bold** and `code`");
+        assert!(html.contains("<h1>"), "got: {html}");
+        assert!(html.contains("<strong>bold</strong>"), "got: {html}");
+        assert!(html.contains("<code>code</code>"), "got: {html}");
+        assert!(html.contains("<ul>"), "got: {html}");
+    }
+
+    #[test]
+    fn render_comment_style_html_is_neutralized() {
+        // GitHub comments are rendered through `render()` into the detail panel
+        // via inner_html — the highest-risk external-provider surface.
+        let html =
+            render(r#"<a href="javascript:alert(document.cookie)">x</a><script>steal()</script>"#);
+        // Raw HTML is escaped to text: no live <a>/<script> element, so the
+        // javascript: href can never fire and the script never executes.
+        assert!(!html.contains("<script"), "live script survived: {html}");
+        assert!(!html.contains("<a "), "live anchor survived: {html}");
+        assert!(
+            html.contains("&lt;script&gt;"),
+            "expected escaped script: {html}"
         );
     }
 

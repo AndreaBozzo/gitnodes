@@ -234,6 +234,13 @@ async fn apply_work_item_mutation(
 
     use super::write_orchestrator::{open_write_pr, prepare_pr_write, should_fallback_to_pr};
 
+    super::limits::check_len("Work item id", &brain_id, super::limits::MAX_FIELD_LEN)?;
+    if let WorkItemMutation::Assignees(ref names) = mutation {
+        for name in names {
+            super::limits::check_len("Assignee", name, super::limits::MAX_FIELD_LEN)?;
+        }
+    }
+
     let (s, token) = session::require_session_and_token().await?;
     let user = session::session_user_or_fallback(&s).await;
     let target = super::target_from_ref(target)?;

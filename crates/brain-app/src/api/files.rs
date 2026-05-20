@@ -207,6 +207,11 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, S
     use crate::server::session;
     use brain_storage::Storage;
 
+    use super::limits;
+    limits::check_len("Document body", &payload.body, limits::MAX_MARKDOWN_BYTES).map_err(sfe)?;
+    // Path length is enforced by `validate_markdown_path` below (covers the
+    // derived path too); body/frontmatter caps guard against pulldown-cmark DoS.
+
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
 
@@ -248,11 +253,12 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, S
     let related_section = build_related_section(&file_path, &payload.related);
     let body_without_related = strip_related_section(&payload.body);
 
+    let frontmatter = merge_frontmatter(&payload, &user, &config);
+    limits::check_len("Frontmatter", &frontmatter, limits::MAX_FRONTMATTER_BYTES).map_err(sfe)?;
+
     let markdown = format!(
         "{}\n{}{}",
-        merge_frontmatter(&payload, &user, &config),
-        body_without_related,
-        related_section,
+        frontmatter, body_without_related, related_section
     );
 
     let auto_msg = if payload.sha.is_some() {

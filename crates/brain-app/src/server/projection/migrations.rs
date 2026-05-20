@@ -19,20 +19,40 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // deterministic sticky branch can be persisted at first sighting.
     add_column_if_missing(
         pool,
-        "targets",
-        "registered_at",
-        "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        MigratableTable::Targets,
+        ColumnSpec {
+            name: "registered_at",
+            spec: "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        },
     )
     .await?;
-    add_column_if_missing(pool, "targets", "registered_by", "TEXT").await?;
     add_column_if_missing(
         pool,
-        "targets",
-        "source",
-        "TEXT NOT NULL DEFAULT 'env_default'",
+        MigratableTable::Targets,
+        ColumnSpec {
+            name: "registered_by",
+            spec: "TEXT",
+        },
     )
     .await?;
-    add_column_if_missing(pool, "targets", "default_branch", "TEXT").await?;
+    add_column_if_missing(
+        pool,
+        MigratableTable::Targets,
+        ColumnSpec {
+            name: "source",
+            spec: "TEXT NOT NULL DEFAULT 'env_default'",
+        },
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        MigratableTable::Targets,
+        ColumnSpec {
+            name: "default_branch",
+            spec: "TEXT",
+        },
+    )
+    .await?;
     sqlx::query("UPDATE targets SET default_branch = branch WHERE default_branch IS NULL")
         .execute(pool)
         .await?;
@@ -171,23 +191,51 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Tables the migration helper is allowed to alter. Using an enum (rather than a
+/// `&str`) means `add_column_if_missing` can only ever interpolate an identifier
+/// from this closed set into DDL — no caller can pass an unvalidated string.
+#[derive(Clone, Copy)]
+enum MigratableTable {
+    Targets,
+}
+
+impl MigratableTable {
+    fn name(self) -> &'static str {
+        match self {
+            MigratableTable::Targets => "targets",
+        }
+    }
+}
+
+/// A column to add, with its SQLite column type/constraints. Both fields are
+/// `&'static str` so only compile-time literals reach the DDL string.
+#[derive(Clone, Copy)]
+struct ColumnSpec {
+    name: &'static str,
+    spec: &'static str,
+}
+
 /// Idempotent `ALTER TABLE ADD COLUMN`. SQLite does not support
 /// `ADD COLUMN IF NOT EXISTS`, so we probe `pragma_table_info` first and
-/// skip when the column already exists.
+/// skip when the column already exists. Table and column come from typed
+/// allowlists, so the `format!` interpolation can't carry injected SQL.
 async fn add_column_if_missing(
     pool: &SqlitePool,
-    table: &str,
-    column: &str,
-    spec: &str,
+    table: MigratableTable,
+    column: ColumnSpec,
 ) -> Result<(), sqlx::Error> {
+    let table = table.name();
     let existing: Vec<(String,)> =
         sqlx::query_as(&format!("SELECT name FROM pragma_table_info('{table}')"))
             .fetch_all(pool)
             .await?;
-    if existing.iter().any(|(name,)| name == column) {
+    if existing.iter().any(|(name,)| name == column.name) {
         return Ok(());
     }
-    let stmt = format!("ALTER TABLE {table} ADD COLUMN {column} {spec}");
+    let stmt = format!(
+        "ALTER TABLE {table} ADD COLUMN {} {}",
+        column.name, column.spec
+    );
     sqlx::query(&stmt).execute(pool).await?;
     Ok(())
 }

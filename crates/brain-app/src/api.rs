@@ -69,6 +69,37 @@ fn sfe(e: BrainError) -> ServerFnError {
     ServerFnError::new(e.to_string())
 }
 
+/// Server-side input size caps applied to mutating server fns. These guard
+/// against CPU/memory DoS from arbitrarily large payloads (e.g. `pulldown_cmark`
+/// on a huge body) and keep repo writes sane. Tuned generously so legitimate
+/// docs are never rejected; `MAX_ASSET_BYTES` (in `file_ops`) is the analogous
+/// cap for binary uploads.
+#[cfg(feature = "ssr")]
+pub(crate) mod limits {
+    use brain_domain::BrainError;
+
+    /// Markdown body of a single Brain file. 1 MiB is far above any real note.
+    pub const MAX_MARKDOWN_BYTES: usize = 1024 * 1024;
+    /// YAML frontmatter block of a single Brain file.
+    pub const MAX_FRONTMATTER_BYTES: usize = 64 * 1024;
+    /// Repo-relative path length for any file operation.
+    pub const MAX_PATH_LEN: usize = 1024;
+    /// Serialized saved-views YAML payload.
+    pub const MAX_VIEWS_BYTES: usize = 256 * 1024;
+    /// Free-text fields on work item mutations (assignee, label, etc.).
+    pub const MAX_FIELD_LEN: usize = 4096;
+
+    pub fn check_len(label: &str, value: &str, max: usize) -> Result<(), BrainError> {
+        if value.len() > max {
+            return Err(BrainError::parse(format!(
+                "{label} too large ({} bytes; max {max})",
+                value.len()
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(feature = "ssr")]
 fn target_from_ref(
     target: brain_domain::TargetRef,

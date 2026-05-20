@@ -401,6 +401,14 @@ pub async fn upload_asset(
             "Unsupported file extension: .{ext}"
         ))));
     }
+    // Magic-bytes check: the real content must be an image whose type matches
+    // the declared extension. Stops a script/HTML payload wearing a `.png`
+    // extension from being committed and later served by the asset proxy.
+    if !content_matches_ext(&bytes, &ext) {
+        return Err(sfe(BrainError::parse(format!(
+            "File content does not match .{ext} (failed magic-byte check)"
+        ))));
+    }
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -462,11 +470,28 @@ fn is_allowed_image_ext(ext: &str) -> bool {
     matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp")
 }
 
+/// Sniff the leading bytes and confirm they describe an image of the type the
+/// declared extension claims. `jpg`/`jpeg` are aliases for the same magic.
+#[cfg(feature = "ssr")]
+fn content_matches_ext(bytes: &[u8], ext: &str) -> bool {
+    let Some(kind) = infer::get(bytes) else {
+        return false;
+    };
+    let detected = kind.extension();
+    match ext {
+        "jpg" | "jpeg" => matches!(detected, "jpg" | "jpeg"),
+        other => detected == other,
+    }
+}
+
 #[cfg(feature = "ssr")]
 pub(crate) fn validate_markdown_path(path: &str) -> Result<(), BrainError> {
     let path = path.trim();
     if path.is_empty() {
         return Err(BrainError::parse("Path is required"));
+    }
+    if path.len() > super::limits::MAX_PATH_LEN {
+        return Err(BrainError::parse("Path too long"));
     }
     if !path.ends_with(".md") {
         return Err(BrainError::parse("Path must end in .md"));
@@ -739,5 +764,26 @@ mod rewrite_links_tests {
         assert!(is_allowed_image_ext("png"));
         assert!(is_allowed_image_ext("webp"));
         assert!(!is_allowed_image_ext("svg"));
+    }
+
+    #[test]
+    fn magic_bytes_reject_mismatched_extension() {
+        // HTML/script payload renamed to .png must be rejected.
+        let html = b"<script>alert(1)</script>";
+        assert!(!content_matches_ext(html, "png"));
+        // Genuine PNG signature passes for png.
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR";
+        assert!(content_matches_ext(png, "png"));
+        // PNG bytes claiming to be a jpg must be rejected.
+        assert!(!content_matches_ext(png, "jpg"));
+        // Empty content is not a valid image.
+        assert!(!content_matches_ext(b"", "png"));
+    }
+
+    #[test]
+    fn magic_bytes_accept_jpeg_alias() {
+        let jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF";
+        assert!(content_matches_ext(jpeg, "jpg"));
+        assert!(content_matches_ext(jpeg, "jpeg"));
     }
 }

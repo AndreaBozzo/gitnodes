@@ -160,6 +160,8 @@ pub async fn save_views(
 
     let new_yaml = serde_yaml::to_string(&cfg)
         .map_err(|e| sfe(BrainError::other(format!("yaml serialize: {e}"))))?;
+    super::limits::check_len("Views config", &new_yaml, super::limits::MAX_VIEWS_BYTES)
+        .map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = "Update saved views via Brain UI".to_string();
 

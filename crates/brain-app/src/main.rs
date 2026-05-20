@@ -51,9 +51,86 @@ fn is_multi_tenant_protected(path: &str) -> bool {
     legacy_target_route || canonical_target_route
 }
 
+/// Decide whether a mutating request is same-origin and may proceed.
+///
+/// `Origin`, when present, is authoritative: its host must match `Host`. We do
+/// NOT let a `Sec-Fetch-Site` header override a present-but-mismatched `Origin`,
+/// otherwise a crafted request could set `Sec-Fetch-Site: none` to bypass the
+/// check. `Sec-Fetch-Site` is only consulted as a fallback when `Origin` is
+/// absent (`same-origin`/`none` trusted, `cross-site`/`same-site` rejected).
+/// With neither header the request is allowed: same-origin navigations and
+/// non-browser clients (curl, server-to-server) routinely omit both, and the
+/// SameSite=Lax session cookie already blocks the cross-site browser case.
+#[cfg(feature = "ssr")]
+fn is_same_origin(host: Option<&str>, origin: Option<&str>, sec_fetch_site: Option<&str>) -> bool {
+    if let Some(origin) = origin {
+        // Strip scheme, compare host[:port] against the Host header. A present
+        // Origin is always validated, regardless of Sec-Fetch-Site.
+        let origin_host = origin
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(origin);
+        return match host {
+            Some(host) => origin_host.eq_ignore_ascii_case(host),
+            None => false,
+        };
+    }
+    // No Origin: fall back to Sec-Fetch-Site, else allow (non-browser / nav).
+    match sec_fetch_site {
+        Some("same-origin") | Some("none") => true,
+        Some(_) => false,
+        None => true,
+    }
+}
+
 #[cfg(all(test, feature = "ssr"))]
 mod route_protection_tests {
-    use super::is_protected_path;
+    use super::{is_protected_path, is_same_origin};
+
+    #[test]
+    fn csrf_same_origin_contract() {
+        let host = Some("brain.example.com");
+        // A present Origin is authoritative and wins over any Sec-Fetch-Site:
+        // a mismatched Origin is rejected even with Sec-Fetch-Site: none, and a
+        // matching Origin is accepted even if Sec-Fetch-Site says cross-site.
+        assert!(!is_same_origin(
+            host,
+            Some("https://evil.example"),
+            Some("none")
+        ));
+        assert!(is_same_origin(
+            host,
+            Some("https://brain.example.com"),
+            Some("cross-site")
+        ));
+        // Sec-Fetch-Site only consulted when Origin is absent.
+        assert!(is_same_origin(host, None, Some("same-origin")));
+        assert!(is_same_origin(host, None, Some("none")));
+        assert!(!is_same_origin(host, None, Some("same-site")));
+        assert!(!is_same_origin(host, None, Some("cross-site")));
+        // Origin host must match Host when Sec-Fetch-Site is absent.
+        assert!(is_same_origin(
+            host,
+            Some("https://brain.example.com"),
+            None
+        ));
+        assert!(is_same_origin(host, Some("http://brain.example.com"), None));
+        assert!(!is_same_origin(host, Some("https://attacker.test"), None));
+        // Origin with port mismatch is cross-origin.
+        assert!(!is_same_origin(
+            host,
+            Some("https://brain.example.com:8443"),
+            None
+        ));
+        // No Origin and no Sec-Fetch-Site: allowed (non-browser / same-origin nav).
+        assert!(is_same_origin(host, None, None));
+        // Origin present but no Host header: cannot verify, reject.
+        assert!(!is_same_origin(
+            None,
+            Some("https://brain.example.com"),
+            None
+        ));
+    }
 
     #[test]
     fn protected_path_contract_covers_workspace_surfaces() {
@@ -98,7 +175,7 @@ async fn main() {
     use axum::{
         Router,
         body::Body,
-        extract::Request,
+        extract::{DefaultBodyLimit, Request},
         http::HeaderValue,
         http::header::{CACHE_CONTROL, PRAGMA},
         middleware::{self, Next},
@@ -243,9 +320,46 @@ async fn main() {
     let cookie_secure = std::env::var("SESSION_COOKIE_SECURE")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(!cfg!(debug_assertions));
+
+    // Encrypt the session store at rest. The SQLite session record holds the
+    // user's `gho_*` OAuth token; `with_private` keeps it ciphertext on disk.
+    // Key is a base64-encoded >=64-byte secret in `SESSION_ENCRYPTION_KEY`.
+    // In prod (cookie_secure) the key is mandatory — mirror the WEBHOOK_SECRET
+    // fail-fast. In dev a missing key generates an ephemeral one (sessions don't
+    // survive a restart, which is fine locally).
+    let session_key = match std::env::var("SESSION_ENCRYPTION_KEY") {
+        Ok(b64) => {
+            use base64::Engine as _;
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "SESSION_ENCRYPTION_KEY is not valid base64");
+                    std::process::exit(1);
+                });
+            tower_sessions::cookie::Key::try_from(raw.as_slice()).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "SESSION_ENCRYPTION_KEY must decode to >= 64 bytes");
+                std::process::exit(1);
+            })
+        }
+        Err(_) => {
+            if cookie_secure {
+                tracing::error!(
+                    "SESSION_ENCRYPTION_KEY must be set in production (base64, >= 64 bytes). \
+                     Generate one with: openssl rand -base64 64"
+                );
+                std::process::exit(1);
+            }
+            tracing::warn!(
+                "SESSION_ENCRYPTION_KEY not set — generating an ephemeral dev key; \
+                 sessions will not survive a restart"
+            );
+            tower_sessions::cookie::Key::generate()
+        }
+    };
     let session_layer = SessionManagerLayer::new(session_store)
         .with_same_site(SameSite::Lax)
-        .with_secure(cookie_secure);
+        .with_secure(cookie_secure)
+        .with_private(session_key);
 
     let conf = get_configuration(None).expect("load Leptos configuration");
     let leptos_options = conf.leptos_options;
@@ -316,12 +430,27 @@ async fn main() {
         response
     }
 
-    // Baseline browser-side hardening. Does NOT include CSP — that's still
-    // tracked under "Security & Content Trust Baseline" in the roadmap and
-    // requires the embed allowlist work to compute `frame-src` correctly.
+    // Baseline browser-side hardening. The CSP `frame-src 'none'` is static for
+    // now and will become dynamic once the embed allowlist exists.
     // HSTS is only emitted when the app is actually serving over HTTPS
     // (signalled by `SESSION_COOKIE_SECURE`); on local http://127.0.0.1
     // dev it would force the browser to https and break the dev loop.
+    // Static CSP baseline. `img-src` includes `data:`/`blob:` for inline/preview
+    // images and `https:` so GitHub `raw.githubusercontent.com` images (non-asset
+    // markdown images rewritten to raw URLs) load; private-repo assets go through
+    // the same-origin proxy. `connect-src` covers the SSE endpoint and dev ws.
+    const CSP_POLICY: &str = "default-src 'self'; \
+script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob: https:; \
+font-src 'self' data:; \
+connect-src 'self' ws: wss:; \
+frame-src 'none'; \
+object-src 'none'; \
+base-uri 'none'; \
+frame-ancestors 'none'; \
+form-action 'self'";
+
     async fn security_headers(cookie_secure: bool, request: Request<Body>, next: Next) -> Response {
         let mut response = next.run(request).await;
         let headers = response.headers_mut();
@@ -334,6 +463,18 @@ async fn main() {
             "Referrer-Policy",
             HeaderValue::from_static("strict-origin-when-cross-origin"),
         );
+        // Content-Security-Policy baseline. `frame-src 'none'` because no iframes
+        // exist yet — when the embed allowlist lands it becomes dynamic. We keep
+        // `script-src`/`style-src` permissive enough for Leptos hydration:
+        // `HydrationScripts` emits an inline bootstrap and the WASM module needs
+        // `wasm-unsafe-eval`; Tailwind/Leptos inject inline styles. This still
+        // blocks the primary XSS vector (loading script from a foreign origin).
+        // Tightening to nonces is tracked as a future hardening step.
+        // `connect-src` allows ws: in dev for AutoReload/live reload.
+        headers.insert(
+            "Content-Security-Policy",
+            HeaderValue::from_static(CSP_POLICY),
+        );
         if cookie_secure {
             headers.insert(
                 "Strict-Transport-Security",
@@ -343,7 +484,57 @@ async fn main() {
         response
     }
 
+    // Same-origin guard for state-changing requests. Authenticated mutations run
+    // over `POST /api/*`; SameSite=Lax already blocks cross-site cookie sends for
+    // top-level POSTs, but we additionally reject any mutating `/api/*` request
+    // whose `Origin` host doesn't match the request `Host`. This closes the gap
+    // before iframes/automations exist. The webhook (`/webhook/github`, HMAC) and
+    // OAuth callback (`/auth/callback`, GET, cross-site by design) are exempt
+    // because they aren't `/api/*` POSTs.
+    async fn csrf_protect(request: Request<Body>, next: Next) -> Response {
+        use axum::http::{StatusCode, header};
+
+        let method = request.method();
+        let is_mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+        let path = request.uri().path();
+        if is_mutating && path.starts_with("/api/") {
+            let headers = request.headers();
+            let host = headers.get(header::HOST).and_then(|h| h.to_str().ok());
+            let origin = headers.get(header::ORIGIN).and_then(|h| h.to_str().ok());
+            let sec_fetch_site = headers.get("sec-fetch-site").and_then(|h| h.to_str().ok());
+            if !is_same_origin(host, origin, sec_fetch_site) {
+                return (StatusCode::FORBIDDEN, "cross-site request rejected").into_response();
+            }
+        }
+        next.run(request).await
+    }
+
     let options_for_ssr = leptos_options.clone();
+
+    // Per-IP rate-limit baseline. Generous so a normal contributor session never
+    // trips it; the point is to blunt brute-force/enumeration on /auth/callback,
+    // /webhook/github and abuse of the mutating server fns. Limits are overridable
+    // via env for ops tuning. `SmartIpKeyExtractor` reads X-Forwarded-For/X-Real-IP
+    // (correct behind Railway's proxy) and falls back to the peer IP.
+    let rl_per_second: u64 = std::env::var("RATE_LIMIT_PER_SECOND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let rl_burst: u32 = std::env::var("RATE_LIMIT_BURST")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+    let governor_conf = std::sync::Arc::new(
+        tower_governor::governor::GovernorConfigBuilder::default()
+            .per_second(rl_per_second)
+            .burst_size(rl_burst)
+            .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+            .finish()
+            .expect("valid rate-limit config"),
+    );
+    let governor_layer = tower_governor::GovernorLayer {
+        config: governor_conf,
+    };
 
     // Private-repo asset proxy. Raw GitHub URLs would require the user's OAuth
     // token on `<img>` requests, which the browser can't attach — so we serve
@@ -460,11 +651,19 @@ async fn main() {
         // Registration order therefore goes innermost → outermost:
         //   protect_knowledge  → cache_control  → security_headers  → session.
         .layer(middleware::from_fn(protect_knowledge))
+        .layer(middleware::from_fn(csrf_protect))
         .layer(middleware::from_fn(cache_control))
         .layer(middleware::from_fn(move |req, next| {
             security_headers(cookie_secure, req, next)
         }))
+        // Hard backstop on request body size. The largest legitimate body is a
+        // base64/JSON-encoded asset upload (`MAX_ASSET_BYTES` raw, ~33% larger
+        // once JSON-encoded); 8 MiB leaves generous headroom while rejecting
+        // multi-megabyte payloads before they hit a server fn.
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(session_layer)
+        // Outermost: reject over-limit requests before any session/DB work.
+        .layer(governor_layer)
         .with_state(leptos_options);
 
     tracing::info!(%addr, "brain_app listening");
@@ -475,9 +674,15 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    axum::serve(listener, app.into_make_service())
-        .await
-        .expect("axum serve loop terminated with error");
+    // `into_make_service_with_connect_info` exposes the peer `SocketAddr` so the
+    // rate limiter's `SmartIpKeyExtractor` has a fallback when no proxy headers
+    // are present (e.g. local dev).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("axum serve loop terminated with error");
 }
 
 #[cfg(not(feature = "ssr"))]

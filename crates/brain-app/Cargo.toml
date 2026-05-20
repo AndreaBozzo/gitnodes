@@ -23,7 +23,7 @@ tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
 http = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 dotenvy = { version = "0.15", optional = true }
-tower-sessions = { version = "0.14", optional = true }
+tower-sessions = { version = "0.14", features = ["private"], optional = true }
 tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"], optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"], optional = true }
 time = { version = "0.3", optional = true }
@@ -36,6 +36,9 @@ hmac = { version = "0.12", optional = true }
 sha2 = { version = "0.10", optional = true }
 jsonwebtoken = { version = "9", optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+ammonia = { version = "4", optional = true }
+infer = { version = "0.16", default-features = false, optional = true }
+tower_governor = { version = "0.7", optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 brain-domain = { path = "../brain-domain" }
 brain-graph = { path = "../brain-graph" }
@@ -96,6 +99,9 @@ ssr = [
     "dep:sha2",
     "dep:jsonwebtoken",
     "dep:tokio-stream",
+    "dep:ammonia",
+    "dep:infer",
+    "dep:tower_governor",
     "dep:brain-storage",
     "dep:brain-auth",
     "leptos/ssr",

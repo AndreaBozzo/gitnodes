@@ -57,7 +57,7 @@ pub async fn handle(
             return StatusCode::ACCEPTED;
         };
         let state_clone = state.clone();
-        tokio::spawn(async move {
+        spawn_supervised("handle_push", async move {
             handle_push(state_clone, target).await;
         });
     } else if event_type == "issues" || event_type == "pull_request" {
@@ -74,12 +74,33 @@ pub async fn handle(
         };
         let state_clone = state.clone();
         let payload_clone = payload;
-        tokio::spawn(async move {
+        spawn_supervised("handle_item_event", async move {
             handle_item_event(state_clone, payload_clone, target).await;
         });
     }
 
     StatusCode::ACCEPTED
+}
+
+/// Spawn a background webhook task and supervise it: if the task panics, the
+/// `JoinError` is logged explicitly with the task name instead of vanishing
+/// into a detached `tokio::spawn`. The work itself stays fire-and-forget (the
+/// webhook has already returned 202); this just buys operational visibility.
+/// Ties into the "Background job/outbox" item of the Failure-Mode Matrix.
+fn spawn_supervised<F>(name: &'static str, fut: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = tokio::spawn(fut);
+    tokio::spawn(async move {
+        if let Err(join_err) = handle.await {
+            if join_err.is_panic() {
+                tracing::error!(task = name, "webhook background task panicked");
+            } else {
+                tracing::warn!(task = name, "webhook background task cancelled");
+            }
+        }
+    });
 }
 
 #[derive(serde::Deserialize)]
