@@ -51,7 +51,7 @@ pub fn ViewsAdminPage() -> impl IntoView {
             };
             let cfg = load_brain_config_for_target(target.clone()).await?;
             let views = list_views(target.clone()).await?;
-            Ok::<_, leptos::prelude::ServerFnError>((target, cfg, views))
+            Ok::<_, crate::api::ApiError>((target, cfg, views))
         },
     );
 

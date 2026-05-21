@@ -42,6 +42,12 @@ pub struct TargetRef {
 pub enum TargetRefError {
     #[error("target {field} is empty")]
     Empty { field: &'static str },
+    #[error("target {field} is too long ({len} bytes, max {max})")]
+    TooLong {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
     #[error("target {field} contains forbidden segment {value:?}")]
     PathTraversal { field: &'static str, value: String },
     #[error("target {field} {value:?} contains a non-printable character")]
@@ -49,6 +55,8 @@ pub enum TargetRefError {
     #[error("target {field} {value:?} starts with a slash")]
     LeadingSlash { field: &'static str, value: String },
 }
+
+const MAX_TARGET_COMPONENT_BYTES: usize = 1024;
 
 impl TargetRef {
     pub fn new(org: impl Into<String>, repo: impl Into<String>, branch: impl Into<String>) -> Self {
@@ -72,6 +80,13 @@ impl TargetRef {
         ] {
             if value.is_empty() {
                 return Err(TargetRefError::Empty { field });
+            }
+            if value.len() > MAX_TARGET_COMPONENT_BYTES {
+                return Err(TargetRefError::TooLong {
+                    field,
+                    len: value.len(),
+                    max: MAX_TARGET_COMPONENT_BYTES,
+                });
             }
             if value.starts_with('/') {
                 return Err(TargetRefError::LeadingSlash {
@@ -170,6 +185,20 @@ impl TargetKey {
     pub fn from_parts(org: &str, repo: &str, branch: &str) -> Self {
         Self(format!("{org}/{repo}/{branch}"))
     }
+
+    /// Parse and validate an `org/repo/branch` key string before turning it
+    /// into a cache/broadcast key. Branch names may contain `/`, so the parser
+    /// splits only the first two separators and treats the rest as the branch.
+    pub fn try_from_key_string(key: &str) -> Result<Self, TargetRefError> {
+        let mut parts = key.splitn(3, '/');
+        let target = TargetRef::new(
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+        );
+        target.validate()?;
+        Ok(Self::from(&target))
+    }
 }
 
 impl From<&TargetConfig> for TargetKey {
@@ -262,12 +291,20 @@ impl GithubClient {
     /// server; production code should use `new` and accept the default
     /// `https://api.github.com`.
     pub fn with_api_base(mut self, base: impl Into<String>) -> Self {
-        let mut base = base.into();
-        while base.ends_with('/') {
-            base.pop();
-        }
-        self.api_base = base;
+        self.api_base = normalize_api_base(base.into());
         self
+    }
+
+    pub fn default_api_base() -> &'static str {
+        DEFAULT_API_BASE
+    }
+
+    pub fn app_installation_access_tokens_url(api_base: &str, installation_id: &str) -> String {
+        format!(
+            "{}/app/installations/{}/access_tokens",
+            normalize_api_base(api_base.to_string()),
+            encode_path_segment(installation_id)
+        )
     }
 
     pub fn target(&self) -> &TargetConfig {
@@ -430,6 +467,13 @@ impl GithubClient {
             self.issue_url(project, item_key)?
         ))
     }
+}
+
+fn normalize_api_base(mut base: String) -> String {
+    while base.ends_with('/') {
+        base.pop();
+    }
+    base
 }
 
 impl From<TargetConfig> for GithubClient {
@@ -1495,6 +1539,14 @@ node_types:
     }
 
     #[test]
+    fn app_installation_token_url_uses_configured_api_base() {
+        assert_eq!(
+            GithubClient::app_installation_access_tokens_url("https://example.test/api/", "12345"),
+            "https://example.test/api/app/installations/12345/access_tokens"
+        );
+    }
+
+    #[test]
     fn branch_url_encodes_branch_as_single_segment() {
         let c = gh("acme", "kb", "main").with_api_base("https://example.test/api/");
         assert_eq!(
@@ -1621,6 +1673,19 @@ node_types:
     }
 
     #[test]
+    fn target_ref_validate_rejects_oversized_components() {
+        let long = "x".repeat(super::MAX_TARGET_COMPONENT_BYTES + 1);
+        let e = TargetRef::new("acme", "kb", long).validate().unwrap_err();
+        assert!(matches!(
+            e,
+            TargetRefError::TooLong {
+                field: "branch",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn target_ref_and_target_config_produce_same_key() {
         let r = TargetRef::new("acme", "kb", "main");
         let c = TargetConfig {
@@ -1630,6 +1695,23 @@ node_types:
         };
         assert_eq!(TargetKey::from(&r), TargetKey::from(&c));
         assert_eq!(TargetKey::from(&r).as_str(), "acme/kb/main");
+    }
+
+    #[test]
+    fn target_key_parses_validated_key_string() {
+        let key = TargetKey::try_from_key_string("acme/kb/feature/foo").unwrap();
+        assert_eq!(key.as_str(), "acme/kb/feature/foo");
+
+        let e = TargetKey::try_from_key_string("acme/kb/../escape").unwrap_err();
+        assert!(matches!(
+            e,
+            TargetRefError::PathTraversal {
+                field: "branch",
+                ..
+            }
+        ));
+        let e = TargetKey::try_from_key_string("acme/kb").unwrap_err();
+        assert!(matches!(e, TargetRefError::Empty { field: "branch" }));
     }
 
     #[test]

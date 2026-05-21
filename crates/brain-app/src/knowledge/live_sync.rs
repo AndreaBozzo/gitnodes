@@ -194,7 +194,17 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                     return;
                 }
 
-                let Ok(source) = EventSource::new("/sse/events") else {
+                // Slice δ: scope the stream to the active target server-side so
+                // a noisy target can't starve others. The server falls back to
+                // the env-default target when no param is sent (legacy deploy).
+                let sse_url = match active_target_from_location() {
+                    Some(t) => {
+                        let key = format!("{}/{}/{}", t.org, t.repo, t.branch);
+                        format!("/sse/events?target={}", js_sys::encode_uri_component(&key))
+                    }
+                    None => "/sse/events".to_string(),
+                };
+                let Ok(source) = EventSource::new(&sse_url) else {
                     schedule_reconnect();
                     return;
                 };

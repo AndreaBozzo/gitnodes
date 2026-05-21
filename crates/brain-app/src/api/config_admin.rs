@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use brain_domain::{BrainConfig, BrandConfig, TargetConfig, TargetRef, ViewSpec};
 
+use super::ApiError;
 #[cfg(feature = "ssr")]
 use super::WriteMode;
 use super::WriteResult;
@@ -50,7 +51,7 @@ fn config_load_status(
 // README/marketing — no auth gate. Anything truly sensitive belongs in a
 // separate, gated server fn.
 #[server(GetAppConfig, "/api", endpoint = "get_app_config")]
-pub async fn get_app_config() -> Result<AppConfig, ServerFnError> {
+pub async fn get_app_config() -> Result<AppConfig, ApiError> {
     use crate::server::session;
     let target = session::target_cfg().map_err(sfe)?;
     let brand = use_context::<BrandConfig>()
@@ -59,7 +60,7 @@ pub async fn get_app_config() -> Result<AppConfig, ServerFnError> {
 }
 
 #[server(LoadBrainConfig, "/api", endpoint = "load_brain_config")]
-pub async fn load_brain_config() -> Result<BrainConfig, ServerFnError> {
+pub async fn load_brain_config() -> Result<BrainConfig, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
@@ -69,7 +70,7 @@ pub async fn load_brain_config() -> Result<BrainConfig, ServerFnError> {
 }
 
 #[server(LoadBrainConfigStatus, "/api", endpoint = "load_brain_config_status")]
-pub async fn load_brain_config_status() -> Result<ConfigLoadStatus, ServerFnError> {
+pub async fn load_brain_config_status() -> Result<ConfigLoadStatus, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
 
@@ -86,7 +87,7 @@ pub async fn load_brain_config_status() -> Result<ConfigLoadStatus, ServerFnErro
 )]
 pub async fn load_brain_config_status_for_target(
     target: TargetRef,
-) -> Result<ConfigLoadStatus, ServerFnError> {
+) -> Result<ConfigLoadStatus, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
 
@@ -100,7 +101,7 @@ pub async fn load_brain_config_status_for_target(
 /// cached `BrainConfig` as the rest of the runtime, so it reflects the latest
 /// committed state of `.brain-config.yml` without an extra fetch.
 #[server(ListViews, "/api", endpoint = "list_views")]
-pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ServerFnError> {
+pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
@@ -118,10 +119,7 @@ pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ServerFnErro
 /// Returns the same `WriteResult` shape as `SaveBrainFile` so the admin UI can
 /// render `Saved` / `Proposed via PR #...` consistently with the editor.
 #[server(SaveViews, "/api", endpoint = "save_views")]
-pub async fn save_views(
-    target: TargetRef,
-    views: Vec<ViewSpec>,
-) -> Result<WriteResult, ServerFnError> {
+pub async fn save_views(target: TargetRef, views: Vec<ViewSpec>) -> Result<WriteResult, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
     use brain_storage::Storage;
@@ -237,11 +235,27 @@ pub struct SessionEntry {
     pub expiry_date: String,
 }
 
+/// A best-effort provider push that hasn't propagated to the forge yet (slice
+/// γ). Surfaced read-only in admin so operators can see what's un-synced
+/// instead of inferring it from the audit log.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingSyncEntry {
+    pub id: i64,
+    pub org: String,
+    pub repo: String,
+    pub branch: String,
+    pub brain_id: String,
+    pub kind: String,
+    pub attempts: i64,
+    pub last_attempt_at: String,
+    pub last_error: Option<String>,
+}
+
 #[server(LoadAuditLog, "/api", endpoint = "load_audit_log")]
 pub async fn load_audit_log(
     kind: Option<String>,
     limit: Option<i64>,
-) -> Result<Vec<AuditEntry>, ServerFnError> {
+) -> Result<Vec<AuditEntry>, ApiError> {
     use crate::server::session;
     let _ = session::require_target_admin_session().await.map_err(sfe)?;
     let rows = crate::server::audit::recent(limit.unwrap_or(200), kind.as_deref())
@@ -260,7 +274,7 @@ pub async fn load_audit_log(
 }
 
 #[server(ListSessions, "/api", endpoint = "list_sessions")]
-pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
+pub async fn list_sessions() -> Result<Vec<SessionEntry>, ApiError> {
     use crate::server::session;
     let _ = session::require_target_admin_session().await.map_err(sfe)?;
     let rows = crate::server::audit::list_sessions(100)
@@ -275,8 +289,31 @@ pub async fn list_sessions() -> Result<Vec<SessionEntry>, ServerFnError> {
         .collect())
 }
 
+#[server(ListPendingSync, "/api", endpoint = "list_pending_sync")]
+pub async fn list_pending_sync() -> Result<Vec<PendingSyncEntry>, ApiError> {
+    use crate::server::session;
+    let _ = session::require_target_admin_session().await.map_err(sfe)?;
+    let rows = crate::server::projection::list_all_pending_sync(200)
+        .await
+        .map_err(sfe)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| PendingSyncEntry {
+            id: r.id,
+            org: r.org,
+            repo: r.repo,
+            branch: r.branch,
+            brain_id: r.brain_id,
+            kind: r.kind,
+            attempts: r.attempts,
+            last_attempt_at: r.last_attempt_at,
+            last_error: r.last_error,
+        })
+        .collect())
+}
+
 #[server(RevokeSession, "/api", endpoint = "revoke_session")]
-pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
+pub async fn revoke_session(id: String) -> Result<u64, ApiError> {
     use crate::server::session;
     let s = session::require_target_admin_session().await.map_err(sfe)?;
     let actor = crate::server::auth::get_session_user(&s).await;
@@ -288,17 +325,14 @@ pub async fn revoke_session(id: String) -> Result<u64, ServerFnError> {
 }
 
 #[server(GetCurrentUser, "/api", endpoint = "get_current_user")]
-pub async fn get_current_user() -> Result<Option<String>, ServerFnError> {
+pub async fn get_current_user() -> Result<Option<String>, ApiError> {
     use crate::server::session;
     let s = session::require_authenticated().await.map_err(sfe)?;
     Ok(crate::server::auth::get_session_user(&s).await)
 }
 
 #[server(LoadBrainTemplate, "/api", endpoint = "load_brain_template")]
-pub async fn load_brain_template(
-    target: TargetRef,
-    node_type: String,
-) -> Result<String, ServerFnError> {
+pub async fn load_brain_template(target: TargetRef, node_type: String) -> Result<String, ApiError> {
     use crate::server::session;
     use brain_storage::Storage;
     let target = super::target_from_ref(target).map_err(sfe)?;

@@ -45,21 +45,23 @@ pub fn KnowledgePage() -> impl IntoView {
                     let graph = load_brain_graph().await?;
                     let config_status = load_brain_config_status().await?;
                     let files = list_brain_files(FileQueryFilters::default()).await?;
-                    Ok::<_, ServerFnError>((graph, config_status, files))
+                    Ok::<_, crate::api::ApiError>((graph, config_status, files))
                 })
                 .await
-                .map_err(|_| ServerFnError::new("upstream timeout – try refreshing"))?
+                .map_err(|_| {
+                    crate::api::ApiError::Internal("upstream timeout – try refreshing".into())
+                })?
             }
             #[cfg(not(feature = "ssr"))]
             {
                 let graph = load_brain_graph().await?;
                 let config_status = load_brain_config_status().await?;
                 let files = list_brain_files(FileQueryFilters::default()).await?;
-                Ok::<_, ServerFnError>((graph, config_status, files))
+                Ok::<_, crate::api::ApiError>((graph, config_status, files))
             }
         },
     );
-    let app_config = expect_context::<Resource<Result<AppConfig, ServerFnError>>>();
+    let app_config = expect_context::<Resource<Result<AppConfig, crate::api::ApiError>>>();
 
     view! {
         <Suspense fallback=knowledge_loading_view>

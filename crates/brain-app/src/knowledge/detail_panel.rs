@@ -43,7 +43,7 @@ pub fn DetailPanel(
         move || current_path.get(),
         move |path| async move {
             if path.is_empty() {
-                return Ok::<Option<BrainFile>, ServerFnError>(None);
+                return Ok::<Option<BrainFile>, crate::api::ApiError>(None);
             }
             read_brain_file(active_target.get_value(), path)
                 .await
@@ -54,7 +54,7 @@ pub fn DetailPanel(
         move || current_path.get(),
         move |path| async move {
             if path.is_empty() {
-                return Ok::<Option<WorkItem>, ServerFnError>(None);
+                return Ok::<Option<WorkItem>, crate::api::ApiError>(None);
             }
             load_work_item_by_path(active_target.get_value(), path).await
         },
@@ -959,7 +959,9 @@ fn WorkItemControls(
         let s = state_action.value().get().and_then(|r| r.err());
         let a = assign_action.value().get().and_then(|r| r.err());
         let b = bind_action.value().get().and_then(|r| r.err());
-        s.or(a).or(b).map(|e| e.to_string())
+        // Typed boundary error → actionable guidance (stale → reload,
+        // no write → PR, rate-limit → retry) instead of a flattened string.
+        s.or(a).or(b).map(|e| e.actionable_message())
     };
 
     let any_notice = move || {

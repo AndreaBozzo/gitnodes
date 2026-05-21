@@ -6,6 +6,7 @@ use crate::knowledge::types::BrainFilePayload;
 use brain_domain::BrainConfig;
 use brain_domain::TargetRef;
 
+use super::ApiError;
 #[cfg(feature = "ssr")]
 use super::sanitize_commit_message;
 #[cfg(feature = "ssr")]
@@ -85,7 +86,7 @@ pub struct WriteCapabilities {
 }
 
 #[server(GetWriteCapabilities, "/api", endpoint = "get_write_capabilities")]
-pub async fn get_write_capabilities(target: TargetRef) -> Result<WriteCapabilities, ServerFnError> {
+pub async fn get_write_capabilities(target: TargetRef) -> Result<WriteCapabilities, ApiError> {
     use crate::server::session;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
@@ -131,7 +132,7 @@ impl WriteResult {
 }
 
 #[server(ReadBrainFile, "/api", endpoint = "read_brain_file")]
-pub async fn read_brain_file(target: TargetRef, path: String) -> Result<BrainFile, ServerFnError> {
+pub async fn read_brain_file(target: TargetRef, path: String) -> Result<BrainFile, ApiError> {
     use crate::server::session;
     use brain_storage::Storage;
 
@@ -157,7 +158,7 @@ pub async fn read_brain_file(target: TargetRef, path: String) -> Result<BrainFil
     input = server_fn::codec::Json,
     endpoint = "list_brain_files",
 )]
-pub async fn list_brain_files(filters: FileQueryFilters) -> Result<Vec<RepoFile>, ServerFnError> {
+pub async fn list_brain_files(filters: FileQueryFilters) -> Result<Vec<RepoFile>, ApiError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
@@ -203,7 +204,7 @@ pub async fn list_brain_files(filters: FileQueryFilters) -> Result<Vec<RepoFile>
     input = server_fn::codec::Json,
     endpoint = "save_brain_file",
 )]
-pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, ServerFnError> {
+pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, ApiError> {
     use crate::server::session;
     use brain_storage::Storage;
 
@@ -347,7 +348,7 @@ pub async fn delete_brain_file(
     path: String,
     sha: String,
     commit_message: Option<String>,
-) -> Result<WriteResult, ServerFnError> {
+) -> Result<WriteResult, ApiError> {
     use crate::server::session;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;

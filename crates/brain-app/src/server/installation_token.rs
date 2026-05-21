@@ -12,6 +12,7 @@
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use brain_domain::GithubClient;
 use brain_storage::GithubHttp;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde::{Deserialize, Serialize};
@@ -23,10 +24,40 @@ use tokio::sync::Mutex;
 /// 5 min of headroom is generous.
 const SAFETY_WINDOW: Duration = Duration::from_secs(5 * 60);
 
+/// Typed failure modes for token resolution. Replaces the previous
+/// `Result<_, String>`: callers (and, transitively, the webhook sync path) can
+/// distinguish "App not configured" from "mint failed at GitHub" instead of
+/// matching on message substrings.
+#[derive(Debug)]
+pub enum TokenMintError {
+    /// No GitHub App configured (and the caller has no other credential path).
+    NoApp,
+    /// App is configured but minting the installation token failed. Carries the
+    /// underlying detail (JWT sign, HTTP status + snippet, parse, …).
+    MintFailed(String),
+    /// Neither App nor PAT credentials are configured anywhere.
+    NoCreds,
+}
+
+impl std::fmt::Display for TokenMintError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenMintError::NoApp => write!(f, "github app not configured"),
+            TokenMintError::MintFailed(detail) => {
+                write!(f, "installation token mint failed: {detail}")
+            }
+            TokenMintError::NoCreds => write!(f, "no github credentials configured"),
+        }
+    }
+}
+
+impl std::error::Error for TokenMintError {}
+
 #[derive(Clone)]
 struct AppConfig {
     app_id: String,
     installation_id: String,
+    api_base: String,
     private_key_pem: Vec<u8>,
 }
 
@@ -76,9 +107,15 @@ fn load_config_from_env() -> Option<AppConfig> {
         return None;
     }
 
+    let api_base = std::env::var("GITHUB_API_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| GithubClient::default_api_base().to_string());
+
     Some(AppConfig {
         app_id,
         installation_id,
+        api_base,
         private_key_pem: pem,
     })
 }
@@ -165,12 +202,13 @@ struct InstallationTokenResponse {
     expires_at: String,
 }
 
-async fn mint(http: &GithubHttp, config: &AppConfig) -> Result<CachedToken, String> {
+async fn mint(http: &GithubHttp, config: &AppConfig) -> Result<CachedToken, TokenMintError> {
+    use TokenMintError::MintFailed;
     // App JWT: short-lived (≤ 10 min by GitHub policy). We use 9 to absorb
     // clock skew on either side.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("system time before unix epoch: {e}"))?
+        .map_err(|e| MintFailed(format!("system time before unix epoch: {e}")))?
         .as_secs();
     let claims = JwtClaims {
         iat: now.saturating_sub(60),
@@ -178,37 +216,32 @@ async fn mint(http: &GithubHttp, config: &AppConfig) -> Result<CachedToken, Stri
         iss: config.app_id.clone(),
     };
     let key = EncodingKey::from_rsa_pem(&config.private_key_pem)
-        .map_err(|e| format!("private key parse: {e}"))?;
+        .map_err(|e| MintFailed(format!("private key parse: {e}")))?;
     let jwt = encode(&Header::new(jsonwebtoken::Algorithm::RS256), &claims, &key)
-        .map_err(|e| format!("jwt sign: {e}"))?;
+        .map_err(|e| MintFailed(format!("jwt sign: {e}")))?;
 
-    let url = format!(
-        "https://api.github.com/app/installations/{}/access_tokens",
-        config.installation_id
-    );
+    let url =
+        GithubClient::app_installation_access_tokens_url(&config.api_base, &config.installation_id);
 
-    let client = http.client();
-    let resp = client
-        .post(&url)
-        .bearer_auth(&jwt)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "brain_ui")
+    let resp = http
+        .post(&url, &jwt)
         .send()
         .await
-        .map_err(|e| format!("installation token request: {e}"))?;
+        .map_err(|e| MintFailed(format!("installation token request: {e}")))?;
 
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         let snippet: String = body.chars().take(400).collect();
-        return Err(format!("installation token status {status}: {snippet}"));
+        return Err(MintFailed(format!(
+            "installation token status {status}: {snippet}"
+        )));
     }
 
     let parsed: InstallationTokenResponse = resp
         .json()
         .await
-        .map_err(|e| format!("installation token parse: {e}"))?;
+        .map_err(|e| MintFailed(format!("installation token parse: {e}")))?;
 
     let expires_at = OffsetDateTime::parse(
         &parsed.expires_at,

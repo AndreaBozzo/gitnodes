@@ -61,7 +61,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                 ..Default::default()
             })
             .await?;
-            Ok::<_, ServerFnError>((target, nodes, edges, config_status, files))
+            Ok::<_, crate::api::ApiError>((target, nodes, edges, config_status, files))
         },
     );
 

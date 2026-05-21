@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::ApiError;
 use super::WriteResult;
 #[cfg(feature = "ssr")]
 use super::sanitize_commit_message;
@@ -33,7 +34,7 @@ pub async fn rename_brain_file(
     new_path: String,
     old_sha: String,
     commit_message: Option<String>,
-) -> Result<RenameResult, ServerFnError> {
+) -> Result<RenameResult, ApiError> {
     use crate::server::session;
 
     let old_path = old_path.trim().trim_matches('/').to_string();
@@ -380,7 +381,7 @@ pub async fn upload_asset(
     target: TargetRef,
     filename: String,
     bytes: Vec<u8>,
-) -> Result<String, ServerFnError> {
+) -> Result<String, ApiError> {
     use crate::server::session;
     use brain_storage::Storage;
 
@@ -550,7 +551,7 @@ fn short_content_hash(bytes: &[u8]) -> String {
 }
 
 #[server(ListBrainFolders, "/api", endpoint = "list_brain_folders")]
-pub async fn list_brain_folders(target: TargetRef) -> Result<Vec<String>, ServerFnError> {
+pub async fn list_brain_folders(target: TargetRef) -> Result<Vec<String>, ApiError> {
     use crate::server::session;
     use brain_storage::Storage;
 

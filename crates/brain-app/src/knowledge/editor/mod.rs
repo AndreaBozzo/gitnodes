@@ -218,7 +218,7 @@ pub fn EditorPanel(
     // --- Auto-save drafts to localStorage -----------------------------------
     // Key drafts by `<org>/<repo>:<path|new>` so drafts from a different
     // deployment target don't collide and each edited file keeps its own draft.
-    let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
+    let app_config = use_context::<Resource<Result<AppConfig, crate::api::ApiError>>>();
     let app_config_for_scope = app_config;
     let repo_scope = Memo::new(move |_| {
         app_config_for_scope
@@ -494,7 +494,10 @@ pub fn EditorPanel(
                         }
                     }
                     Err(e) => {
-                        status_msg.set(format!("Error: {e}"));
+                        // Typed boundary error: surface the actionable message
+                        // (stale → reload, no write → PR, rate-limit → retry)
+                        // instead of a flattened diagnostic string.
+                        status_msg.set(e.actionable_message());
                         saving.set(false);
                     }
                 }

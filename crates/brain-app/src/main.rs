@@ -152,6 +152,8 @@ mod route_protection_tests {
             ("/Dritara-Digital/Brain/main/knowledge/foo", true),
             ("/Dritara-Digital/Brain/main/admin", true),
             ("/", false),
+            ("/healthz", false),
+            ("/readyz", false),
             ("/auth/login", false),
             ("/auth/callback", false),
             ("/webhook/github", false),
@@ -292,6 +294,11 @@ async fn main() {
 
     let event_bus = brain_app::server::sse::EventBus::new();
     brain_app::server::sse::init(event_bus.clone());
+
+    // Slice γ: supervised background retry for the provider-sync outbox. Polls
+    // `pending_provider_sync` and reconciles failed best-effort pushes as the
+    // GitHub App. No-op until rows appear; safe to always start.
+    brain_app::server::pending_sync_job::spawn(pool.clone(), gh_http.clone());
 
     let allow_insecure_webhooks = std::env::var("ALLOW_INSECURE_WEBHOOKS")
         .map(|v| v != "0" && !v.is_empty())
@@ -556,12 +563,29 @@ form-action 'self'";
     let app = Router::new()
         .nest("/assets", asset_router.clone())
         .nest("/{org}/{repo}/assets", asset_router)
+        // Operational probes. Unauthenticated by design: `is_protected_path`
+        // returns false for these, and CSRF only gates `/api/*` mutations. They
+        // still pass through the outer governor rate limiter, but orchestrator
+        // probes are infrequent and well under the default burst (60).
+        .route(
+            "/healthz",
+            axum::routing::get(brain_app::server::health::healthz),
+        )
+        .route(
+            "/readyz",
+            axum::routing::get(brain_app::server::health::readyz),
+        )
         .route("/auth/login", axum::routing::get(auth::login))
         .route("/auth/logout", axum::routing::get(auth::logout))
         .route("/auth/callback", axum::routing::get(auth::oauth_callback))
         .route(
             "/sse/events",
-            axum::routing::get(brain_app::server::sse::handle).with_state(event_bus),
+            axum::routing::get(brain_app::server::sse::handle).with_state(
+                brain_app::server::sse::SseState {
+                    bus: event_bus.clone(),
+                    default_target: brain_domain::TargetKey::from(&target_cfg),
+                },
+            ),
         )
         .route(
             "/webhook/github",

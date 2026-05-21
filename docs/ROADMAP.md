@@ -314,18 +314,46 @@ Questa lane nasce dai finding corretti emersi durante l'architecture review, ma 
       - ~~Cifratura at-rest dei token OAuth~~ **Done 2026-05-20:** scelta (a) — `SessionManagerLayer::with_private` con chiave da `SESSION_ENCRYPTION_KEY` (base64, ≥64 byte). In prod (`SESSION_COOKIE_SECURE`) la chiave è obbligatoria (fail-fast come `WEBHOOK_SECRET`); in dev una chiave effimera è generata con warn. **Impatto deploy:** nuova env var su Railway, genera con `openssl rand -base64 64 | tr -d '\n'` (il `tr` evita il newline di wrapping che renderebbe il valore non-base64; il parser comunque ignora i whitespace interni); al primo deploy le sessioni esistenti si invalidano → un re-login.
     - Success criterion: esiste una test matrix di sicurezza che prova XSS da Markdown/commenti, upload asset ostili, server fn cross-site e iframe non allowlistati; nessuna nuova superficie esterna può bypassare questa policy. **Stato 2026-05-20:** coperti XSS Markdown/commenti, magic-bytes upload, same-origin CSRF (`is_same_origin`). Iframe non-allowlistati restano TODO finché non esiste l'embed allowlist (`frame-src 'none'` oggi blocca tutto).
 
-- [ ] **Failure-Mode Matrix & Operational Readiness**
+- [x] **Failure-Mode Matrix & Operational Readiness** _(chiusa 2026-05-21 — α/β/γ/δ + doc table tutte shippate)_
 
     Razionale: il roadmap copre bene le capability, ma le feature collaborative diventano affidabili solo se i failure mode sono disegnati come percorsi di prodotto. Ogni nuova slice dovrebbe dichiarare cosa succede quando GitHub non risponde, il branch si muove, il permesso cambia, il provider sync fallisce, la projection è stale o il config è invalido.
 
-    - Aggiungere una tabella `feature → failure mode → UX → audit/log → retry/recovery` per le superfici principali: save, rename, work item sync, webhook rebuild, config editor, embed URL, blob URL, FTS rebuild.
-    - Health endpoint operativo (`/healthz`/`/readyz`) che distingua app boot, SQLite raggiungibile, session store migrato, projection pool pronto e config target leggibile quando esiste un target default.
+    **Slicing (2026-05-21):** item diviso in commit indipendenti, ordinati α → β → γ → δ → doc.
+    - **α — Health endpoints** _(DONE 2026-05-21)_: `/healthz` (liveness, 200 incondizionato) e `/readyz` (readiness, 200/503 con body per-check). Modulo `server::health`; check live = `SELECT 1` sul pool SQLite condiviso (copre anche session store + audit) + `projection_pool` initialized; `session_store_migrated` riportato come `true` boot-garantito (migrazione fail-fast). Rotte non autenticate (`is_protected_path` le esclude, CSRF gata solo `/api/*`). Test: unit + router-level via `oneshot`, e asserzioni public-route in `is_protected_path`.
+    - **β — Errori tipati ai bordi** _(DONE 2026-05-21)_: `ApiError` enum (`api::error`) che impl `FromServerFnError` con `JsonEncoding`; le server fn ritornano `Result<T, ApiError>` **diretto** (non `ServerFnError<E>` — deprecato in 0.8, shape forward-compatible con 0.9). Bridge `From<BrainError>` classifica i messaggi GitHub (403→`PermissionDenied`, 404→`NotFound`, 409/not-fast-forward→`Conflict`, 429/rate→`RateLimited`); `sfe()` ridefinito come alias di `ApiError::from` così i ~120 call site non cambiano. `installation_token::mint` ritorna `TokenMintError` (no_app/mint_failed/no_creds). UI: `ApiError::actionable_message()` + editor save e work-item mutation matchano sul tipo (stale→reload, no-write→PR, rate→retry). Compila ssr+wasm; 126 test verdi.
+    - **γ — Outbox/pending-sync** _(DONE 2026-05-21)_: tabella `pending_provider_sync(id, target_id, brain_id, kind, attempts, created_at, last_attempt_at, last_error)` con `UNIQUE(target_id, brain_id, kind)` (un fail ripetuto bumpa attempts, non duplica). Enqueue al punto best-effort di `apply_work_item_mutation_inner` (editorial save già committata, nessun rollback). Retry job supervisionato (`pending_sync_job::spawn`, `tokio::interval` 60s override `PENDING_SYNC_INTERVAL_SECS`, batch 25, stop a 20 attempts) che si autentica come **GitHub App** (no user session in background → commit App-attribuito) e riconcilia il provider allo stato Brain corrente (idempotente). Server fn admin-gated `ListPendingSync` + sezione read-only "Pending provider sync" in admin. Test outbox round-trip; ssr+wasm verdi, 127 test.
+    - **δ — SSE per-target** _(DONE 2026-05-21)_: `EventBus` ora è `OnceLock<Mutex<HashMap<TargetKey, broadcast::Sender>>>` (idioma del codebase à la cache di `brain_storage`, non `dashmap` — send/subscribe sono a bassa frequenza). `send` instrada per `TargetKey` derivato dall'evento; canale per-target creato lazy a 64 slot, così un target rumoroso non evince gli eventi di un altro. L'handler `/sse/events?target=org/repo/branch` sottoscrive solo quel target (fallback al target env-default senza param); il client (`live_sync`) appende il target attivo. Test di isolamento per-target; ssr+wasm verdi, 130 test.
+    - **doc** — tabella failure-mode (sotto), scritta per ultima così riflette il comportamento shippato.
+
+    - **Failure-mode matrix** _(DONE 2026-05-21 — riflette il comportamento shippato dopo α–δ)._ Le superfici già costruite:
+
+      | Feature | Failure mode | UX | Audit / log | Retry / recovery |
+      |---|---|---|---|---|
+      | **Save Brain file** (`SaveBrainFile`) | 403 / branch protetto | fallback automatico a PR (`should_fallback_to_pr`); `WriteResult::PullRequest` mostra link PR | `update` su success; `api_error` su errore | utente segue la PR; nessun retry server-side |
+      | | 409 / stale sha | `ApiError::Conflict` → editor mostra "reload and retry" (`actionable_message`) | `api_error` | utente ricarica e riapplica |
+      | | 429 / rate limit | `ApiError::RateLimited` → "wait and retry" | `api_error` | utente ritenta a breve |
+      | **Rename** (`RenameBrainFile`) | 403 / protetto | fallback a PR come save | `rename` / `api_error` | via PR |
+      | | path collision / non trovato | `ApiError::Conflict` / `NotFound` typed | `api_error` | reload |
+      | **Work item sync** (transition/assign/bind) | push provider best-effort fallisce | save editoriale **resta** (no rollback); riga in `pending_provider_sync`; admin la mostra | `work_item_provider_sync_error` | retry job supervisionato (App-auth) riconcilia; stop a 20 tentativi |
+      | **Webhook rebuild** (`/webhook/github`) | nessun token App/PAT | rebuild saltato; banner SSE `SyncFailed` ("showing last snapshot") | warn log | refresh manuale o prossimo push |
+      | | rebuild projection fallisce | banner SSE `SyncFailed` con reason | warn log | refresh manuale (`RefreshBrainGraph`) |
+      | | task panic | log esplicito via `spawn_supervised` (202 già inviato) | `tracing::error` | prossimo webhook |
+      | **Config editor** (`SaveViews` / `.brain-config.yml`) | YAML invalido al load | banner "Config invalid" (`orphan_banner`) con diagnostic + link al file | — | fix YAML; cache TTL 30s |
+      | | save views 403 / conflict | typed `ApiError` in admin | `update_views` / `api_error` | reload / PR |
+      | **Asset proxy** (`/assets/...`) | upstream 404 | `404 Not Found` | — | — |
+      | | upstream 401/403 | `403 Forbidden` (mai leak del token) | — | re-login se sessione scaduta |
+      | | upstream irraggiungibile | `502 Bad Gateway` | — | retry |
+      | **Health** (`/readyz`) | SQLite irraggiungibile | `503` + body per-check | — | orchestratore smette di routare |
+      | **Live sync** (SSE) | connessione persa | banner "Stale Data" + reconnect con backoff | — | reconnect automatico per-target |
+
+      Superfici **non ancora costruite** (failure mode da definire quando arrivano): **embed URL / iframe** (oggi `frame-src 'none'`), **blob URL / BYOB** (solo allowance CSP `blob:`), **FTS5 rebuild** (search non ancora implementata — vedi "Projection Schema v2").
+    - ~~Health endpoint operativo (`/healthz`/`/readyz`)~~ **Done 2026-05-21 (α):** distingue SQLite raggiungibile (`SELECT 1`), projection pool pronto, session store migrato (boot-garantito). Il read del sync-state del target default è stato lasciato fuori da α (si appoggerà alla doc/admin slice) per tenere α minimale e senza risoluzione target_id.
     - Background job/outbox leggero per riconciliazioni costose o retryabili: provider sync, webhook replay, future blob cleanup. Non introdurre un job system pesante finché SQLite + tokio task supervisionato bastano.
     - **Audit follow-up 2026-05-09 (additions, not done):**
-      - Errori tipati ai bordi: `installation_token::{mint,get}` ritornano `Result<_, String>`; `api::sfe()` collassa ogni `BrainError` in `ServerFnError::ServerError(string)`. Introdurre `TokenMintError` (no_app / mint_failed / pat_used / no_creds) e un `ApiError` enum bridgato a `ServerFnError` così la UI può match-are su `permission_denied / stale_sha / not_found / rate_limited` invece di parse-are stringhe. Prerequisito implicito di 4.4 conflict resolution.
-      - SSE broadcast per-target: oggi un singolo `broadcast::channel` capacità 64 raccoglie tutti gli eventi di tutti i target; un target rumoroso può starvare gli altri e i client filtrano lato JS. Quando il numero di target attivi supera ~10 in un'istanza, passare a `DashMap<TargetKey, broadcast::Sender>` e routare gli abbonati per target.
-      - Outbox/pending-sync surface per provider mutations: 3.2-β documenta che il push GitHub `system_of_record = split|external` è best-effort e non rolla indietro la save editoriale. Aggiungere una tabella SQLite `pending_provider_sync(target_id, brain_id, kind, last_attempt_at, last_error, attempts)` + retry job leggero, così gli operatori vedono "X mutazioni non ancora propagate al forge" in admin invece di doverlo dedurre dall'audit log.
-    - Success criterion: quando una dipendenza esterna degrada, Brain UI mostra uno stato azionabile invece di un errore generico; gli operatori hanno log/audit sufficienti per capire se serve refresh, retry, re-login o fix di config.
+      - ~~Errori tipati ai bordi~~ **Done 2026-05-21 (β):** `TokenMintError` su `installation_token::mint` + `ApiError` enum (`FromServerFnError`/`JsonEncoding`) ritornato diretto dalle server fn; bridge `From<BrainError>` con classificazione GitHub status; UI matcha su variant via `actionable_message()`. Resta prerequisito soddisfatto per 4.4 conflict resolution.
+      - ~~SSE broadcast per-target~~ **Done 2026-05-21 (δ):** `EventBus` instrada per `TargetKey` su canali per-target (`Mutex<HashMap<…, broadcast::Sender>>`); l'handler sottoscrive solo il target richiesto via `?target=`. Il filtro lato JS resta come backstop ma il server non consegna più gli eventi cross-target. (Implementato in anticipo rispetto alla soglia ~10 target/istanza.)
+      - ~~Outbox/pending-sync surface per provider mutations~~ **Done 2026-05-21 (γ):** tabella `pending_provider_sync` + enqueue al fallimento del push best-effort + retry job supervisionato (App-auth) + sezione read-only in admin. Gli operatori vedono le mutazioni non ancora propagate invece di dedurle dall'audit log.
+    - Success criterion ✅: quando una dipendenza esterna degrada, Brain UI mostra uno stato azionabile invece di un errore generico (typed `ApiError` + `actionable_message`, banner SyncFailed/Stale, fallback PR); gli operatori hanno log/audit + `/readyz` + admin pending-sync sufficienti per capire se serve refresh, retry, re-login o fix di config.
 
 - [ ] **Projection Schema v2 & SQLite Operations**
 
@@ -336,6 +364,36 @@ Questa lane nasce dai finding corretti emersi durante l'architecture review, ma 
     - Definire retention/cleanup per audit log, sessioni scadute, editing locks, watch notifications e projection temporanee. SQLite resta leggero solo se il ciclo di vita dei dati è esplicito.
     - Aggiungere una vista admin/status della projection: schema version, last success/error per target, file/node/work item count, rebuild duration, webhook lag, rate-limit snapshot quando disponibile.
     - Success criterion: FTS5, Activity Stream, Watch/Follow e Temporal Graph hanno una base dati coerente e migrabile; un deploy nuovo o esistente può aggiornarsi senza rebuild manuale cieco.
+
+---
+
+## 🚀 Open-Sourcing del Core (target Luglio 2026)
+
+Razionale: rilasciare il core dell'app come repository pubblica pulita, mantenendo l'istantanea attuale come deploy downstream per Dritara. La Security & Content Trust Baseline (sopra) è il prerequisito di maturità: i trust boundary devono essere chiusi prima di esporre il codice. La separazione multi-tenant (`TargetRef`, Fase 3.7B) ha già slegato grafo, sessioni SQLite e canali SSE da un singolo repo d'ambiente, quindi il disaccoppiamento logico è in gran parte fatto; resta la bonifica di config, dati operativi e tracciamento interno. _(Spunto: review architetturale esterna 2026-05-20.)_
+
+- [ ] **Disaccoppiamento sorgente da infrastruttura proprietaria**
+
+    - Verificare che le env di fallback al boot statico (`TARGET_GITHUB_ORG`, `TARGET_GITHUB_REPO`, e simili) agiscano solo come default esemplificativi e non incorporino riferimenti a dati di produzione privati.
+    - `.brain-config.yml` nella repo pubblica deve essere un blueprint agnostico (es. una tassonomia di prova generica sul modello della sandbox Pokemon), senza la mappatura operativa o i flussi interni Dritara.
+    - Confermare che nessun crate (`brain-app`, `brain-domain`, `brain-storage`, `brain-graph`, `brain-auth`) contenga costanti/segreti accoppiati all'infrastruttura. Mantenere l'invariante del test di auto-registrazione delle server fn (guard contro lo strip LTO in release).
+
+- [ ] **Bonifica della roadmap pubblica**
+
+    - Espungere i riferimenti a repo sandbox privati (es. `Dritara-Digital/Brain-Pokemon-Mock`) e i tag agli account dei tester chiusi (es. `@JacoTube`) — vedi "Fase 3 Closeout" sopra, righe del dogfooding.
+    - Riformulare il closeout di Fase 3 come "Validation Matrix su sandbox isolata + configurazioni multi-tenant standard", preservando il valore architetturale senza esporre i vincoli autorizzativi temporanei dell'org.
+    - Decidere se sdoppiare il file (ROADMAP pubblico vs interno) o mantenerne uno solo già anonimizzato.
+
+- [ ] **Supply chain & licenza per il rilascio pubblico**
+
+    - Mantenere `.cargo/audit.toml` + il workflow `rustsec/audit-check` in CI così com'è: gli ignore `RUSTSEC-2023-0071` (rsa via sqlx-mysql, assente dal binario sqlite) e `RUSTSEC-2024-0436` (paste via Leptos) sono documentati e circoscritti — buon biglietto da visita per utenti esterni.
+    - Scegliere e applicare una licenza OSS; aggiungere `LICENSE`, eventuale `CONTRIBUTING.md` e security policy.
+
+- [ ] **Strategia di sdoppiamento repo (upstream pubblico / downstream Dritara)**
+
+    Approccio raccomandato: **un repo pubblico (core) + un mirror privato Dritara** che contiene lo stesso codice più gli override di config/secret (`.brain-config.yml` reale, `SESSION_ENCRYPTION_KEY`, env Railway, audit log persistiti sul volume SQLite), sincronizzato via `git remote` + merge. Le patch di sicurezza upstream si propagano con un merge, senza bump di versione né allineamenti manuali.
+
+    - Alternative valutate e **scartate**: Git submodule e crate su registry. Per un workspace Leptos full-stack (con `bin-features`, profili WASM, `package.metadata.leptos`) il submodule rende il deploy Railway fragile — il root del workspace dovrebbe essere il submodule — e il registry impone un ciclo publish/bump a ogni patch. Il mirror+merge è più semplice e robusto per questo layout. _(Meccanismo finale da confermare al momento del rilascio.)_
+    - Success criterion: una patch di sicurezza applicata a monte arriva al deploy di produzione con un singolo merge, e nessun segreto/dato operativo Dritara vive nella repo pubblica.
 
 ---
 
@@ -490,6 +548,18 @@ Queste sono direzioni valide, ma tornano in gioco solo dopo il closeout di Fase 
     - Guardrail per azioni distruttive: delete/rename/move devono mostrare impatto su backlink, binding esterni e work item collegati; salvataggio via orchestratore Git già esistente con commit diretto o PR fallback, mai bypassando la source-of-truth del repo.
     - Estensione post-MVP: manutenzione bulk per retag, merge duplicati, correggere nodi orphan/unknown type, aggiungere campi richiesti mancanti e audit trail delle modifiche admin.
     - Success criterion MVP: un admin corregge da UI un nodo con tipo sbagliato o frontmatter rotto, vede il diff, salva con commit/PR esplicito e il grafo/detail si aggiornano senza interventi manuali sul repository.
+
+- [ ] **Frontmatter round-trip lossy** _(debito strutturale — review esterna 2026-05-20)_
+    - Stato: `merge_frontmatter` in `crates/brain-app/src/api/files.rs` fa overlay deserializzando lo YAML in `BTreeMap`. Conseguenza: l'ordine originale delle chiavi va perso (riordino alfabetico), e commenti inline + stile di quoting scritti a mano dall'utente vengono distrutti al primo save da UI.
+    - Impatto: deterrente reale per chi alterna editing da Brain UI ed editing locale da IDE — un round-trip UI riscrive il frontmatter e "sporca" il diff Git con riordini/perdite non semantiche. Più pressante in ottica open source, dove gli utenti vivono nei propri repo.
+    - Direzione: migrare a un overlay YAML-aware che preserva ordine/commenti/quoting (parser AST o lens-based, es. `yaml-rust2` con round-trip o un merge mirato che tocca solo le chiavi gestite dal form invece di re-serializzare l'intero documento). Coerente col requisito già dichiarato in 3.4 (riga ~171: "sezioni non toccate devono sopravvivere round-trip senza riformattazione lossy") — qui lo si estende al frontmatter.
+    - Trigger: feedback contributor sul rumore nei diff, o prima del rilascio open source se si vuole evitare l'attrito al primo contatto. Success criterion: salvare da UI un file con frontmatter commentato e chiavi in ordine custom non altera né i commenti né l'ordine delle chiavi non toccate.
+
+- [ ] **Contesa Mutex sulle cache per-target** _(debito di scala — review esterna 2026-05-20)_
+    - Stato: quattro cache usano `OnceLock<Mutex<HashMap<TargetKey, …>>>` — `graph_cache`/`template_cache` in `brain-storage::lib`, `config_loader::cache` e `installation_token` in `brain-app`. Corrette e prive di lock tenuti attraverso await, ma un singolo `Mutex` serializza tutti gli accessi cross-target.
+    - Impatto: trascurabile oggi (pochi target, basso parallelismo); diventa un bottleneck solo se l'istanza pubblica scala su molti utenti/target concorrenti. Stessa classe del debito già tracciato per il broadcast SSE (sezione 2A, "passare a `DashMap<TargetKey, …>` quando i target attivi superano ~10").
+    - Direzione: quando il segnale di carico arriva, sostituire con `DashMap` (lock-free per-key) o `moka` (se serve TTL/eviction gestita). Da fare insieme — non separatamente — al refactor `DashMap` del broadcast SSE, così il pattern per-target è uniforme.
+    - Trigger: profiling sotto carico reale multi-tenant, non preventivamente. _(NB: il debito perf del canvas SVG su >1k nodi è già tracciato in 3.7F, riga ~244 — D3/Cytoscape hand-off.)_
 
 ---
 

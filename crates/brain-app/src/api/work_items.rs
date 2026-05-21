@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use brain_domain::{ExternalWorkItemBinding, TargetRef, WorkItem, WorkItemKind, WorkItemState};
 
+use super::ApiError;
 use super::WriteResult;
 #[cfg(feature = "ssr")]
 use super::sfe;
@@ -33,7 +34,7 @@ pub struct WorkItemQueryFilters {
 pub async fn list_work_items(
     target: TargetRef,
     filters: WorkItemQueryFilters,
-) -> Result<Vec<WorkItem>, ServerFnError> {
+) -> Result<Vec<WorkItem>, ApiError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
@@ -57,7 +58,7 @@ pub async fn list_work_items(
 pub async fn load_work_item_by_path(
     target: TargetRef,
     path: String,
-) -> Result<Option<WorkItem>, ServerFnError> {
+) -> Result<Option<WorkItem>, ApiError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
@@ -85,7 +86,7 @@ pub struct WorkItemComment {
 pub async fn load_work_item_comments(
     target: TargetRef,
     brain_id: String,
-) -> Result<Vec<WorkItemComment>, ServerFnError> {
+) -> Result<Vec<WorkItemComment>, ApiError> {
     use crate::server::session;
 
     session::__assert_gated();
@@ -145,7 +146,7 @@ pub async fn transition_work_item(
     target: TargetRef,
     brain_id: String,
     new_state: WorkItemState,
-) -> Result<WorkItemMutationResult, ServerFnError> {
+) -> Result<WorkItemMutationResult, ApiError> {
     use crate::server::session;
 
     session::__assert_gated();
@@ -166,7 +167,7 @@ pub async fn assign_work_item(
     target: TargetRef,
     brain_id: String,
     assignees: Vec<String>,
-) -> Result<WorkItemMutationResult, ServerFnError> {
+) -> Result<WorkItemMutationResult, ApiError> {
     use crate::server::session;
 
     session::__assert_gated();
@@ -186,7 +187,7 @@ pub async fn bind_work_item(
     target: TargetRef,
     brain_id: String,
     binding: Option<ExternalWorkItemBinding>,
-) -> Result<WorkItemMutationResult, ServerFnError> {
+) -> Result<WorkItemMutationResult, ApiError> {
     use crate::server::session;
 
     session::__assert_gated();
@@ -221,6 +222,17 @@ impl WorkItemMutation {
 
     fn is_binding(&self) -> bool {
         matches!(self, WorkItemMutation::Binding(_))
+    }
+
+    /// Stable key for the `pending_provider_sync.kind` column (slice γ).
+    /// Records which mutation failed to propagate; the retry reconciles the
+    /// provider to the Brain file's current state regardless.
+    fn sync_kind(&self) -> &'static str {
+        match self {
+            WorkItemMutation::State(_) => "state",
+            WorkItemMutation::Assignees(_) => "assignees",
+            WorkItemMutation::Binding(_) => "binding",
+        }
     }
 }
 
@@ -510,6 +522,20 @@ async fn apply_work_item_mutation_inner(
                 &format!("{brain_id}: {error}"),
             )
             .await;
+            // Best-effort, no rollback: the editorial save above already
+            // committed. Enqueue the failed push so the background retry job
+            // can reconcile the provider and operators can see it in admin
+            // (slice γ). Enqueue failure is itself non-fatal — just logged.
+            if let Err(enqueue_err) = crate::server::projection::enqueue_pending_sync(
+                target,
+                &brain_id,
+                mutation.sync_kind(),
+                &error.to_string(),
+            )
+            .await
+            {
+                tracing::warn!(%brain_id, %enqueue_err, "failed to enqueue pending provider sync");
+            }
         }
     }
 
@@ -595,6 +621,50 @@ async fn sync_work_item_provider(
     storage
         .patch_issue(token, &binding.project, &binding.item_key, &patch)
         .await
+}
+
+/// Re-attempt a failed best-effort provider push (outbox retry, slice γ).
+///
+/// Loads the work item's *current* Brain state and re-pushes the failed
+/// dimension to the provider — this is the **outbound** direction
+/// (`sync_work_item_provider`), not the inbound `apply_provider_work_item_update`.
+/// Reconstructing the mutation from current state (rather than replaying a
+/// stale enqueued payload) makes the retry idempotent and self-correcting: if a
+/// later edit already propagated, the push just re-asserts the same value.
+///
+/// `kind` selects which dimension to reconcile (`"state"` / `"assignees"`).
+/// `"binding"` is a no-op on the provider by design (binding changes aren't
+/// pushed to the issue), so it resolves cleanly and the row clears.
+#[cfg(feature = "ssr")]
+pub(crate) async fn reconcile_provider_sync(
+    token: &str,
+    user: &str,
+    target: &brain_domain::TargetConfig,
+    storage: &brain_storage::GithubStorage,
+    brain_id: &str,
+    kind: &str,
+) -> Result<(), brain_domain::BrainError> {
+    let Some(item) =
+        crate::server::projection::load_work_item_by_brain_id(target, brain_id).await?
+    else {
+        // Item gone (deleted/renamed): nothing to propagate, treat as resolved.
+        return Ok(());
+    };
+
+    let mutation = match kind {
+        "state" => WorkItemMutation::State(item.state.clone()),
+        "assignees" => WorkItemMutation::Assignees(item.assignees.clone()),
+        // Binding pushes are a no-op provider-side; resolve without work.
+        "binding" => return Ok(()),
+        other => {
+            return Err(brain_domain::BrainError::other(format!(
+                "unknown pending sync kind: {other}"
+            )));
+        }
+    };
+
+    let config = crate::knowledge::config_loader::load(target, token).await;
+    sync_work_item_provider(storage, token, &config, &item, &mutation, user).await
 }
 
 #[cfg(feature = "ssr")]

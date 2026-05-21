@@ -166,6 +166,28 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    // Failure-Mode Matrix slice γ: outbox for best-effort provider pushes.
+    // When an editorial save propagates to the forge (`system_of_record =
+    // split|external`) and the push fails, the editorial save is NOT rolled
+    // back — instead a row lands here so a background job can retry and
+    // operators can see what hasn't propagated. `kind` records which mutation
+    // (state/assignees/binding) so the retry re-drives the right push.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS pending_provider_sync (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id INTEGER NOT NULL,
+            brain_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_error TEXT,
+            UNIQUE(target_id, brain_id, kind),
+            FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_targets_key ON targets(key)")
         .execute(pool)
         .await?;

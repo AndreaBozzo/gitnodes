@@ -1,5 +1,5 @@
-#[cfg(feature = "ssr")]
-use leptos::prelude::*;
+mod error;
+pub use error::ApiError;
 
 mod files;
 pub use files::{
@@ -20,16 +20,16 @@ pub(crate) use file_ops::{relativize, slugify, validate_markdown_path};
 
 mod config_admin;
 pub use config_admin::{
-    AppConfig, AuditEntry, ConfigLoadDiagnostic, ConfigLoadStatus, SessionEntry, get_app_config,
-    get_current_user, list_sessions, list_views, load_audit_log, load_brain_config,
-    load_brain_config_status, load_brain_config_status_for_target, load_brain_template,
-    revoke_session, save_views,
+    AppConfig, AuditEntry, ConfigLoadDiagnostic, ConfigLoadStatus, PendingSyncEntry, SessionEntry,
+    get_app_config, get_current_user, list_pending_sync, list_sessions, list_views, load_audit_log,
+    load_brain_config, load_brain_config_status, load_brain_config_status_for_target,
+    load_brain_template, revoke_session, save_views,
 };
 #[cfg(feature = "ssr")]
 pub use config_admin::{
-    GetAppConfig, GetCurrentUser, ListSessions, ListViews, LoadAuditLog, LoadBrainConfig,
-    LoadBrainConfigStatus, LoadBrainConfigStatusForTarget, LoadBrainTemplate, RevokeSession,
-    SaveViews,
+    GetAppConfig, GetCurrentUser, ListPendingSync, ListSessions, ListViews, LoadAuditLog,
+    LoadBrainConfig, LoadBrainConfigStatus, LoadBrainConfigStatusForTarget, LoadBrainTemplate,
+    RevokeSession, SaveViews,
 };
 
 mod graph;
@@ -46,8 +46,6 @@ pub use graph::{
 
 mod work_items;
 #[cfg(feature = "ssr")]
-pub(crate) use work_items::apply_provider_work_item_update;
-#[cfg(feature = "ssr")]
 pub use work_items::{
     AssignWorkItem, BindWorkItem, ListWorkItems, LoadWorkItemByPath, LoadWorkItemComments,
     TransitionWorkItem,
@@ -57,6 +55,8 @@ pub use work_items::{
     bind_work_item, list_work_items, load_work_item_by_path, load_work_item_comments,
     transition_work_item,
 };
+#[cfg(feature = "ssr")]
+pub(crate) use work_items::{apply_provider_work_item_update, reconcile_provider_sync};
 
 #[cfg(feature = "ssr")]
 mod write_orchestrator;
@@ -64,9 +64,13 @@ mod write_orchestrator;
 #[cfg(feature = "ssr")]
 use brain_domain::BrainError;
 
+/// Bridge a server-side `BrainError` to the typed boundary error. Kept as a
+/// short alias over `ApiError::from` so the ~120 existing `.map_err(sfe)` call
+/// sites need no churn — only the server-fn return types change from
+/// `ServerFnError` to `ApiError` (the forward-compatible leptos 0.9 shape).
 #[cfg(feature = "ssr")]
-fn sfe(e: BrainError) -> ServerFnError {
-    ServerFnError::new(e.to_string())
+fn sfe(e: BrainError) -> ApiError {
+    ApiError::from(e)
 }
 
 /// Server-side input size caps applied to mutating server fns. These guard
@@ -145,6 +149,7 @@ const SERVER_FNS: &[&str] = &[
     "LoadBrainConfigStatusForTarget",
     "LoadAuditLog",
     "ListSessions",
+    "ListPendingSync",
     "RevokeSession",
     "GetCurrentUser",
     "LoadBrainTemplate",
@@ -187,6 +192,7 @@ pub fn register_server_functions() {
     register_explicit::<LoadBrainConfigStatusForTarget>();
     register_explicit::<LoadAuditLog>();
     register_explicit::<ListSessions>();
+    register_explicit::<ListPendingSync>();
     register_explicit::<RevokeSession>();
     register_explicit::<GetCurrentUser>();
     register_explicit::<LoadBrainTemplate>();

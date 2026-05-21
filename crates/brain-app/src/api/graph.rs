@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::knowledge::types::{Edge, Node};
 use brain_domain::{BrainConfig, TargetRef};
 
+use super::ApiError;
 #[cfg(feature = "ssr")]
 use super::sfe;
 #[cfg(feature = "ssr")]
@@ -47,7 +48,7 @@ impl Default for NodeQueryFilters {
 pub async fn list_nodes(
     target: TargetRef,
     filters: NodeQueryFilters,
-) -> Result<Vec<Node>, ServerFnError> {
+) -> Result<Vec<Node>, ApiError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
@@ -69,7 +70,7 @@ pub async fn list_nodes(
 /// Read one projected node by repo-relative path, without fetching file
 /// content from GitHub. `ReadBrainFile` remains the markdown-content path.
 #[server(ReadNode, "/api", endpoint = "read_node")]
-pub async fn read_node(target: TargetRef, path: String) -> Result<Option<Node>, ServerFnError> {
+pub async fn read_node(target: TargetRef, path: String) -> Result<Option<Node>, ApiError> {
     use crate::server::session;
 
     let _ = session::require_authenticated().await.map_err(sfe)?;
@@ -80,7 +81,7 @@ pub async fn read_node(target: TargetRef, path: String) -> Result<Option<Node>, 
 }
 
 #[server(LoadBrainGraph, "/api", endpoint = "load_brain_graph")]
-pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
+pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ApiError> {
     use crate::server::session;
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = session::target_cfg().map_err(sfe)?;
@@ -95,7 +96,7 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ServerFnError>
 /// projection from the forge. This is the explicit manual reindex path used
 /// for drift recovery until inbound webhooks/SSE exist.
 #[server(RefreshBrainGraph, "/api", endpoint = "refresh_brain_graph")]
-pub async fn refresh_brain_graph(target: TargetRef) -> Result<(), ServerFnError> {
+pub async fn refresh_brain_graph(target: TargetRef) -> Result<(), ApiError> {
     use crate::server::session;
     use brain_domain::TargetKey;
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
@@ -155,7 +156,7 @@ pub enum AccessibleTargetState {
 /// This is intentionally best-effort: a failed per-repo config check is
 /// recorded as `has_brain_config: false` rather than bubbling an error.
 #[server(ListAccessibleTargets, "/api", endpoint = "list_accessible_targets")]
-pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFnError> {
+pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError> {
     use crate::server::session;
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
@@ -177,10 +178,10 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ServerFn
         .get(&repos_url, &token)
         .send()
         .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?
+        .map_err(|e| ApiError::Internal(e.to_string()))?
         .json()
         .await
-        .map_err(|e| ServerFnError::new(e.to_string()))?;
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     // Fan out the per-repo config probe concurrently. With up to 100 repos at
     // ~100ms each, a sequential scan would block the Brain Switcher open for
@@ -335,14 +336,14 @@ async fn branch_exists(http: &brain_storage::GithubHttp, token: &str, url: &str)
 }
 
 #[cfg(feature = "ssr")]
-fn validate_legacy_target_parts(org: &str, repo: &str) -> Result<(), ServerFnError> {
+fn validate_legacy_target_parts(org: &str, repo: &str) -> Result<(), ApiError> {
     TargetRef::new(org, repo, "_")
         .validate()
-        .map_err(|e| ServerFnError::new(format!("invalid target: {e}")))
+        .map_err(|e| ApiError::BadInput(format!("invalid target: {e}")))
 }
 
 #[server(ResolveLegacyTarget, "/api", endpoint = "resolve_legacy_target")]
-pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRef, ServerFnError> {
+pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRef, ApiError> {
     use crate::server::session;
 
     validate_legacy_target_parts(&org, &repo)?;
@@ -350,7 +351,7 @@ pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRe
     let user = session::session_user_or_fallback(&s).await;
     let http = session::github_http().map_err(sfe)?;
     let pool = crate::server::projection::pool_handle()
-        .ok_or_else(|| ServerFnError::new("Projection SQLite pool not initialized"))?;
+        .ok_or_else(|| ApiError::Internal("Projection SQLite pool not initialized".into()))?;
     let entry = crate::server::target_registry::register_or_get(
         pool,
         &http,
@@ -364,7 +365,7 @@ pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRe
     let target = entry.target_ref();
     target
         .validate()
-        .map_err(|e| ServerFnError::new(format!("invalid target: {e}")))?;
+        .map_err(|e| ApiError::BadInput(format!("invalid target: {e}")))?;
     Ok(target)
 }
 
@@ -376,7 +377,7 @@ pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRe
 )]
 pub async fn load_brain_graph_for_target(
     target: TargetRef,
-) -> Result<(Vec<Node>, Vec<Edge>), ServerFnError> {
+) -> Result<(Vec<Node>, Vec<Edge>), ApiError> {
     use crate::server::session;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
@@ -394,7 +395,7 @@ pub async fn load_brain_graph_for_target(
     "/api",
     endpoint = "load_brain_config_for_target"
 )]
-pub async fn load_brain_config_for_target(target: TargetRef) -> Result<BrainConfig, ServerFnError> {
+pub async fn load_brain_config_for_target(target: TargetRef) -> Result<BrainConfig, ApiError> {
     use crate::server::session;
 
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;

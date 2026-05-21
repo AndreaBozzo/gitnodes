@@ -8,6 +8,7 @@ mod files;
 mod links;
 mod migrations;
 mod nodes;
+pub mod pending_sync;
 mod rebuild;
 mod sync_state;
 mod target;
@@ -18,6 +19,7 @@ mod work_items;
 pub use files::{FileFilters, ProjectedFile, list_files};
 pub use migrations::migrate;
 pub use nodes::{NodeFilters, list_nodes, read_node};
+pub use pending_sync::PendingSyncRecord;
 pub use rebuild::{load_graph, rebuild};
 pub use work_items::{
     WorkItemFilters, find_work_item_by_external, list_work_items, load_work_item_by_brain_id,
@@ -43,6 +45,26 @@ fn pool() -> Result<&'static SqlitePool, BrainError> {
 /// per-target sticky state available; behave as the env-default deploy".
 pub fn pool_handle() -> Option<&'static SqlitePool> {
     POOL.get()
+}
+
+/// Enqueue a failed best-effort provider push into the outbox (slice γ).
+/// Resolves `target_id` from the target identity, creating the row lazily via
+/// the same `ensure_target_id` path the projection uses. Best-effort itself:
+/// callers log on error rather than failing the editorial save.
+pub async fn enqueue_pending_sync(
+    target: &brain_domain::TargetConfig,
+    brain_id: &str,
+    kind: &str,
+    error: &str,
+) -> Result<(), BrainError> {
+    let pool = pool()?;
+    let target_id = target::ensure_target_id(pool, target).await?;
+    pending_sync::enqueue(pool, target_id, brain_id, kind, error).await
+}
+
+/// Read-only listing for the admin "Pending provider sync" surface.
+pub async fn list_all_pending_sync(limit: i64) -> Result<Vec<PendingSyncRecord>, BrainError> {
+    pending_sync::list_all(pool()?, limit).await
 }
 
 fn normalize_path_prefix(prefix: &str) -> String {

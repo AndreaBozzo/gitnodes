@@ -7,7 +7,7 @@ use crate::api::AppConfig;
 pub fn Landing() -> impl IntoView {
     let query = use_query_map();
 
-    let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
+    let app_config = use_context::<Resource<Result<AppConfig, crate::api::ApiError>>>();
 
     let resolved_config = Memo::new(move |_| {
         app_config

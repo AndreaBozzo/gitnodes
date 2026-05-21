@@ -12,6 +12,7 @@ use super::{
     files::list_files_from_pool,
     migrations::migrate,
     nodes::{list_nodes_from_pool, load_cached_graph},
+    pending_sync,
     rebuild::{ProjectionSnapshot, persist_snapshot},
     sync_state::load_sync_state,
     target::ensure_target_id,
@@ -509,4 +510,83 @@ async fn ensure_target_id_seeds_registration_metadata() {
     assert!(row.1.is_none());
     assert!(!row.2.is_empty());
     assert_eq!(row.3.as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn pending_sync_enqueue_dedupes_and_bumps_attempts() {
+    let pool = test_pool().await;
+    let t = target("Org", "Repo", "main");
+    let target_id = ensure_target_id(&pool, &t).await.unwrap();
+
+    // First failure inserts a row at attempt 1.
+    pending_sync::enqueue(&pool, target_id, "wi-1", "state", "boom")
+        .await
+        .unwrap();
+    // Same (target, brain_id, kind) failing again bumps attempts, no dup row.
+    pending_sync::enqueue(&pool, target_id, "wi-1", "state", "boom again")
+        .await
+        .unwrap();
+    // A different kind for the same item is a distinct row.
+    pending_sync::enqueue(&pool, target_id, "wi-1", "assignees", "nope")
+        .await
+        .unwrap();
+
+    let rows = pending_sync::list_all(&pool, 100).await.unwrap();
+    assert_eq!(rows.len(), 2, "state row deduped, assignees row distinct");
+    let state_row = rows.iter().find(|r| r.kind == "state").unwrap();
+    assert_eq!(state_row.attempts, 2);
+    assert_eq!(state_row.last_error.as_deref(), Some("boom again"));
+    assert_eq!(state_row.org, "Org");
+    assert_eq!(state_row.repo, "Repo");
+
+    // Retry failure bumps without inserting.
+    pending_sync::record_retry_failure(&pool, state_row.id, "still failing")
+        .await
+        .unwrap();
+    let after = pending_sync::list_all(&pool, 100).await.unwrap();
+    let state_after = after.iter().find(|r| r.kind == "state").unwrap();
+    assert_eq!(state_after.attempts, 3);
+
+    // Delete clears the row (success path).
+    pending_sync::delete(&pool, state_after.id).await.unwrap();
+    let remaining = pending_sync::list_all(&pool, 100).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].kind, "assignees");
+
+    // next_batch surfaces the remaining job with its identity + kind for retry.
+    let batch = pending_sync::next_batch(&pool, 10, 20).await.unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].brain_id, "wi-1");
+    assert_eq!(batch[0].branch, "main");
+    assert_eq!(batch[0].kind, "assignees");
+}
+
+#[tokio::test]
+async fn pending_sync_next_batch_skips_exhausted_rows() {
+    let pool = test_pool().await;
+    let t = target("Org", "Repo", "main");
+    let target_id = ensure_target_id(&pool, &t).await.unwrap();
+
+    pending_sync::enqueue(&pool, target_id, "wi-exhausted", "state", "permanent")
+        .await
+        .unwrap();
+    pending_sync::enqueue(&pool, target_id, "wi-ready", "state", "transient")
+        .await
+        .unwrap();
+
+    let exhausted = pending_sync::list_all(&pool, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.brain_id == "wi-exhausted")
+        .unwrap();
+    for _ in 0..19 {
+        pending_sync::record_retry_failure(&pool, exhausted.id, "still permanent")
+            .await
+            .unwrap();
+    }
+
+    let batch = pending_sync::next_batch(&pool, 10, 20).await.unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].brain_id, "wi-ready");
 }

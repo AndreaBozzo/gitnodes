@@ -1,7 +1,10 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
-use crate::api::{AuditEntry, SessionEntry, list_sessions, load_audit_log, revoke_session};
+use crate::api::{
+    AuditEntry, PendingSyncEntry, SessionEntry, list_pending_sync, list_sessions, load_audit_log,
+    revoke_session,
+};
 
 pub mod views;
 pub use views::ViewsAdminPage;
@@ -39,6 +42,11 @@ pub fn AdminPage() -> impl IntoView {
     let sessions = Resource::new_blocking(
         move || reload_tick.get(),
         |_| async move { list_sessions().await },
+    );
+
+    let pending_sync = Resource::new_blocking(
+        move || reload_tick.get(),
+        |_| async move { list_pending_sync().await },
     );
 
     let revoke = Action::new(move |id: &String| {
@@ -139,6 +147,25 @@ pub fn AdminPage() -> impl IntoView {
                         })}
                     </Suspense>
                 </section>
+
+                <section>
+                    <div class="flex items-center gap-3 mb-3">
+                        <h2 class="text-xs uppercase tracking-widest text-slate-400">
+                            "Pending provider sync"
+                        </h2>
+                        <span class="text-xs text-slate-500">
+                            "work item changes saved in Brain but not yet propagated to the forge"
+                        </span>
+                    </div>
+                    <Suspense fallback=|| view! { <p class="text-xs text-slate-500">"loading…"</p> }>
+                        {move || pending_sync.get().map(|res| match res {
+                            Ok(rows) => PendingSyncTable(PendingSyncTableProps { rows }).into_any(),
+                            Err(e) => view! {
+                                <p class="text-xs text-rose-300">{format!("failed: {e}")}</p>
+                            }.into_any(),
+                        })}
+                    </Suspense>
+                </section>
             </main>
         </div>
     }
@@ -177,6 +204,47 @@ fn AuditTable(rows: Vec<AuditEntry>) -> impl IntoView {
                                 <td class=format!("px-3 py-1.5 font-mono {}", kind_class)>{r.kind}</td>
                                 <td class="px-3 py-1.5 text-slate-300">{r.actor.unwrap_or_else(|| "—".to_string())}</td>
                                 <td class="px-3 py-1.5 text-slate-400 font-mono truncate">{r.detail.unwrap_or_default()}</td>
+                            </tr>
+                        }
+                    }).collect_view()}
+                </tbody>
+            </table>
+        </div>
+    }.into_any()
+}
+
+#[component]
+fn PendingSyncTable(rows: Vec<PendingSyncEntry>) -> impl IntoView {
+    if rows.is_empty() {
+        return view! {
+            <p class="text-xs text-slate-500 italic">"nothing pending — all changes propagated"</p>
+        }
+        .into_any();
+    }
+    view! {
+        <div class="border border-slate-800 rounded-md overflow-hidden">
+            <table class="w-full text-xs">
+                <thead class="bg-slate-900 text-slate-400 uppercase tracking-widest">
+                    <tr>
+                        <th class="text-left px-3 py-2 w-48">"target"</th>
+                        <th class="text-left px-3 py-2">"work item"</th>
+                        <th class="text-left px-3 py-2 w-24">"kind"</th>
+                        <th class="text-left px-3 py-2 w-20">"attempts"</th>
+                        <th class="text-left px-3 py-2 w-40">"last attempt"</th>
+                        <th class="text-left px-3 py-2">"last error"</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows.into_iter().map(|r| {
+                        let target = format!("{}/{} ({})", r.org, r.repo, r.branch);
+                        view! {
+                            <tr class="border-t border-slate-800 hover:bg-slate-900/50">
+                                <td class="px-3 py-1.5 text-slate-300 font-mono">{target}</td>
+                                <td class="px-3 py-1.5 text-slate-200 font-mono truncate">{r.brain_id}</td>
+                                <td class="px-3 py-1.5 text-slate-400 font-mono">{r.kind}</td>
+                                <td class="px-3 py-1.5 text-amber-300 font-mono">{r.attempts}</td>
+                                <td class="px-3 py-1.5 text-slate-400 font-mono">{r.last_attempt_at}</td>
+                                <td class="px-3 py-1.5 text-rose-300 font-mono truncate">{r.last_error.unwrap_or_default()}</td>
                             </tr>
                         }
                     }).collect_view()}

@@ -17,7 +17,7 @@ pub fn OrphanBanner(
     diagnostic: StoredValue<Option<ConfigLoadDiagnostic>>,
 ) -> impl IntoView {
     let dismissed = RwSignal::new(false);
-    let app_config = use_context::<Resource<Result<AppConfig, ServerFnError>>>();
+    let app_config = use_context::<Resource<Result<AppConfig, crate::api::ApiError>>>();
     let target_ref = use_context::<brain_domain::TargetRef>();
 
     let config_url = Memo::new(move |_| {

@@ -1,7 +1,9 @@
 pub mod assets;
 pub mod audit;
 pub mod auth;
+pub mod health;
 pub mod installation_token;
+pub mod pending_sync_job;
 pub mod projection;
 pub mod routing;
 pub mod session;
