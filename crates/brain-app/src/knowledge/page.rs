@@ -609,7 +609,7 @@ fn RefreshButton(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>
                             sync_status.set(SyncStatus::Fresh);
                         }
                         Err(error) => {
-                            sync_status.set(SyncStatus::Stale {
+                            sync_status.set(SyncStatus::Degraded {
                                 message: Some(format!(
                                     "Manual refresh failed: {error}. Showing the last successful snapshot."
                                 )),

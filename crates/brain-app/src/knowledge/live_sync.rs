@@ -6,14 +6,33 @@ use leptos::prelude::*;
 pub enum SyncStatus {
     #[default]
     Fresh,
-    Stale {
+    Reconnecting {
+        message: Option<String>,
+    },
+    Degraded {
         message: Option<String>,
     },
 }
 
 impl SyncStatus {
-    pub fn is_stale(&self) -> bool {
-        matches!(self, Self::Stale { .. })
+    pub fn is_reconnecting(&self) -> bool {
+        matches!(self, Self::Reconnecting { .. })
+    }
+
+    pub fn is_degraded(&self) -> bool {
+        matches!(self, Self::Degraded { .. })
+    }
+
+    pub fn message_or(&self, fallback: &'static str) -> String {
+        match self {
+            Self::Reconnecting {
+                message: Some(message),
+            }
+            | Self::Degraded {
+                message: Some(message),
+            } => message.clone(),
+            _ => fallback.to_string(),
+        }
     }
 }
 
@@ -49,6 +68,7 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             source: Option<EventSource>,
             startup_timer: Option<Timeout>,
             reconnect_timer: Option<Timeout>,
+            reconnect_notice_timer: Option<Timeout>,
             on_open: Option<Closure<dyn FnMut(Event)>>,
             on_updated: Option<Closure<dyn FnMut(MessageEvent)>>,
             on_failed: Option<Closure<dyn FnMut(MessageEvent)>>,
@@ -68,9 +88,9 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             }
         }
 
-        fn stale_message_for_disconnect(delay_ms: u32) -> String {
+        fn reconnecting_message_for_disconnect(delay_ms: u32) -> String {
             format!(
-                "Live sync connection lost. Retrying in {:.1}s while showing the last known snapshot.",
+                "Showing the last snapshot. Retrying live sync in {:.1}s.",
                 delay_ms as f32 / 1_000.0
             )
         }
@@ -147,6 +167,7 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
             let connect = connect.clone();
             move || {
                 if !live_sync_enabled_for_location() {
+                    runtime.borrow_mut().reconnect_notice_timer = None;
                     sync_status.set(SyncStatus::Fresh);
                     return;
                 }
@@ -154,9 +175,6 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 let attempt = attempts.get().saturating_add(1);
                 attempts.set(attempt);
                 let delay_ms = reconnect_delay_ms(attempt);
-                sync_status.set(SyncStatus::Stale {
-                    message: Some(stale_message_for_disconnect(delay_ms)),
-                });
 
                 let mut state = runtime.borrow_mut();
                 if state.reconnect_timer.is_some() {
@@ -172,6 +190,30 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 state.on_work_item = None;
                 state.on_binding = None;
                 state.on_error = None;
+
+                if sync_status.with_untracked(SyncStatus::is_reconnecting) {
+                    sync_status.set(SyncStatus::Reconnecting {
+                        message: Some(reconnecting_message_for_disconnect(delay_ms)),
+                    });
+                } else if !sync_status.with_untracked(SyncStatus::is_degraded)
+                    && state.reconnect_notice_timer.is_none()
+                {
+                    let runtime_for_notice = runtime.clone();
+                    let attempts_for_notice = attempts.clone();
+                    state.reconnect_notice_timer = Some(Timeout::new(4_000, move || {
+                        runtime_for_notice.borrow_mut().reconnect_notice_timer = None;
+                        if !live_sync_enabled_for_location()
+                            || attempts_for_notice.get() == 0
+                            || sync_status.with_untracked(SyncStatus::is_degraded)
+                        {
+                            return;
+                        }
+                        let delay_ms = reconnect_delay_ms(attempts_for_notice.get());
+                        sync_status.set(SyncStatus::Reconnecting {
+                            message: Some(reconnecting_message_for_disconnect(delay_ms)),
+                        });
+                    }));
+                }
 
                 let runtime = runtime.clone();
                 let connect = connect.clone();
@@ -210,9 +252,13 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                 };
 
                 let attempts_for_open = attempts.clone();
+                let runtime_for_open = runtime.clone();
                 let on_open: Closure<dyn FnMut(Event)> = Closure::new(move |_event: Event| {
                     attempts_for_open.set(0);
-                    sync_status.set(SyncStatus::Fresh);
+                    runtime_for_open.borrow_mut().reconnect_notice_timer = None;
+                    if !sync_status.with_untracked(SyncStatus::is_degraded) {
+                        sync_status.set(SyncStatus::Fresh);
+                    }
                 });
                 let on_updated: Closure<dyn FnMut(MessageEvent)> =
                     Closure::new(move |event: MessageEvent| {
@@ -240,7 +286,7 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
                         }
                         let message = payload.message;
                         graph_version.update(|v| *v += 1);
-                        sync_status.set(SyncStatus::Stale { message });
+                        sync_status.set(SyncStatus::Degraded { message });
                     });
                 // Granular work item events: for the 3.2-α slice both variants
                 // simply bump the version so existing Resources refetch. A
@@ -331,26 +377,40 @@ pub fn LiveSync(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>)
     }
 }
 
-/// Global "Stale Data" banner. Renders only when `sync_status` is stale, so it
-/// is safe to mount unconditionally above the routes.
+/// Global sync status. Reconnect churn stays quiet; real sync failures remain
+/// visible because the user may need to refresh or inspect the provider.
 #[component]
 pub fn SyncStatusBanner(sync_status: RwSignal<SyncStatus>) -> impl IntoView {
     view! {
-        <Show when=move || sync_status.get().is_stale()>
-            <div class="mx-6 mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+        <Show when=move || sync_status.get().is_reconnecting()>
+            <div class="mx-6 mt-2 flex justify-end">
+                <div class="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-600/70 bg-slate-900/90 px-3 py-1.5 text-xs text-slate-300 shadow-sm">
+                    <span class="h-2 w-2 rounded-full bg-sky-300"></span>
+                    <span class="font-medium text-slate-200">"Reconnecting"</span>
+                    <span class="hidden text-slate-400 sm:inline">
+                        {move || {
+                            sync_status
+                                .get()
+                                .message_or("Showing the last snapshot. Retrying live sync.")
+                        }}
+                    </span>
+                </div>
+            </div>
+        </Show>
+
+        <Show when=move || sync_status.get().is_degraded()>
+            <div class="mx-6 mt-3 rounded-md border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
                 <div class="flex items-start gap-3">
                     <div class="mt-1 h-2 w-2 rounded-full bg-amber-300"></div>
                     <div class="flex flex-col gap-1">
-                        <span class="font-semibold uppercase tracking-[0.2em] text-amber-200">
-                            "Stale Data"
+                        <span class="font-semibold uppercase tracking-[0.12em] text-amber-200">
+                            "Sync Needs Attention"
                         </span>
                         <span class="text-amber-100/80">
-                            {move || match sync_status.get() {
-                                SyncStatus::Fresh => String::new(),
-                                SyncStatus::Stale { message: Some(message) } => message,
-                                SyncStatus::Stale { message: None } => {
-                                    "A background sync reported stale data. The UI is showing the last successful snapshot until the next successful refresh.".to_string()
-                                }
+                            {move || {
+                                sync_status.get().message_or(
+                                    "A background sync failed. Brain UI is showing the last successful snapshot; use Refresh if the view looks out of date.",
+                                )
                             }}
                         </span>
                     </div>
