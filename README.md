@@ -12,9 +12,10 @@ Phase 3 has moved the app from a single-target editor into a multi-tenant
 collaborative workspace with target-aware routing, bidirectional work-item sync,
 permission-aware direct-write vs PR flows, saved views, repo-structure
 navigation, graph polish, canonical target identity, and UI/sidebar posture.
-The current focus is shipping discipline: dogfood the closed collaborative core
-with a real limited contributor, fix only real blockers, and choose the next
-phase from feedback rather than continuing to grow Phase 3.
+The security/content-trust and operational-readiness hardening lanes are closed;
+the current focus is production/open-source preparation: projection/schema
+operations, public-repo cleanup, and only the feature slices justified by real
+dogfooding feedback.
 
 ## Stack
 
@@ -40,9 +41,11 @@ crates/
       api.rs                    # Server functions: graph/file/work-item reads, writes, rebuilds
       markdown.rs               # pulldown-cmark wrapper + frontmatter splitter
       server/assets.rs          # Authenticated proxy for private-repo images
-      server/projection.rs      # SQLite projection materialization + read model
-      server/webhook.rs         # GitHub webhook entrypoint (push baseline)
-      server/sse.rs             # Typed SSE event bus + stream endpoint
+      server/projection/        # SQLite projection materialization + read model
+      server/health.rs          # /healthz and /readyz operational probes
+      server/pending_sync_job.rs # Background retry loop for provider sync outbox
+      server/webhook.rs         # GitHub webhook entrypoint (push + item sync)
+      server/sse.rs             # Per-target typed SSE event bus + stream endpoint
       server/installation_token.rs # GitHub App JWT → installation token, cached + refreshed
       knowledge/
         page.rs                 # /knowledge route composition
@@ -92,14 +95,19 @@ Optional:
 | `LEPTOS_SITE_ADDR`        | `127.0.0.1:3000`       | Bind address                                     |
 | `LEPTOS_SITE_ROOT`        | `target/site`          | Static asset root (prod)                         |
 | `SESSION_COOKIE_SECURE`   | `1` in release, `0` in debug | Marks the session cookie Secure. Override to `0` only for local HTTP dev. |
+| `SESSION_ENCRYPTION_KEY`  | _(required when secure cookies are enabled)_ | Base64 key (>=64 bytes decoded) for encrypted session storage. Generate with `openssl rand -base64 64 | tr -d '\n'`. |
 | `RUST_LOG`                | `brain_ui=info,warn`   | tracing-subscriber env filter                    |
 | `WEBHOOK_SECRET`          | _(required in release)_ | HMAC-SHA256 secret matching the GitHub webhook config. Required unless `ALLOW_INSECURE_WEBHOOKS=1`. |
 | `ALLOW_INSECURE_WEBHOOKS` | `1` in debug, `0` in release | Explicitly allows unsigned `/webhook/github` requests. Dev-only escape hatch. |
+| `RATE_LIMIT_PER_SECOND`   | `2`                    | Per-IP request rate for the baseline governor.   |
+| `RATE_LIMIT_BURST`        | `60`                   | Per-IP burst capacity for the baseline governor. |
 | `GITHUB_APP_ID`           | _(unset)_              | GitHub App ID. With `GITHUB_APP_INSTALLATION_ID` and a private key, webhooks authenticate as the App (preferred over PAT). |
 | `GITHUB_APP_INSTALLATION_ID` | _(unset)_           | Installation ID from the App's `…/settings/installations/<id>` URL after installing on the target org. |
 | `GITHUB_APP_PRIVATE_KEY`  | _(unset)_              | Inline PEM of the App's private key. Newlines may be encoded as `\n` for single-line `.env` values. |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | _(unset)_          | Alternative to `GITHUB_APP_PRIVATE_KEY` — path to a `.pem` file on disk. Preferred for k8s-style secret mounts. |
+| `GITHUB_API_BASE`         | `https://api.github.com` | GitHub REST API base for App-token minting and GHES-style test/deploy targets. |
 | `GITHUB_TOKEN`            | _(unset)_              | Fine-grained PAT used as a fallback when `GITHUB_APP_*` is unset or the App-token mint fails. Without any credential, inbound pushes are signalled as stale and reconciled on next manual refresh. |
+| `PENDING_SYNC_INTERVAL_SECS` | `60`                | Poll interval for the provider-sync outbox retry job. |
 
 Branding is also required at runtime:
 
@@ -152,22 +160,20 @@ Webhook-driven projection rebuilds need a server-side credential — set either 
 - **Phase 1 closed** — config-driven node types, frontmatter round-trip, `WorkItem` model, real `.brain-config.yml` dogfooding on the Brain repo.
 - **Phase 2A/2B closed** — pooled GitHub HTTP client, target-scoped caches, SQLite projection, webhook + SSE baseline, atomic rename via Git Data API, and work-item projection materialization.
 - **Phase 3 core closed / closeout active** — multi-tenant routing, Brain Switcher, bidirectional work-item sync, permission-aware branch/PR orchestration, saved views, rate-limit shielding, graph canvas polish, repo structure, canonical `TargetRef`, and UI/sidebar posture are landed. Phase 3 is now frozen to bugfixes, small polish, operator docs, and true dogfooding blockers.
-- **Current gate** — validate the collaborative workflow with a real limited contributor on the Brain repo, using the Pokemon mock as a bounded QA artifact.
-- **Next hardening lane** — before embeds/blob/AI or larger product expansion: content trust/security baseline, operational failure-mode matrix, and projection schema v2.
+- **Hardening lanes closed** — security/content trust, CSRF/rate limiting/session encryption, `/healthz`/`/readyz`, typed `ApiError`, per-target SSE, and the provider-sync outbox/retry/admin surface are landed.
+- **Current gate** — projection/schema operations, public-core cleanup, and validating the collaborative workflow with real usage. Larger product expansion stays behind dogfooding evidence.
 
 ## Known caveats & roadmap
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-05-02, Phase 3 closeout is explicitly framed around:
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-05-21, the next tracked work is explicitly framed around:
 
-- a limited contributor using Brain UI against the Brain repo
-- branch/PR contribution instead of direct writes to protected `main`
-- a Pokemon-themed mock knowledge base with its own `.brain-config.yml`, custom node types/templates, links, assets, work items, saved views, graph controls, and sync
-- a short release/operator checklist that says what Brain UI does today, what it does not promise yet, and how to recover from known failure modes
+- Projection Schema v2 & SQLite operations, including versioned migrations, retention/cleanup, and admin projection status.
+- Open-sourcing prep: removing proprietary config/data assumptions, choosing license/policy docs, and keeping the downstream/private mirror strategy simple.
+- Feature slices such as FTS, advisory locks, activity stream, BYOB/blob, forge abstraction, temporal graph, local/offline mode, and conflict resolution only when their trigger is real.
 
 Embedded analytics, BYOB/blob storage, FTS, advisory locks, activity streams,
 forge abstraction, temporal graph views, local/offline execution, and richer
-conflict resolution remain tracked, but are no longer Phase 3 commitments by
-default.
+conflict resolution remain tracked, but they are not automatic Phase 3 growth.
 
 ## License
 

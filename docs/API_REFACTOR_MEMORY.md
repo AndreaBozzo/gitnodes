@@ -1,6 +1,6 @@
 # API Refactor Memory
 
-Last updated: 2026-04-28
+Last updated: 2026-05-21
 
 Purpose: split the growing `crates/brain-app/src/api.rs` module without changing
 server function contracts, Leptos client imports, or release-mode registration.
@@ -9,7 +9,8 @@ server function contracts, Leptos client imports, or release-mode registration.
 
 - `api.rs` remains the public index for server functions and shared response
   types. Re-exports siblings so external `use crate::api::{...}` paths keep
-  working.
+  working. It also re-exports the typed server-function boundary error
+  `ApiError`.
 - `api/files.rs` owns file CRUD APIs and write contracts:
   `BrainFile`, `WriteMode`, `WriteResult`, `WriteCapabilities`,
   `ReadBrainFile`, `SaveBrainFile`, `DeleteBrainFile`, `GetWriteCapabilities`,
@@ -28,7 +29,8 @@ server function contracts, Leptos client imports, or release-mode registration.
 - `api/work_items.rs` owns work-item read/mutation APIs:
   `ListWorkItems`, `LoadWorkItemByPath`, `LoadWorkItemComments`,
   `TransitionWorkItem`, `AssignWorkItem`, `BindWorkItem`, provider-originated
-  issue reconciliation, provider label/state sync.
+  issue reconciliation, provider label/state sync, and the outbound
+  `reconcile_provider_sync` entrypoint used by the pending-sync retry job.
 - `api/graph.rs` owns graph/projection read APIs:
   `ListNodes`, `ReadNode`, `LoadBrainGraph`, `RefreshBrainGraph`,
   `ListAccessibleTargets`, `LoadBrainGraphForTarget`,
@@ -36,7 +38,12 @@ server function contracts, Leptos client imports, or release-mode registration.
 - `api/config_admin.rs` owns config/admin APIs:
   `GetAppConfig`, `LoadBrainConfig`, `ListViews`, `SaveViews`,
   `LoadAuditLog`, `ListSessions`, `RevokeSession`, `GetCurrentUser`,
-  `LoadBrainTemplate`, `AppConfig`, `AuditEntry`, `SessionEntry`.
+  `LoadBrainTemplate`, `ListPendingSync`, `AppConfig`, `AuditEntry`,
+  `SessionEntry`, `PendingSyncEntry`.
+- `api/error.rs` owns `ApiError`: typed server-function errors that let the UI
+  distinguish unauthenticated, permission denied, not found, conflict,
+  rate-limited, bad input, and internal/transport failures without string
+  parsing.
 
 ## Invariants
 
@@ -49,6 +56,8 @@ server function contracts, Leptos client imports, or release-mode registration.
 - PR fallback must not patch the target-branch projection until the PR lands.
 - Direct writes must keep cache invalidation and projection rebuild behavior.
 - Work-item provider sync failures are audited, not rolled back.
+- Work-item provider sync failures must enqueue `pending_provider_sync` rows so
+  the background retry job can reconcile them with GitHub App/PAT credentials.
 - Webhook provider-originated updates must avoid echoing changes back to GitHub.
 
 ## Verification Gate
