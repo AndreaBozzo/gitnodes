@@ -366,6 +366,17 @@ Questa lane nasce dai finding corretti emersi durante l'architecture review, ma 
     - Aggiungere una vista admin/status della projection: schema version, last success/error per target, file/node/work item count, rebuild duration, webhook lag, rate-limit snapshot quando disponibile.
     - Success criterion: FTS5, Activity Stream, Watch/Follow e Temporal Graph hanno una base dati coerente e migrabile; un deploy nuovo o esistente può aggiornarsi senza rebuild manuale cieco.
 
+- [ ] **Presentation UI Polish Pass** _(post-Projection Schema v2, pre-open-source prep)_
+
+    Razionale: nelle ultime slice il prodotto ha accumulato sostanza backend (TargetRef, provider outbox, health/readiness, API errors, SSE per-target). Prima della presentazione/investor talk di giugno 2026 conviene trasformare quella maturità in percezione immediata: una UI più calma, più leggibile e più dimostrabile sul Pokémon mock. Questa pass non apre nuove capability platform; rende presentabili le superfici già shippate e chiude i papercut che rovinerebbero una demo.
+
+    - **Knowledge first impression**: header, Brain Switcher/target identity, refresh/sync state e empty/loading/error states devono comunicare controllo, non debug. Continuare la direzione `Reconnecting` vs `Sync Needs Attention`: warning solo quando serve azione.
+    - **Graph/sidebar/detail rhythm**: migliorare spaziatura, gerarchia, stati selezionati/hover, leggibilità filtri e transizione fra grafo, tree/sidebar e detail panel. Il grafo deve sembrare un prodotto navigabile anche a chi lo vede per la prima volta.
+    - **Work item clarity**: rendere evidente il rapporto Brain ↔ GitHub issue/PR: stato, binding, sync outcome, pending provider sync e permission-aware PR fallback devono essere leggibili senza spiegazione verbale lunga.
+    - **Admin/status polish**: la nuova projection status surface e le sezioni admin già esistenti devono sembrare strumenti operativi, non pagine diagnostiche provvisorie.
+    - **Pokémon mock demo fixture**: usare il repo sandbox Pokémon come dataset di presentazione e dogfooding: saved views sensate, tassonomia chiara, link/backlink puliti, almeno un work item bindato e un percorso demo ripetibile con Jacopo/contributor flow.
+    - **Success criterion**: una demo di 5-7 minuti può aprire il Pokémon Brain, navigare saved view/grafo/detail, mostrare un work item bindato, spiegare sync/projection status e proporre una modifica via flow collaborativo senza incontrare copy o layout che sembrano interni/temporanei.
+
 ---
 
 ## 🚀 Open-Sourcing del Core (target Luglio 2026)

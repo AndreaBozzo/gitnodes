@@ -168,6 +168,7 @@ Webhook-driven projection rebuilds need a server-side credential — set either 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-05-21, the next tracked work is explicitly framed around:
 
 - Projection Schema v2 & SQLite operations, including versioned migrations, retention/cleanup, and admin projection status.
+- Presentation UI polish after SQLite v2: Knowledge first impression, graph/sidebar/detail flow, work-item clarity, admin/status polish, and the Pokémon mock as the demo fixture.
 - Open-sourcing prep: removing proprietary config/data assumptions, choosing license/policy docs, and keeping the downstream/private mirror strategy simple.
 - Feature slices such as FTS, advisory locks, activity stream, BYOB/blob, forge abstraction, temporal graph, local/offline mode, and conflict resolution only when their trigger is real.
 
