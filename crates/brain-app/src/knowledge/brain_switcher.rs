@@ -18,8 +18,18 @@ use brain_domain::{TargetRef, decode_path_segment, encode_path_segment};
 
 fn knowledge_loading_view() -> impl IntoView {
     view! {
-        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-            "Loading knowledge graph…"
+        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
+            <div class="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 px-4 py-3 shadow-lg shadow-black/20">
+                <span class="h-2 w-2 rounded-full bg-teal-300 animate-brain-pulse"></span>
+                <div>
+                    <div class="text-xs font-semibold uppercase tracking-widest text-slate-400">
+                        "Opening Brain"
+                    </div>
+                    <div class="mt-0.5 text-sm text-slate-200">
+                        "Loading graph, files, and saved views."
+                    </div>
+                </div>
+            </div>
         </div>
     }
 }
@@ -84,8 +94,16 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                         .into_any()
                     }
                     Some(Err(e)) => view! {
-                        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
-                            {format!("Failed to load graph/config for target: {e}")}
+                        <div class="min-h-screen flex items-center justify-center bg-slate-950 px-6 text-sm">
+                            <div class="max-w-lg rounded-md border border-rose-400/30 bg-rose-500/10 px-5 py-4 text-rose-100">
+                                <div class="text-xs font-semibold uppercase tracking-widest text-rose-200">
+                                    "Brain unavailable"
+                                </div>
+                                <p class="mt-2 text-slate-200">
+                                    "The selected target could not be loaded. Refresh after checking access or branch state."
+                                </p>
+                                <p class="mt-3 font-mono text-xs text-rose-200/90 break-words">{format!("{e}")}</p>
+                            </div>
                         </div>
                     }.into_any(),
                     _ => knowledge_loading_view().into_any(),
@@ -141,15 +159,24 @@ pub fn BrainSwitcher(
 
     view! {
         <div class="border-b border-slate-800 pb-4 mb-2">
+            <div class="mb-2 flex items-center justify-between px-1">
+                <span class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+                    "Active Brain"
+                </span>
+                <span
+                    class="h-1.5 w-1.5 rounded-full bg-teal-300"
+                    title="Target ready"
+                ></span>
+            </div>
             <button
-                class="w-full flex items-center justify-between px-1 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors focus:outline-none"
+                class="w-full flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/50 px-2.5 py-2 text-xs text-slate-300 hover:border-slate-700 hover:text-slate-100 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-600"
                 on:click=move |_| open.update(|v| *v = !*v)
             >
                 <span class="flex items-center gap-1.5">
                     <svg class="w-3 h-3 text-teal-400 shrink-0" viewBox="0 0 16 16" fill="currentColor">
                         <path d="M2 2.5A2.5 2.5 0 014.5 0h7A2.5 2.5 0 0114 2.5v10.795a.5.5 0 01-.724.447L8 11.24l-5.276 2.502A.5.5 0 012 13.295V2.5z"/>
                     </svg>
-                    <span class="font-medium truncate max-w-[160px]">{current_label}</span>
+                    <span class="font-medium truncate max-w-[172px]">{current_label}</span>
                 </span>
                 <svg
                     class="w-3 h-3 shrink-0 transition-transform"
@@ -167,10 +194,10 @@ pub fn BrainSwitcher(
                     {move || {
                         let list = targets.get().unwrap_or_default();
                         view! {
-                            <div class="max-h-64 overflow-y-auto">
+                            <div class="mt-2 max-h-64 overflow-y-auto rounded-md border border-slate-800 bg-slate-950/30 p-1">
                             {if list.is_empty() {
                                 view! {
-                                    <p class="text-[10px] text-slate-500 px-1 py-2">"No accessible repos found."</p>
+                                    <p class="text-[10px] text-slate-500 px-2 py-2">"No Brain targets found for this account."</p>
                                 }.into_any()
                             } else {
                                 list.into_iter().map(|t| {
@@ -197,10 +224,11 @@ pub fn BrainSwitcher(
                                             <a
                                                 href=href
                                                 rel="external"
-                                                class="flex items-center gap-2 px-1 py-1 rounded text-[11px] transition-colors"
+                                                class="flex items-center gap-2 rounded px-2 py-1.5 text-[11px] transition-colors"
                                                 class=("text-teal-200", is_current)
                                                 class=("bg-teal-500/10", is_current)
                                                 class=("text-slate-400", !is_current)
+                                                class=("hover:bg-slate-800/70", !is_current)
                                                 class=("hover:text-slate-200", !is_current)
                                             >
                                                 <span
@@ -221,7 +249,7 @@ pub fn BrainSwitcher(
                                     } else {
                                         view! {
                                             <div
-                                                class="flex items-center gap-2 px-1 py-1 rounded text-[11px] text-slate-600 cursor-not-allowed"
+                                                class="flex items-center gap-2 rounded px-2 py-1.5 text-[11px] text-slate-600 cursor-not-allowed"
                                                 title=format!("Brain target state: {state_label}")
                                             >
                                                 <span

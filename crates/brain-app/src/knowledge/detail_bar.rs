@@ -16,8 +16,11 @@ pub fn DetailBar(
     let body = move || {
         match current_id.get() {
         None => view! {
-            <div class="text-slate-500 text-xs">
-                "Hover a node to peek at it · click to lock it here."
+            <div class="flex items-center gap-3 text-xs text-slate-500">
+                <span class="h-2 w-2 rounded-full bg-slate-700"></span>
+                <span>"No node selected"</span>
+                <span class="text-slate-700">"/"</span>
+                <span>"Graph context will appear here."</span>
             </div>
         }
         .into_any(),

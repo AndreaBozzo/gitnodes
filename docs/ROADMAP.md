@@ -366,16 +366,17 @@ Questa lane nasce dai finding corretti emersi durante l'architecture review, ma 
     - ~~Aggiungere una vista admin/status~~ **Done 2026-05-23:** server fn `get_projection_status()` + sezione admin con schema version (`MAX(version)` da `_sqlx_migrations`), per-target status/file/node/edge/work_item counts, `last_rebuild_duration_ms` (instrumentato in `rebuild` post-write). Webhook lag e rate-limit snapshot resi come placeholder `—` — slot pronto per la follow-up slice che plumba i due signal.
     - Success criterion ✅: FTS5, Activity Stream, Watch/Follow e Temporal Graph hanno una base dati coerente e migrabile; un deploy nuovo o esistente può aggiornarsi senza rebuild manuale cieco. Smoke test legacy (`LEGACY_DB_SMOKE=...`) e `migrate_claims_baseline_on_legacy_db` documentano la migrabilità.
 
-- [ ] **Presentation UI Polish Pass** _(post-Projection Schema v2, pre-open-source prep)_
+- [x] **Presentation UI Polish Pass** _(landed 2026-05-23, post-Projection Schema v2, pre-open-source prep)_
 
     Razionale: nelle ultime slice il prodotto ha accumulato sostanza backend (TargetRef, provider outbox, health/readiness, API errors, SSE per-target). Prima della presentazione/investor talk di giugno 2026 conviene trasformare quella maturità in percezione immediata: una UI più calma, più leggibile e più dimostrabile sul Pokémon mock. Questa pass non apre nuove capability platform; rende presentabili le superfici già shippate e chiude i papercut che rovinerebbero una demo.
 
-    - **Knowledge first impression**: header, Brain Switcher/target identity, refresh/sync state e empty/loading/error states devono comunicare controllo, non debug. Continuare la direzione `Reconnecting` vs `Sync Needs Attention`: warning solo quando serve azione.
-    - **Graph/sidebar/detail rhythm**: migliorare spaziatura, gerarchia, stati selezionati/hover, leggibilità filtri e transizione fra grafo, tree/sidebar e detail panel. Il grafo deve sembrare un prodotto navigabile anche a chi lo vede per la prima volta.
-    - **Work item clarity**: rendere evidente il rapporto Brain ↔ GitHub issue/PR: stato, binding, sync outcome, pending provider sync e permission-aware PR fallback devono essere leggibili senza spiegazione verbale lunga.
-    - **Admin/status polish**: la nuova projection status surface e le sezioni admin già esistenti devono sembrare strumenti operativi, non pagine diagnostiche provvisorie.
-    - **Pokémon mock demo fixture**: usare il repo sandbox Pokémon come dataset di presentazione e dogfooding: saved views sensate, tassonomia chiara, link/backlink puliti, almeno un work item bindato e un percorso demo ripetibile con Jacopo/contributor flow.
-    - **Success criterion**: una demo di 5-7 minuti può aprire il Pokémon Brain, navigare saved view/grafo/detail, mostrare un work item bindato, spiegare sync/projection status e proporre una modifica via flow collaborativo senza incontrare copy o layout che sembrano interni/temporanei.
+    - ~~**Knowledge first impression**~~ **Done 2026-05-23:** header ricalibrato su identità target/count/Status, Brain Switcher più leggibile, Refresh copy calmo, loading/error state non diagnostici.
+    - ~~**Graph/sidebar/detail rhythm**~~ **Done 2026-05-23:** sidebar con scope summary, struttura più scansionabile, grafo con empty state filtrato, legenda/zoom più controllati, close detail pulisce anche la query selection.
+    - ~~**Work item clarity**~~ **Done 2026-05-23:** card work item mostra titolo, stato, source-of-record, Brain ID, provider binding, sync posture e messaggi distinti per direct write vs PR fallback.
+    - ~~**Admin/status polish**~~ **Done 2026-05-23:** projection status ora apre con readiness tiles, totals e operation chips; tabelle admin rese più operative e scrollabili.
+    - ~~**Pokémon mock demo fixture**~~ **Done 2026-05-23:** percorso demo ripetibile documentato in [`docs/PRESENTATION_DEMO.md`](PRESENTATION_DEMO.md); il sandbox resta il dataset di dogfooding/presentazione, con verifica fixture da fare nel repo target prima della rehearsal.
+    - **Follow-up leggero annotato 2026-05-23:** `BrainSwitcher` oggi chiama `ListAccessibleTargets` ogni volta che viene riaperto. Accettabile per la demo, ma se la lista repo cresce o il provider rallenta conviene passare a cache client-side con refresh esplicito/revalidate.
+    - **Success criterion ✅:** la demo 5-7 minuti ha un percorso esplicito: aprire il Pokémon Brain, navigare saved view/grafo/detail, mostrare un work item bindato, spiegare sync/projection status e proporre una modifica via flow collaborativo senza copy/layout temporanei.
 
 ---
 

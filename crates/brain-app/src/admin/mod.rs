@@ -96,11 +96,11 @@ pub fn AdminPage() -> impl IntoView {
             <main class="p-6 space-y-8 max-w-6xl mx-auto">
                 <section>
                     <div class="flex items-center gap-3 mb-3">
-                        <h2 class="text-xs uppercase tracking-widest text-slate-400">
+                        <h2 class="text-xs uppercase tracking-widest text-slate-300">
                             "Projection status"
                         </h2>
                         <span class="text-xs text-slate-500">
-                            "schema version, per-target sync state, counts, rebuild cost"
+                            "schema, target readiness, counts, and rebuild cost"
                         </span>
                     </div>
                     <Suspense fallback=|| view! { <p class="text-xs text-slate-500">"loading…"</p> }>
@@ -115,7 +115,7 @@ pub fn AdminPage() -> impl IntoView {
 
                 <section>
                     <div class="flex items-center gap-3 mb-3">
-                        <h2 class="text-xs uppercase tracking-widest text-slate-400">
+                        <h2 class="text-xs uppercase tracking-widest text-slate-300">
                             "Audit log"
                         </h2>
                         <select
@@ -155,7 +155,7 @@ pub fn AdminPage() -> impl IntoView {
 
                 <section>
                     <div class="flex items-center gap-3 mb-3">
-                        <h2 class="text-xs uppercase tracking-widest text-slate-400">
+                        <h2 class="text-xs uppercase tracking-widest text-slate-300">
                             "Active sessions"
                         </h2>
                     </div>
@@ -174,7 +174,7 @@ pub fn AdminPage() -> impl IntoView {
 
                 <section>
                     <div class="flex items-center gap-3 mb-3">
-                        <h2 class="text-xs uppercase tracking-widest text-slate-400">
+                        <h2 class="text-xs uppercase tracking-widest text-slate-300">
                             "Pending provider sync"
                         </h2>
                         <span class="text-xs text-slate-500">
@@ -204,7 +204,7 @@ fn AuditTable(rows: Vec<AuditEntry>) -> impl IntoView {
         .into_any();
     }
     view! {
-        <div class="border border-slate-800 rounded-md overflow-hidden">
+        <div class="border border-slate-800 rounded-md overflow-x-auto">
             <table class="w-full text-xs">
                 <thead class="bg-slate-900 text-slate-400 uppercase tracking-widest">
                     <tr>
@@ -246,7 +246,7 @@ fn PendingSyncTable(rows: Vec<PendingSyncEntry>) -> impl IntoView {
         .into_any();
     }
     view! {
-        <div class="border border-slate-800 rounded-md overflow-hidden">
+        <div class="border border-slate-800 rounded-md overflow-x-auto">
             <table class="w-full text-xs">
                 <thead class="bg-slate-900 text-slate-400 uppercase tracking-widest">
                     <tr>
@@ -287,7 +287,7 @@ fn SessionTable(rows: Vec<SessionEntry>, on_revoke: Callback<String>) -> impl In
         .into_any();
     }
     view! {
-        <div class="border border-slate-800 rounded-md overflow-hidden">
+        <div class="border border-slate-800 rounded-md overflow-x-auto">
             <table class="w-full text-xs">
                 <thead class="bg-slate-900 text-slate-400 uppercase tracking-widest">
                     <tr>
@@ -335,21 +335,92 @@ fn ProjectionStatusPanel(status: ProjectionStatus) -> impl IntoView {
     let quota_label = rate_limit_remaining
         .map(|n| n.to_string())
         .unwrap_or_else(|| "—".to_string());
+    let target_count = targets.len();
+    let ready_count = targets.iter().filter(|r| r.status == "ready").count();
+    let running_count = targets.iter().filter(|r| r.status == "running").count();
+    let error_count = targets.iter().filter(|r| r.status == "error").count();
+    let file_total: i64 = targets.iter().map(|r| r.file_count).sum();
+    let node_total: i64 = targets.iter().map(|r| r.node_count).sum();
+    let work_item_total: i64 = targets.iter().map(|r| r.work_item_count).sum();
+    let (health_label, health_class) = if target_count == 0 {
+        (
+            "No targets",
+            "rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400",
+        )
+    } else if error_count > 0 {
+        (
+            "Needs attention",
+            "rounded-full border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-rose-200",
+        )
+    } else if running_count > 0 {
+        (
+            "Rebuilding",
+            "rounded-full border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-amber-100",
+        )
+    } else {
+        (
+            "Ready",
+            "rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-emerald-200",
+        )
+    };
 
     view! {
-        <div class="space-y-3">
-            <div class="flex flex-wrap items-center gap-4 text-xs text-slate-400 font-mono">
-                <span>"schema v" {schema_version}</span>
-                <span>"webhook lag: " {lag_label}</span>
-                <span>"rate limit: " {quota_label}</span>
+        <div class="space-y-4">
+            <div class="grid gap-3 sm:grid-cols-3">
+                <div class="rounded-md border border-slate-800 bg-slate-900/60 px-4 py-3">
+                    <div class="flex items-center justify-between gap-3">
+                        <span class="text-[10px] uppercase tracking-widest text-slate-500">"Projection"</span>
+                        <span class=health_class>{health_label}</span>
+                    </div>
+                    <div class="mt-3 flex items-end gap-2">
+                        <span class="text-2xl font-semibold tabular-nums text-slate-100">{ready_count}</span>
+                        <span class="pb-1 text-xs text-slate-500">"/ "{target_count}" targets ready"</span>
+                    </div>
+                </div>
+                <div class="rounded-md border border-slate-800 bg-slate-900/60 px-4 py-3">
+                    <div class="text-[10px] uppercase tracking-widest text-slate-500">"Indexed content"</div>
+                    <div class="mt-3 grid grid-cols-3 gap-3 text-xs">
+                        <div>
+                            <div class="text-lg font-semibold tabular-nums text-slate-100">{file_total}</div>
+                            <div class="text-slate-500">"files"</div>
+                        </div>
+                        <div>
+                            <div class="text-lg font-semibold tabular-nums text-slate-100">{node_total}</div>
+                            <div class="text-slate-500">"nodes"</div>
+                        </div>
+                        <div>
+                            <div class="text-lg font-semibold tabular-nums text-slate-100">{work_item_total}</div>
+                            <div class="text-slate-500">"items"</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="rounded-md border border-slate-800 bg-slate-900/60 px-4 py-3">
+                    <div class="text-[10px] uppercase tracking-widest text-slate-500">"Operations"</div>
+                    <div class="mt-3 grid grid-cols-3 gap-3 text-xs">
+                        <div>
+                            <div class="font-mono text-sm text-slate-100">"v"{schema_version}</div>
+                            <div class="text-slate-500">"schema"</div>
+                        </div>
+                        <div>
+                            <div class="font-mono text-sm text-slate-100">{lag_label}</div>
+                            <div class="text-slate-500">"webhook"</div>
+                        </div>
+                        <div>
+                            <div class="font-mono text-sm text-slate-100">{quota_label}</div>
+                            <div class="text-slate-500">"rate"</div>
+                        </div>
+                    </div>
+                </div>
             </div>
             {if targets.is_empty() {
                 view! {
-                    <p class="text-xs text-slate-500 italic">"no targets registered yet"</p>
+                    <div class="rounded-md border border-slate-800 bg-slate-900/40 px-4 py-3 text-xs text-slate-500">
+                        "No targets registered yet."
+                    </div>
                 }.into_any()
             } else {
                 view! {
-                    <div class="border border-slate-800 rounded-md overflow-hidden">
+                    <div class="border border-slate-800 rounded-md overflow-x-auto">
                         <table class="w-full text-xs">
                             <thead class="bg-slate-900 text-slate-400 uppercase tracking-widest">
                                 <tr>
@@ -368,10 +439,10 @@ fn ProjectionStatusPanel(status: ProjectionStatus) -> impl IntoView {
                                 {targets.into_iter().map(|r: ProjectionStatusEntry| {
                                     let target = format!("{}/{} ({})", r.org, r.repo, r.branch);
                                     let status_class = match r.status.as_str() {
-                                        "ready" => "text-emerald-300",
-                                        "error" => "text-rose-300",
-                                        "running" => "text-amber-300",
-                                        _ => "text-slate-400",
+                                        "ready" => "rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-emerald-200",
+                                        "error" => "rounded-full border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-rose-200",
+                                        "running" => "rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-amber-100",
+                                        _ => "rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400",
                                     };
                                     let duration = r.last_rebuild_duration_ms
                                         .map(|n| format!("{n} ms"))
@@ -381,7 +452,7 @@ fn ProjectionStatusPanel(status: ProjectionStatus) -> impl IntoView {
                                     view! {
                                         <tr class="border-t border-slate-800 hover:bg-slate-900/50">
                                             <td class="px-3 py-1.5 text-slate-200 font-mono">{target}</td>
-                                            <td class=format!("px-3 py-1.5 font-mono {}", status_class)>{r.status}</td>
+                                            <td class="px-3 py-1.5"><span class=status_class>{r.status}</span></td>
                                             <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{r.file_count}</td>
                                             <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{r.node_count}</td>
                                             <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{r.edge_count}</td>

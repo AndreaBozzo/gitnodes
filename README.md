@@ -12,10 +12,10 @@ Phase 3 has moved the app from a single-target editor into a multi-tenant
 collaborative workspace with target-aware routing, bidirectional work-item sync,
 permission-aware direct-write vs PR flows, saved views, repo-structure
 navigation, graph polish, canonical target identity, and UI/sidebar posture.
-The security/content-trust and operational-readiness hardening lanes are closed;
-the current focus is production/open-source preparation: projection/schema
-operations, public-repo cleanup, and only the feature slices justified by real
-dogfooding feedback.
+The security/content-trust, operational-readiness, projection/schema, and
+presentation-polish hardening lanes are closed; the current focus is
+production/open-source preparation: public-repo cleanup and only the feature
+slices justified by real dogfooding feedback.
 
 ## Stack
 
@@ -160,16 +160,15 @@ Webhook-driven projection rebuilds need a server-side credential — set either 
 - **Phase 1 closed** — config-driven node types, frontmatter round-trip, `WorkItem` model, real `.brain-config.yml` dogfooding on the Brain repo.
 - **Phase 2A/2B closed** — pooled GitHub HTTP client, target-scoped caches, SQLite projection, webhook + SSE baseline, atomic rename via Git Data API, and work-item projection materialization.
 - **Phase 3 core closed / closeout active** — multi-tenant routing, Brain Switcher, bidirectional work-item sync, permission-aware branch/PR orchestration, saved views, rate-limit shielding, graph canvas polish, repo structure, canonical `TargetRef`, and UI/sidebar posture are landed. Phase 3 is now frozen to bugfixes, small polish, operator docs, and true dogfooding blockers.
-- **Hardening lanes closed** — security/content trust, CSRF/rate limiting/session encryption, `/healthz`/`/readyz`, typed `ApiError`, per-target SSE, and the provider-sync outbox/retry/admin surface are landed.
-- **Current gate** — projection/schema operations, public-core cleanup, and validating the collaborative workflow with real usage. Larger product expansion stays behind dogfooding evidence.
+- **Hardening lanes closed** — security/content trust, CSRF/rate limiting/session encryption, `/healthz`/`/readyz`, typed `ApiError`, per-target SSE, provider-sync outbox/retry/admin surface, projection/schema operations, and presentation UI polish are landed.
+- **Current gate** — public-core cleanup and validating the collaborative workflow with real usage. Larger product expansion stays behind dogfooding evidence.
 
 ## Known caveats & roadmap
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-05-21, the next tracked work is explicitly framed around:
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-05-23, the next tracked work is explicitly framed around:
 
-- Projection Schema v2 & SQLite operations, including versioned migrations, retention/cleanup, and admin projection status.
-- Presentation UI polish after SQLite v2: Knowledge first impression, graph/sidebar/detail flow, work-item clarity, admin/status polish, and the Pokémon mock as the demo fixture.
 - Open-sourcing prep: removing proprietary config/data assumptions, choosing license/policy docs, and keeping the downstream/private mirror strategy simple.
+- Presentation validation on the Pokemon mock using [`docs/PRESENTATION_DEMO.md`](docs/PRESENTATION_DEMO.md) as the repeatable rehearsal path.
 - Feature slices such as FTS, advisory locks, activity stream, BYOB/blob, forge abstraction, temporal graph, local/offline mode, and conflict resolution only when their trigger is real.
 
 Embedded analytics, BYOB/blob storage, FTS, advisory locks, activity streams,

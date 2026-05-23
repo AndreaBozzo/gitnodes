@@ -21,8 +21,18 @@ use brain_domain::{TargetRef, encode_path_segment};
 
 fn knowledge_loading_view() -> impl IntoView {
     view! {
-        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-            "Loading knowledge graph…"
+        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
+            <div class="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 px-4 py-3 shadow-lg shadow-black/20">
+                <span class="h-2 w-2 rounded-full bg-teal-300 animate-brain-pulse"></span>
+                <div>
+                    <div class="text-xs font-semibold uppercase tracking-widest text-slate-400">
+                        "Opening Brain"
+                    </div>
+                    <div class="mt-0.5 text-sm text-slate-200">
+                        "Loading graph, files, and saved views."
+                    </div>
+                </div>
+            </div>
         </div>
     }
 }
@@ -82,8 +92,16 @@ pub fn KnowledgePage() -> impl IntoView {
                         }).into_any()
                     }
                     (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
-                        <div class="min-h-screen flex items-center justify-center bg-slate-950 text-rose-300 text-sm">
-                            {format!("Failed to load graph/config: {e}")}
+                        <div class="min-h-screen flex items-center justify-center bg-slate-950 px-6 text-sm">
+                            <div class="max-w-lg rounded-md border border-rose-400/30 bg-rose-500/10 px-5 py-4 text-rose-100">
+                                <div class="text-xs font-semibold uppercase tracking-widest text-rose-200">
+                                    "Brain unavailable"
+                                </div>
+                                <p class="mt-2 text-slate-200">
+                                    "The last projection could not be loaded. Refresh after checking the target connection."
+                                </p>
+                                <p class="mt-3 font-mono text-xs text-rose-200/90 break-words">{format!("{e}")}</p>
+                            </div>
                         </div>
                     }.into_any(),
                     _ => knowledge_loading_view().into_any(),
@@ -146,6 +164,8 @@ pub(crate) fn KnowledgeView(
         })
         .collect();
     let total_nodes: usize = type_counts.values().sum();
+    let total_files = repo_files.with_value(Vec::len);
+    let visible_type_count = type_counts.values().filter(|count| **count > 0).count();
     // Header overflow: show top N by count, fold the rest into a dropdown.
     let mut nonzero: Vec<(String, usize)> = type_counts
         .iter()
@@ -441,20 +461,32 @@ pub(crate) fn KnowledgeView(
 
     view! {
         <div class="h-screen flex flex-col bg-slate-950 text-slate-100">
-            <header class="px-6 py-4 border-b border-slate-800 flex items-center gap-3">
-                <div class="w-2 h-2 rounded-full bg-teal-400"></div>
-                <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300">
-                    "Brain · Knowledge"
-                </h1>
-                {(!target_label.is_empty()).then(|| view! {
-                    <span class="text-xs text-slate-500 font-mono">{target_label.clone()}</span>
-                })}
+            <header class="px-6 py-4 border-b border-slate-800 bg-slate-950/95 flex items-center gap-4">
+                <div class="flex min-w-0 items-center gap-3">
+                    <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-teal-400/30 bg-teal-400/10">
+                        <span class="h-2.5 w-2.5 rounded-full bg-teal-300"></span>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                            <h1 class="text-sm font-semibold uppercase tracking-wide text-slate-200">
+                                "Knowledge"
+                            </h1>
+                            <span class="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-emerald-200">
+                                "Live"
+                            </span>
+                        </div>
+                        {(!target_label.is_empty()).then(|| view! {
+                            <div class="mt-0.5 truncate font-mono text-xs text-slate-500">{target_label.clone()}</div>
+                        })}
+                    </div>
+                </div>
                 <a
                     href=admin_href
                     rel="external"
-                    class="text-xs text-slate-500 hover:text-slate-300 ml-2"
+                    class="rounded-md border border-slate-800 px-2.5 py-1 text-xs text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                    title="Open projection, sync, sessions, and audit status"
                 >
-                    "· /admin"
+                    "Status"
                 </a>
                 <div class="ml-auto flex items-center gap-2 flex-wrap justify-end">
                     <span
@@ -463,6 +495,20 @@ pub(crate) fn KnowledgeView(
                     >
                         <span class="text-slate-200 font-semibold tabular-nums">{total_nodes}</span>
                         " nodes"
+                    </span>
+                    <span
+                        class="px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400"
+                        title="Markdown files indexed in this Brain"
+                    >
+                        <span class="text-slate-200 font-semibold tabular-nums">{total_files}</span>
+                        " files"
+                    </span>
+                    <span
+                        class="px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400"
+                        title="Node types currently represented"
+                    >
+                        <span class="text-slate-200 font-semibold tabular-nums">{visible_type_count}</span>
+                        " types"
                     </span>
                     {
                         let config_top = config.get_value();
@@ -515,6 +561,7 @@ pub(crate) fn KnowledgeView(
                     <RefreshButton graph_version=graph_version sync_status=sync_status />
                     <button
                         class="btn btn-primary btn-outline btn-xs ml-2"
+                        title="Create a new Brain document"
                         on:click=move |_| {
                             edit_mode.update(|m| {
                                 *m = if matches!(m, EditMode::Closed) {

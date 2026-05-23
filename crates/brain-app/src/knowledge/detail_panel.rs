@@ -306,7 +306,10 @@ pub fn DetailPanel(
                                 <button
                                     class="text-slate-500 hover:text-slate-200 text-lg leading-none transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 rounded px-1"
                                     aria-label="Close"
-                                    on:click=move |_| selected.set(None)
+                                    on:click=move |_| {
+                                        selected.set(None);
+                                        selected_path.set(None);
+                                    }
                                 >
                                     "×"
                                 </button>
@@ -670,7 +673,9 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
     let state = work_item_state_label(&item.state);
     let state_class = work_item_state_class(&item.state);
     let system = work_item_system_label(&item.system_of_record);
+    let source_class = work_item_source_class(&item.system_of_record);
     let binding = item.external_binding.clone();
+    let title = item.title.clone();
     let assignees_view = if item.assignees.is_empty() {
         ().into_any()
     } else {
@@ -707,15 +712,13 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
         }
         .into_any()
     };
-    let binding_view = binding
-        .as_ref()
-        .map(|binding| {
-            let system = external_system_label(&binding.system).to_string();
-            let label = format!("{} · {}#{}", system, binding.project, binding.item_key);
-            let url = binding.url.clone();
-            view! {
+    let binding_view = if let Some(binding) = binding.as_ref() {
+        let system = external_system_label(&binding.system).to_string();
+        let label = format!("{} · {}#{}", system, binding.project, binding.item_key);
+        let url = binding.url.clone();
+        view! {
                 <>
-                    <dt class="text-slate-500 uppercase tracking-widest">"Binding"</dt>
+                    <dt class="text-slate-500 uppercase tracking-widest">"Provider"</dt>
                     <dd>
                         {match url {
                             Some(url) => view! {
@@ -736,20 +739,47 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
                 </>
             }
             .into_any()
-        })
-        .unwrap_or_else(|| ().into_any());
+    } else {
+        view! {
+            <>
+                <dt class="text-slate-500 uppercase tracking-widest">"Provider"</dt>
+                <dd class="text-slate-400">"Not bound"</dd>
+            </>
+        }
+        .into_any()
+    };
+    let sync_view = if binding.is_some() {
+        view! {
+            <>
+                <dt class="text-slate-500 uppercase tracking-widest">"Sync"</dt>
+                <dd class="text-slate-300">"Brain changes propagate to the provider; failed pushes surface in Status."</dd>
+            </>
+        }
+        .into_any()
+    } else {
+        view! {
+            <>
+                <dt class="text-slate-500 uppercase tracking-widest">"Sync"</dt>
+                <dd class="text-slate-400">"Brain-only"</dd>
+            </>
+        }
+        .into_any()
+    };
 
     let brain_id = item.brain_id.clone();
     view! {
-        <section class="mb-5 rounded-lg border border-slate-800 bg-slate-900/70 p-4 text-sm">
-            <div class="flex flex-wrap items-center gap-2">
-                <span class="rounded-full border border-fuchsia-400/30 bg-fuchsia-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-fuchsia-200">
-                    "Work Item"
-                </span>
-                <span class=state_class>{state}</span>
-                <span class="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[10px] uppercase tracking-widest text-slate-300">
-                    {system}
-                </span>
+        <section class="mb-5 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="rounded-full border border-fuchsia-400/30 bg-fuchsia-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-fuchsia-200">
+                            "Work Item"
+                        </span>
+                        <span class=state_class>{state}</span>
+                    </div>
+                    <h3 class="mt-2 text-sm font-semibold text-slate-100 break-words">{title}</h3>
+                </div>
+                <span class=source_class>{system}</span>
             </div>
             <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-xs text-slate-300">
                 <dt class="text-slate-500 uppercase tracking-widest">"Brain ID"</dt>
@@ -757,6 +787,7 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
                 {assignees_view}
                 {labels_view}
                 {binding_view}
+                {sync_view}
             </dl>
             <WorkItemComments
                 target=active_target.clone()
@@ -798,7 +829,7 @@ fn WorkItemComments(
     view! {
         <details class="mt-4 border-t border-slate-800 pt-3">
             <summary class="cursor-pointer text-xs uppercase tracking-widest text-slate-400 hover:text-slate-200">
-                "Comments"
+                "GitHub comments"
             </summary>
             <Suspense fallback=|| view! {
                 <p class="mt-3 text-xs text-slate-500">"Loading comments..."</p>
@@ -973,17 +1004,21 @@ fn WorkItemControls(
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .find(|result| result.write.mode == WriteMode::PullRequest)
-        .map(|result| {
-            format!(
-                "Proposed via PR #{}.",
+        .map(|result| match result.write.mode {
+            WriteMode::Direct => {
+                "Saved to Brain. Provider retry status appears under Status if propagation fails."
+                    .to_string()
+            }
+            WriteMode::PullRequest => format!(
+                "Proposed via PR #{}. The live Brain updates after that PR is merged.",
                 result
                     .write
                     .pr_number
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "?".to_string())
-            )
+            ),
         })
+        .next()
     };
 
     view! {
@@ -1255,6 +1290,20 @@ fn work_item_system_label(system: &WorkItemSystemOfRecord) -> &'static str {
         WorkItemSystemOfRecord::Brain => "Brain source",
         WorkItemSystemOfRecord::External => "External source",
         WorkItemSystemOfRecord::Split => "Split source",
+    }
+}
+
+fn work_item_source_class(system: &WorkItemSystemOfRecord) -> &'static str {
+    match system {
+        WorkItemSystemOfRecord::Brain => {
+            "rounded-full border border-teal-400/30 bg-teal-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-teal-200"
+        }
+        WorkItemSystemOfRecord::External => {
+            "rounded-full border border-sky-400/30 bg-sky-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-sky-200"
+        }
+        WorkItemSystemOfRecord::Split => {
+            "rounded-full border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-widest text-amber-100"
+        }
     }
 }
 

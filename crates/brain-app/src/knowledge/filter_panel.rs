@@ -170,6 +170,34 @@ pub fn FilterPanel(
             || active_path_prefix.with(|p| p.is_some())
             || active_orphan_filter.get()
     });
+    let scope_label = Memo::new(move |_| {
+        let mut parts: Vec<String> = Vec::new();
+        let type_count = active_types.with(HashSet::len);
+        let tag_count = active_tags.with(HashSet::len);
+        if type_count > 0 {
+            parts.push(format!(
+                "{type_count} type{}",
+                if type_count == 1 { "" } else { "s" }
+            ));
+        }
+        if tag_count > 0 {
+            parts.push(format!(
+                "{tag_count} tag{}",
+                if tag_count == 1 { "" } else { "s" }
+            ));
+        }
+        if let Some(prefix) = active_path_prefix.get() {
+            parts.push(format!("path {}", prefix.trim_end_matches('/')));
+        }
+        if active_orphan_filter.get() {
+            parts.push("isolated files".to_string());
+        }
+        if parts.is_empty() {
+            "All nodes visible".to_string()
+        } else {
+            parts.join(" + ")
+        }
+    });
     let clear_all = move |_| {
         active_tags.update(|s| s.clear());
         active_types.update(|s| s.clear());
@@ -231,7 +259,7 @@ pub fn FilterPanel(
                 })}
                 <section>
                     <div class="flex items-center mb-3">
-                        <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Type"</h2>
+                        <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">"Types"</h2>
                         {clear_in_type_row}
                     </div>
                     <div class="flex flex-wrap gap-2">{type_buttons}</div>
@@ -276,8 +304,11 @@ pub fn FilterPanel(
                     </Show>
                 </section>
 
-                <section class="text-[11px] text-slate-500 leading-relaxed pt-4 border-t border-slate-800">
-                    <p>"Empty filter means everything visible. Hover a node to emphasise its neighbourhood; click to lock it into the detail bar."</p>
+                <section class="rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-[11px] text-slate-400">
+                    <div class="flex items-center gap-2">
+                        <span class="h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+                        <span class="min-w-0 flex-1 truncate">{move || scope_label.get()}</span>
+                    </div>
                 </section>
             </div>
             <Show when=move || HISTORY_SLOT_ENABLED>

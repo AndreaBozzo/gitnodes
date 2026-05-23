@@ -129,7 +129,7 @@ pub fn RepoStructureTree(
         <section>
             <div class="flex items-center mb-3">
                 <h2 class="text-[10px] font-semibold tracking-widest uppercase text-slate-500">
-                    "Repository structure"
+                    "Structure"
                 </h2>
                 <span class="ml-auto text-[10px] text-slate-600">{total.file_count}" files"</span>
             </div>
@@ -141,13 +141,14 @@ pub fn RepoStructureTree(
             </Show>
             {(total.orphan_count > 0).then(|| view! {
                 <button
-                    class="mb-2 w-full rounded border border-amber-400/30 px-2 py-1 text-left text-[10px] text-amber-100 hover:bg-amber-400/15"
+                    class="mb-2 flex w-full items-center justify-between rounded border border-amber-400/30 px-2 py-1 text-left text-[10px] text-amber-100 hover:bg-amber-400/15"
                     class=("bg-amber-400/20", move || active_orphan_filter.get())
                     class=("bg-amber-400/10", move || !active_orphan_filter.get())
                     on:click=move |_| active_orphan_filter.update(|value| *value = !*value)
                     title="Files with no wiki links in or out"
                 >
-                    {total.orphan_count}" isolated markdown files"
+                    <span>"Isolated files"</span>
+                    <span class="tabular-nums">{total.orphan_count}</span>
                 </button>
             })}
             <div class="space-y-0.5 text-[11px]">
@@ -311,7 +312,7 @@ fn render_file(file: RepoFile, depth: usize, selected_path: RwSignal<Option<Stri
         >
             <span class="truncate">{label}</span>
             {file.is_work_item.then(|| view! {
-                <span class="shrink-0 rounded bg-slate-800 px-1 text-[9px] uppercase tracking-wide text-rose-200">"task"</span>
+                <span class="shrink-0 rounded border border-fuchsia-400/30 bg-fuchsia-500/10 px-1 text-[9px] uppercase tracking-wide text-fuchsia-200">"work"</span>
             })}
             {file.is_orphan_in_graph.then(|| view! {
                 <span class="shrink-0 text-amber-200" title="No wiki links in or out">"!"</span>

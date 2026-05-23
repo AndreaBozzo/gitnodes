@@ -806,10 +806,23 @@ pub fn GraphCanvas(
                 <g>{nodes_view}</g>
             </svg>
 
-            <div class="pointer-events-none absolute top-3 right-4 flex items-center gap-3 text-[10px] uppercase tracking-widest text-slate-500 bg-slate-900/60 border border-slate-800 rounded-md px-3 py-1.5 backdrop-blur">
+            <Show when=move || visible_ids.with(HashSet::is_empty)>
+                <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
+                    <div class="max-w-sm rounded-md border border-slate-800 bg-slate-950/80 px-5 py-4 text-center shadow-2xl shadow-black/20">
+                        <div class="text-xs font-semibold uppercase tracking-widest text-slate-400">
+                            "No nodes in this view"
+                        </div>
+                        <p class="mt-2 text-sm text-slate-300">
+                            "Clear the active scope or choose another saved view."
+                        </p>
+                    </div>
+                </div>
+            </Show>
+
+            <div class="pointer-events-none absolute left-4 right-4 top-3 flex flex-wrap items-center justify-end gap-2 text-[10px] uppercase tracking-widest text-slate-500">
                 {config.node_types.iter().map(|spec| {
                     view! {
-                        <span class="flex items-center gap-1.5">
+                        <span class="flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 backdrop-blur">
                             <span class="inline-block w-1.5 h-1.5 rounded-full" style=format!("background:{}", spec.accent_var())></span>
                             <span>{spec.label.clone()}</span>
                         </span>
@@ -819,7 +832,7 @@ pub fn GraphCanvas(
 
             <div class="absolute bottom-3 right-4 flex items-center gap-1 text-[10px] uppercase tracking-widest text-slate-600">
                 <button
-                    class="px-2 py-1 rounded-md bg-slate-900/60 border border-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
+                    class="h-7 min-w-7 rounded-md bg-slate-900/70 border border-slate-800 px-2 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
                     title="Zoom out"
                     aria-label="Zoom out"
                     on:click=move |_| zoom_by(1.0 / 1.25, true)
@@ -827,7 +840,7 @@ pub fn GraphCanvas(
                     "-"
                 </button>
                 <button
-                    class="px-2 py-1 rounded-md bg-slate-900/60 border border-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
+                    class="h-7 rounded-md bg-slate-900/70 border border-slate-800 px-2 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
                     title="Reset graph view"
                     aria-label="Reset graph view"
                     on:click=move |_| reset_view()
@@ -835,7 +848,7 @@ pub fn GraphCanvas(
                     {move || format!("{:.2}x", rendered_viewport.get().scale)}
                 </button>
                 <button
-                    class="px-2 py-1 rounded-md bg-slate-900/60 border border-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
+                    class="h-7 min-w-7 rounded-md bg-slate-900/70 border border-slate-800 px-2 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
                     title="Zoom in"
                     aria-label="Zoom in"
                     on:click=move |_| zoom_by(1.25, true)
