@@ -28,7 +28,7 @@ const BATCH_LIMIT: i64 = 25;
 /// Stop retrying after this many attempts and leave the row for an operator to
 /// inspect in admin — a row failing this many times is a real problem (renamed
 /// file, revoked binding, permanent permission loss), not a transient outage.
-const MAX_ATTEMPTS: i64 = 20;
+pub(crate) const MAX_ATTEMPTS: i64 = 20;
 
 /// Spawn the supervised retry loop. Returns immediately; the task runs for the
 /// process lifetime. If the projection pool isn't initialized the task is a

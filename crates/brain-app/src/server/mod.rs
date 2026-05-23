@@ -5,6 +5,7 @@ pub mod health;
 pub mod installation_token;
 pub mod pending_sync_job;
 pub mod projection;
+pub mod retention;
 pub mod routing;
 pub mod session;
 pub mod sse;

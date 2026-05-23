@@ -1,11 +1,11 @@
-use brain_domain::{BrainError, Edge, Node};
+use brain_domain::{BrainError, Edge};
 use sqlx::{QueryBuilder, Sqlite};
 
 use super::{
     SQLITE_MAX_VARIABLES, enum_str,
     links::Backlink,
     nodes::NodeInsertRow,
-    rebuild::ProjectionFile,
+    rebuild::{NodeAuthorRow, ProjectionFile},
     sqlx_error,
     work_items::{ProjectedWorkItem, ProjectedWorkItemBinding},
 };
@@ -19,15 +19,17 @@ pub(super) async fn bulk_insert_files(
         return Ok(());
     }
 
-    for chunk in files.chunks(max_rows_per_insert(4)) {
+    for chunk in files.chunks(max_rows_per_insert(6)) {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO files (target_id, path, sha, size_bytes, updated_at) ",
+            "INSERT INTO files (target_id, path, sha, size_bytes, body_text, frontmatter_json, updated_at) ",
         );
         query.push_values(chunk, |mut row, file| {
             row.push_bind(target_id)
                 .push_bind(&file.path)
                 .push_bind(&file.sha)
                 .push_bind(file.size_bytes)
+                .push_bind(&file.body_text)
+                .push_bind(&file.frontmatter_json)
                 .push("CURRENT_TIMESTAMP");
         });
         query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
@@ -39,35 +41,16 @@ pub(super) async fn bulk_insert_files(
 pub(super) async fn bulk_insert_nodes(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     target_id: i64,
-    nodes: &[Node],
+    rows: &[NodeInsertRow],
 ) -> Result<(), BrainError> {
-    if nodes.is_empty() {
+    if rows.is_empty() {
         return Ok(());
     }
 
-    let rows = nodes
-        .iter()
-        .map(|node| {
-            Ok(NodeInsertRow {
-                node_id: i64::from(node.id),
-                title: node.title.clone(),
-                summary: node.summary.clone(),
-                node_type: node.node_type.clone(),
-                tags_json: serde_json::to_string(&node.tags)
-                    .map_err(|error| BrainError::parse(format!("projection tags json: {error}")))?,
-                x: node.x as f64,
-                y: node.y as f64,
-                path: node.path.clone(),
-                sha: node.sha.clone(),
-                is_virtual: node.path.is_empty(),
-            })
-        })
-        .collect::<Result<Vec<_>, BrainError>>()?;
-
-    for chunk in rows.chunks(max_rows_per_insert(11)) {
+    for chunk in rows.chunks(max_rows_per_insert(13)) {
         let mut query = QueryBuilder::<Sqlite>::new(
             "INSERT INTO nodes (
-                target_id, node_id, title, summary, node_type, tags_json, x, y, path, sha, is_virtual
+                target_id, node_id, title, summary, node_type, tags_json, x, y, path, sha, is_virtual, body_text, frontmatter_json
             ) ",
         );
         query.push_values(chunk, |mut row, node| {
@@ -81,7 +64,34 @@ pub(super) async fn bulk_insert_nodes(
                 .push_bind(node.y)
                 .push_bind(&node.path)
                 .push_bind(&node.sha)
-                .push_bind(node.is_virtual);
+                .push_bind(node.is_virtual)
+                .push_bind(&node.body_text)
+                .push_bind(&node.frontmatter_json);
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
+pub(super) async fn bulk_insert_node_authors(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    rows: &[NodeAuthorRow],
+) -> Result<(), BrainError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in rows.chunks(max_rows_per_insert(4)) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT OR IGNORE INTO node_authors (target_id, node_id, author, role) ",
+        );
+        query.push_values(chunk, |mut bind, author| {
+            bind.push_bind(target_id)
+                .push_bind(author.node_id)
+                .push_bind(&author.author)
+                .push_bind(&author.role);
         });
         query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
     }

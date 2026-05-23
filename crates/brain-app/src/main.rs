@@ -285,9 +285,6 @@ async fn main() {
         .migrate()
         .await
         .expect("session store migration");
-    brain_app::server::audit::migrate(&pool)
-        .await
-        .expect("audit table migration");
     brain_app::server::projection::migrate(&pool)
         .await
         .expect("projection table migration");
@@ -301,6 +298,10 @@ async fn main() {
     // `pending_provider_sync` and reconciles failed best-effort pushes as the
     // GitHub App. No-op until rows appear; safe to always start.
     brain_app::server::pending_sync_job::spawn(pool.clone(), gh_http.clone());
+
+    // Schema v2: supervised retention task. Drains expired audit/session rows
+    // on a daily tick and warns on stuck `pending_provider_sync` rows.
+    brain_app::server::retention::spawn(pool.clone());
 
     let allow_insecure_webhooks = std::env::var("ALLOW_INSECURE_WEBHOOKS")
         .map(|v| v != "0" && !v.is_empty())

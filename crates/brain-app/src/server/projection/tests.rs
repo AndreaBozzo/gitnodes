@@ -480,9 +480,9 @@ async fn migrate_creates_unique_index_on_org_repo() {
 
 #[tokio::test]
 async fn migrate_is_idempotent() {
-    // Running migrate twice on the same pool must not fail. ALTER TABLE
-    // ADD COLUMN would error on the second run without the
-    // `add_column_if_missing` guard.
+    // Running migrate repeatedly on the same pool must not fail. Sqlx should
+    // skip recorded migrations, and the legacy-target preflight must stay
+    // idempotent.
     let pool = test_pool().await;
     migrate(&pool).await.expect("second migrate must succeed");
     migrate(&pool).await.expect("third migrate must succeed");
@@ -589,4 +589,453 @@ async fn pending_sync_next_batch_skips_exhausted_rows() {
     let batch = pending_sync::next_batch(&pool, 10, 20).await.unwrap();
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].brain_id, "wi-ready");
+}
+
+#[tokio::test]
+async fn migrate_records_schema_version_on_fresh_db() {
+    let pool = test_pool().await;
+    let version: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 2, "expected migrations 0001 + 0002 applied");
+}
+
+#[tokio::test]
+async fn migrate_claims_baseline_on_legacy_db() {
+    // Simulate a prod DB that already has the pre-versioned schema (every
+    // table created by the old ad-hoc `migrate()`). The new sqlx migrator
+    // must see the existing tables, treat 0001 as a no-op (every statement
+    // is idempotent), record 0001+0002 in `_sqlx_migrations`, and apply the
+    // v2 column additions cleanly.
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+
+    // Inline copy of the pre-slice DDL (subset that would already exist on a
+    // legacy DB — every CREATE in baseline uses IF NOT EXISTS so this is a
+    // realistic precondition).
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS targets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL UNIQUE,
+            org TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            registered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            registered_by TEXT,
+            source TEXT NOT NULL DEFAULT 'env_default',
+            default_branch TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS files (
+            target_id INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            sha TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (target_id, path),
+            FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            target_id INTEGER NOT NULL,
+            node_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            node_type TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            path TEXT NOT NULL,
+            sha TEXT NOT NULL,
+            is_virtual INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (target_id, node_id),
+            FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS projection_sync_state (
+            target_id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'stale',
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            last_error_at TEXT,
+            last_error TEXT,
+            last_reason TEXT,
+            file_count INTEGER NOT NULL DEFAULT 0,
+            node_count INTEGER NOT NULL DEFAULT 0,
+            edge_count INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO targets (key, org, repo, branch) VALUES ('o/r/main', 'o', 'r', 'main')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Now run the new migrator. This must not error even though tables exist.
+    migrate(&pool).await.unwrap();
+
+    // Verify 0001 + 0002 are recorded.
+    let version: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 2, "legacy DB should claim baseline + apply 0002");
+
+    // Verify v2 columns added.
+    let files_cols: Vec<(i64, String)> =
+        sqlx::query_as("SELECT cid, name FROM pragma_table_info('files')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let files_col_names: Vec<&str> = files_cols.iter().map(|(_, n)| n.as_str()).collect();
+    assert!(files_col_names.contains(&"body_text"));
+    assert!(files_col_names.contains(&"frontmatter_json"));
+
+    // node_authors table created.
+    let authors_cols: Vec<(i64, String)> =
+        sqlx::query_as("SELECT cid, name FROM pragma_table_info('node_authors')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(!authors_cols.is_empty(), "node_authors table must exist");
+
+    // Existing data preserved.
+    let target_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM targets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(target_count, 1, "pre-existing target row should survive");
+}
+
+#[tokio::test]
+async fn migrate_heals_targets_table_missing_registration_columns() {
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE targets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL UNIQUE,
+            org TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            branch TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO targets (key, org, repo, branch) VALUES ('o/r/main', 'o', 'r', 'main')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    migrate(&pool).await.unwrap();
+
+    let row: (String, Option<String>, String, Option<String>) = sqlx::query_as(
+        "SELECT source, registered_by, registered_at, default_branch FROM targets
+         WHERE org = 'o' AND repo = 'r'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.0, "env_default");
+    assert!(row.1.is_none());
+    assert!(!row.2.is_empty());
+    assert_eq!(row.3.as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn snapshot_populates_body_frontmatter_and_authors() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+
+    let content = "---\ntype: concept\ntopic: A\nauthors:\n  - alice\n  - bob\n---\n# Body line\n";
+    let snapshot =
+        ProjectionSnapshot::from_raw_files(&[raw("concepts/A.md", "sha-a", content)], &config);
+
+    let target = target("org", "repo", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    persist_snapshot(&pool, target_id, &snapshot, "test")
+        .await
+        .unwrap();
+
+    let (file_body, file_front): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT body_text, frontmatter_json FROM files WHERE target_id = ?")
+            .bind(target_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(file_body.as_deref().unwrap_or("").contains("Body line"));
+    let front_json = file_front.expect("frontmatter_json populated");
+    assert!(front_json.contains("\"alice\""));
+
+    let (node_body, node_front): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT body_text, frontmatter_json FROM nodes WHERE target_id = ?")
+            .bind(target_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(node_body.as_deref().unwrap_or("").contains("Body line"));
+    assert!(node_front.is_some());
+
+    let authors: Vec<(String, String)> =
+        sqlx::query_as("SELECT author, role FROM node_authors WHERE target_id = ? ORDER BY author")
+            .bind(target_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(authors.len(), 2);
+    assert_eq!(authors[0].0, "alice");
+    assert_eq!(authors[0].1, "author");
+    assert_eq!(authors[1].0, "bob");
+
+    // last_rebuild_duration_ms is set by `rebuild` (post-write UPDATE),
+    // not by `persist_snapshot`. After persist alone the column is NULL —
+    // confirming nothing else is sneaking a value in.
+    let duration: Option<i64> = sqlx::query_scalar(
+        "SELECT last_rebuild_duration_ms FROM projection_sync_state WHERE target_id = ?",
+    )
+    .bind(target_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(duration, None);
+}
+
+async fn stub_tower_sessions(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tower_sessions (
+            id TEXT PRIMARY KEY,
+            data BLOB NOT NULL,
+            expiry_date INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn retention_deletes_old_audit_events() {
+    let pool = test_pool().await;
+    stub_tower_sessions(&pool).await;
+
+    for _ in 0..5 {
+        sqlx::query("INSERT INTO audit_events (ts, kind, detail) VALUES (datetime('now', '-100 days'), 'old', 'x')")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for _ in 0..5 {
+        sqlx::query("INSERT INTO audit_events (kind, detail) VALUES ('new', 'y')")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    crate::server::retention::run_once(&pool, 90).await.unwrap();
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 5, "old rows should be deleted, new rows kept");
+}
+
+#[tokio::test]
+async fn retention_deletes_expired_sessions() {
+    let pool = test_pool().await;
+    stub_tower_sessions(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO tower_sessions (id, data, expiry_date)
+         VALUES ('past_text', x'00', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO tower_sessions (id, data, expiry_date)
+         VALUES ('future_text', x'00', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+7 days'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO tower_sessions (id, data, expiry_date)
+         VALUES ('past_epoch', x'00', CAST(strftime('%s', 'now', '-1 day') AS INTEGER))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO tower_sessions (id, data, expiry_date)
+         VALUES ('future_epoch', x'00', CAST(strftime('%s', 'now', '+7 days') AS INTEGER))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    crate::server::retention::run_once(&pool, 90).await.unwrap();
+
+    let remaining: Vec<(String,)> = sqlx::query_as("SELECT id FROM tower_sessions ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let remaining_ids: Vec<String> = remaining.into_iter().map(|(id,)| id).collect();
+    assert_eq!(remaining_ids, vec!["future_epoch", "future_text"]);
+}
+
+/// Operator smoke test: run the migrator against a copy of a real prod
+/// SQLite file. Ignored by default; invoke with:
+///
+/// ```text
+/// LEGACY_DB_SMOKE=/tmp/sessions-legacy.db \
+///     cargo test --features ssr -p brain-app \
+///     -- --ignored legacy_db_smoke
+/// ```
+///
+/// The file should be a *copy* of a real `data/sessions.db`; the test
+/// mutates it. Verifies migrations claim baseline + add v2 columns without
+/// corrupting existing rows.
+#[tokio::test]
+#[ignore]
+async fn legacy_db_smoke() {
+    let path = match std::env::var("LEGACY_DB_SMOKE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            eprintln!("LEGACY_DB_SMOKE not set — skipping");
+            return;
+        }
+    };
+    let url = format!("sqlite://{path}");
+    let opts = SqliteConnectOptions::from_str(&url)
+        .unwrap()
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .expect("open legacy DB");
+
+    let before_targets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM targets")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+
+    migrate(&pool).await.expect("migrate legacy DB");
+
+    let version: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 2, "legacy DB should be at schema v2 after migrate");
+
+    let files_cols: Vec<(i64, String)> =
+        sqlx::query_as("SELECT cid, name FROM pragma_table_info('files')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let names: Vec<&str> = files_cols.iter().map(|(_, n)| n.as_str()).collect();
+    assert!(names.contains(&"body_text"), "files.body_text must exist");
+    assert!(names.contains(&"frontmatter_json"));
+
+    let after_targets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM targets")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        before_targets, after_targets,
+        "target rows must not be lost"
+    );
+
+    eprintln!(
+        "legacy_db_smoke OK — path={path}, schema_version={version}, targets={after_targets}"
+    );
+}
+
+#[tokio::test]
+async fn projection_status_reports_schema_and_per_target_state() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+    let snapshot = ProjectionSnapshot::from_raw_files(
+        &[raw(
+            "concepts/A.md",
+            "sha-a",
+            "---\ntype: concept\ntopic: A\n---\nbody\n",
+        )],
+        &config,
+    );
+    let target = target("org", "repo", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    persist_snapshot(&pool, target_id, &snapshot, "test")
+        .await
+        .unwrap();
+    // Simulate the post-write UPDATE that `rebuild` performs after timing
+    // the full fetch+parse+write cycle.
+    sqlx::query(
+        "UPDATE projection_sync_state SET last_rebuild_duration_ms = 17 WHERE target_id = ?",
+    )
+    .bind(target_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let version: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 2);
+
+    let row: (String, String, i64, i64, Option<i64>) = sqlx::query_as(
+        "SELECT t.org, COALESCE(s.status, 'stale'), COALESCE(s.file_count, 0), COALESCE(s.node_count, 0), s.last_rebuild_duration_ms
+         FROM targets t LEFT JOIN projection_sync_state s ON s.target_id = t.id
+         WHERE t.id = ?",
+    )
+    .bind(target_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "org");
+    assert_eq!(row.1, "ready");
+    assert_eq!(row.2, 1);
+    assert_eq!(row.3, 1);
+    assert_eq!(row.4, Some(17));
 }

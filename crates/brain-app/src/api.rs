@@ -20,16 +20,17 @@ pub(crate) use file_ops::{relativize, slugify, validate_markdown_path};
 
 mod config_admin;
 pub use config_admin::{
-    AppConfig, AuditEntry, ConfigLoadDiagnostic, ConfigLoadStatus, PendingSyncEntry, SessionEntry,
-    get_app_config, get_current_user, list_pending_sync, list_sessions, list_views, load_audit_log,
+    AppConfig, AuditEntry, ConfigLoadDiagnostic, ConfigLoadStatus, PendingSyncEntry,
+    ProjectionStatus, ProjectionStatusEntry, SessionEntry, get_app_config, get_current_user,
+    get_projection_status, list_pending_sync, list_sessions, list_views, load_audit_log,
     load_brain_config, load_brain_config_status, load_brain_config_status_for_target,
     load_brain_template, revoke_session, save_views,
 };
 #[cfg(feature = "ssr")]
 pub use config_admin::{
-    GetAppConfig, GetCurrentUser, ListPendingSync, ListSessions, ListViews, LoadAuditLog,
-    LoadBrainConfig, LoadBrainConfigStatus, LoadBrainConfigStatusForTarget, LoadBrainTemplate,
-    RevokeSession, SaveViews,
+    GetAppConfig, GetCurrentUser, GetProjectionStatus, ListPendingSync, ListSessions, ListViews,
+    LoadAuditLog, LoadBrainConfig, LoadBrainConfigStatus, LoadBrainConfigStatusForTarget,
+    LoadBrainTemplate, RevokeSession, SaveViews,
 };
 
 mod graph;
@@ -152,6 +153,7 @@ const SERVER_FNS: &[&str] = &[
     "ListPendingSync",
     "RevokeSession",
     "GetCurrentUser",
+    "GetProjectionStatus",
     "LoadBrainTemplate",
     "ListNodes",
     "ListWorkItems",
@@ -195,6 +197,7 @@ pub fn register_server_functions() {
     register_explicit::<ListPendingSync>();
     register_explicit::<RevokeSession>();
     register_explicit::<GetCurrentUser>();
+    register_explicit::<GetProjectionStatus>();
     register_explicit::<LoadBrainTemplate>();
     register_explicit::<ListNodes>();
     register_explicit::<ListWorkItems>();

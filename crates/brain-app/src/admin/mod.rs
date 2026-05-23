@@ -2,8 +2,8 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    AuditEntry, PendingSyncEntry, SessionEntry, list_pending_sync, list_sessions, load_audit_log,
-    revoke_session,
+    AuditEntry, PendingSyncEntry, ProjectionStatus, ProjectionStatusEntry, SessionEntry,
+    get_projection_status, list_pending_sync, list_sessions, load_audit_log, revoke_session,
 };
 
 pub mod views;
@@ -49,6 +49,11 @@ pub fn AdminPage() -> impl IntoView {
         |_| async move { list_pending_sync().await },
     );
 
+    let projection_status = Resource::new_blocking(
+        move || reload_tick.get(),
+        |_| async move { get_projection_status().await },
+    );
+
     let revoke = Action::new(move |id: &String| {
         let id = id.clone();
         async move {
@@ -89,6 +94,25 @@ pub fn AdminPage() -> impl IntoView {
             </header>
 
             <main class="p-6 space-y-8 max-w-6xl mx-auto">
+                <section>
+                    <div class="flex items-center gap-3 mb-3">
+                        <h2 class="text-xs uppercase tracking-widest text-slate-400">
+                            "Projection status"
+                        </h2>
+                        <span class="text-xs text-slate-500">
+                            "schema version, per-target sync state, counts, rebuild cost"
+                        </span>
+                    </div>
+                    <Suspense fallback=|| view! { <p class="text-xs text-slate-500">"loading…"</p> }>
+                        {move || projection_status.get().map(|res| match res {
+                            Ok(status) => ProjectionStatusPanel(ProjectionStatusPanelProps { status }).into_any(),
+                            Err(e) => view! {
+                                <p class="text-xs text-rose-300">{format!("failed: {e}")}</p>
+                            }.into_any(),
+                        })}
+                    </Suspense>
+                </section>
+
                 <section>
                     <div class="flex items-center gap-3 mb-3">
                         <h2 class="text-xs uppercase tracking-widest text-slate-400">
@@ -295,4 +319,84 @@ fn SessionTable(rows: Vec<SessionEntry>, on_revoke: Callback<String>) -> impl In
             </table>
         </div>
     }.into_any()
+}
+
+#[component]
+fn ProjectionStatusPanel(status: ProjectionStatus) -> impl IntoView {
+    let ProjectionStatus {
+        schema_version,
+        targets,
+        webhook_lag_seconds,
+        rate_limit_remaining,
+    } = status;
+    let lag_label = webhook_lag_seconds
+        .map(|n| format!("{n}s"))
+        .unwrap_or_else(|| "—".to_string());
+    let quota_label = rate_limit_remaining
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "—".to_string());
+
+    view! {
+        <div class="space-y-3">
+            <div class="flex flex-wrap items-center gap-4 text-xs text-slate-400 font-mono">
+                <span>"schema v" {schema_version}</span>
+                <span>"webhook lag: " {lag_label}</span>
+                <span>"rate limit: " {quota_label}</span>
+            </div>
+            {if targets.is_empty() {
+                view! {
+                    <p class="text-xs text-slate-500 italic">"no targets registered yet"</p>
+                }.into_any()
+            } else {
+                view! {
+                    <div class="border border-slate-800 rounded-md overflow-hidden">
+                        <table class="w-full text-xs">
+                            <thead class="bg-slate-900 text-slate-400 uppercase tracking-widest">
+                                <tr>
+                                    <th class="text-left px-3 py-2">"target"</th>
+                                    <th class="text-left px-3 py-2 w-20">"status"</th>
+                                    <th class="text-right px-3 py-2 w-16">"files"</th>
+                                    <th class="text-right px-3 py-2 w-16">"nodes"</th>
+                                    <th class="text-right px-3 py-2 w-16">"edges"</th>
+                                    <th class="text-right px-3 py-2 w-16">"items"</th>
+                                    <th class="text-right px-3 py-2 w-24">"rebuild"</th>
+                                    <th class="text-left px-3 py-2 w-40">"last success"</th>
+                                    <th class="text-left px-3 py-2">"last error"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {targets.into_iter().map(|r: ProjectionStatusEntry| {
+                                    let target = format!("{}/{} ({})", r.org, r.repo, r.branch);
+                                    let status_class = match r.status.as_str() {
+                                        "ready" => "text-emerald-300",
+                                        "error" => "text-rose-300",
+                                        "running" => "text-amber-300",
+                                        _ => "text-slate-400",
+                                    };
+                                    let duration = r.last_rebuild_duration_ms
+                                        .map(|n| format!("{n} ms"))
+                                        .unwrap_or_else(|| "—".to_string());
+                                    let last_success = r.last_success_at.unwrap_or_else(|| "—".to_string());
+                                    let last_error = r.last_error.unwrap_or_default();
+                                    view! {
+                                        <tr class="border-t border-slate-800 hover:bg-slate-900/50">
+                                            <td class="px-3 py-1.5 text-slate-200 font-mono">{target}</td>
+                                            <td class=format!("px-3 py-1.5 font-mono {}", status_class)>{r.status}</td>
+                                            <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{r.file_count}</td>
+                                            <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{r.node_count}</td>
+                                            <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{r.edge_count}</td>
+                                            <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{r.work_item_count}</td>
+                                            <td class="px-3 py-1.5 text-right text-slate-300 font-mono">{duration}</td>
+                                            <td class="px-3 py-1.5 text-slate-400 font-mono">{last_success}</td>
+                                            <td class="px-3 py-1.5 text-rose-300 font-mono truncate">{last_error}</td>
+                                        </tr>
+                                    }
+                                }).collect_view()}
+                            </tbody>
+                        </table>
+                    </div>
+                }.into_any()
+            }}
+        </div>
+    }
 }

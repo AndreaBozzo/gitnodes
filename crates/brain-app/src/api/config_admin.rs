@@ -235,6 +235,37 @@ pub struct SessionEntry {
     pub expiry_date: String,
 }
 
+/// Per-target projection status for the admin status surface (Schema v2).
+/// Mirrors the row shape stored in `projection_sync_state` plus the target
+/// identity. `webhook_lag_seconds` and `rate_limit_remaining` are surfaced
+/// at the wrapper level (see `ProjectionStatus`) and intentionally left as
+/// `None` placeholders this slice — they'll be wired in a follow-up.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectionStatusEntry {
+    pub org: String,
+    pub repo: String,
+    pub branch: String,
+    pub status: String,
+    pub last_attempt_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub last_error_at: Option<String>,
+    pub last_error: Option<String>,
+    pub last_reason: Option<String>,
+    pub file_count: i64,
+    pub node_count: i64,
+    pub edge_count: i64,
+    pub work_item_count: i64,
+    pub last_rebuild_duration_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectionStatus {
+    pub schema_version: i64,
+    pub targets: Vec<ProjectionStatusEntry>,
+    pub webhook_lag_seconds: Option<i64>,
+    pub rate_limit_remaining: Option<i64>,
+}
+
 /// A best-effort provider push that hasn't propagated to the forge yet (slice
 /// γ). Surfaced read-only in admin so operators can see what's un-synced
 /// instead of inferring it from the audit log.
@@ -322,6 +353,39 @@ pub async fn revoke_session(id: String) -> Result<u64, ApiError> {
         .map_err(|e| sfe(BrainError::other(format!("DB: {e}"))))?;
     crate::server::audit::log("revoke_session", actor.as_deref(), &id).await;
     Ok(n)
+}
+
+#[server(GetProjectionStatus, "/api", endpoint = "get_projection_status")]
+pub async fn get_projection_status() -> Result<ProjectionStatus, ApiError> {
+    use crate::server::session;
+    let _ = session::require_target_admin_session().await.map_err(sfe)?;
+    let (schema_version, rows) = crate::server::projection::projection_status()
+        .await
+        .map_err(sfe)?;
+    Ok(ProjectionStatus {
+        schema_version,
+        targets: rows
+            .into_iter()
+            .map(|r| ProjectionStatusEntry {
+                org: r.org,
+                repo: r.repo,
+                branch: r.branch,
+                status: r.status,
+                last_attempt_at: r.last_attempt_at,
+                last_success_at: r.last_success_at,
+                last_error_at: r.last_error_at,
+                last_error: r.last_error,
+                last_reason: r.last_reason,
+                file_count: r.file_count,
+                node_count: r.node_count,
+                edge_count: r.edge_count,
+                work_item_count: r.work_item_count,
+                last_rebuild_duration_ms: r.last_rebuild_duration_ms,
+            })
+            .collect(),
+        webhook_lag_seconds: None,
+        rate_limit_remaining: None,
+    })
 }
 
 #[server(GetCurrentUser, "/api", endpoint = "get_current_user")]

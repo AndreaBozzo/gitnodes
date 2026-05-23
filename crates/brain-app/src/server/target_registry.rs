@@ -102,8 +102,10 @@ pub async fn register_or_get(
     }
     let branch = discover_default_branch(http, token, org, repo).await?;
     sqlx::query(
-        "INSERT OR IGNORE INTO targets (key, org, repo, branch, default_branch, source, registered_by)
-         VALUES (?, ?, ?, ?, ?, 'lazy_legacy', ?)",
+        "INSERT OR IGNORE INTO targets (
+            key, org, repo, branch, registered_at, default_branch, source, registered_by
+         )
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'lazy_legacy', ?)",
     )
     .bind(format!("{org}/{repo}/{branch}"))
     .bind(org)
@@ -129,8 +131,10 @@ pub async fn remember_default_branch(
     actor: Option<&str>,
 ) -> Result<(), BrainError> {
     sqlx::query(
-        "INSERT OR IGNORE INTO targets (key, org, repo, branch, default_branch, source, registered_by)
-         VALUES (?, ?, ?, ?, ?, 'switcher_discovery', ?)",
+        "INSERT OR IGNORE INTO targets (
+            key, org, repo, branch, registered_at, default_branch, source, registered_by
+         )
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'switcher_discovery', ?)",
     )
     .bind(format!("{org}/{repo}/{default_branch}"))
     .bind(org)

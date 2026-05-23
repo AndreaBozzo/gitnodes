@@ -67,6 +67,81 @@ pub async fn list_all_pending_sync(limit: i64) -> Result<Vec<PendingSyncRecord>,
     pending_sync::list_all(pool()?, limit).await
 }
 
+/// Per-target projection state for the admin status surface. Joins the
+/// `projection_sync_state` watermark with target identity and adds a
+/// best-effort work_item_count so operators see the same numbers the rebuild
+/// step recorded.
+#[derive(Clone, Debug)]
+pub struct ProjectionStatusRow {
+    pub org: String,
+    pub repo: String,
+    pub branch: String,
+    pub status: String,
+    pub last_attempt_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub last_error_at: Option<String>,
+    pub last_error: Option<String>,
+    pub last_reason: Option<String>,
+    pub file_count: i64,
+    pub node_count: i64,
+    pub edge_count: i64,
+    pub work_item_count: i64,
+    pub last_rebuild_duration_ms: Option<i64>,
+}
+
+/// Schema version (max applied migration) plus per-target rows. Used by the
+/// admin status surface; webhook lag and rate-limit snapshot are deferred.
+pub async fn projection_status() -> Result<(i64, Vec<ProjectionStatusRow>), BrainError> {
+    use sqlx::Row;
+    let pool = pool()?;
+
+    let schema_version: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+            .fetch_one(pool)
+            .await
+            .map_err(sqlx_error)?;
+
+    let rows = sqlx::query(
+        "SELECT
+            t.org, t.repo, t.branch,
+            COALESCE(s.status, 'stale') AS status,
+            s.last_attempt_at, s.last_success_at, s.last_error_at,
+            s.last_error, s.last_reason,
+            COALESCE(s.file_count, 0) AS file_count,
+            COALESCE(s.node_count, 0) AS node_count,
+            COALESCE(s.edge_count, 0) AS edge_count,
+            s.last_rebuild_duration_ms,
+            (SELECT COUNT(*) FROM work_items w WHERE w.target_id = t.id) AS work_item_count
+         FROM targets t
+         LEFT JOIN projection_sync_state s ON s.target_id = t.id
+         ORDER BY t.org, t.repo, t.branch",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(sqlx_error)?;
+
+    let status_rows = rows
+        .into_iter()
+        .map(|row| ProjectionStatusRow {
+            org: row.get("org"),
+            repo: row.get("repo"),
+            branch: row.get("branch"),
+            status: row.get("status"),
+            last_attempt_at: row.get("last_attempt_at"),
+            last_success_at: row.get("last_success_at"),
+            last_error_at: row.get("last_error_at"),
+            last_error: row.get("last_error"),
+            last_reason: row.get("last_reason"),
+            file_count: row.get("file_count"),
+            node_count: row.get("node_count"),
+            edge_count: row.get("edge_count"),
+            work_item_count: row.get("work_item_count"),
+            last_rebuild_duration_ms: row.get("last_rebuild_duration_ms"),
+        })
+        .collect();
+    Ok((schema_version, status_rows))
+}
+
 fn normalize_path_prefix(prefix: &str) -> String {
     let trimmed = prefix.trim().trim_matches('/');
     if trimmed.is_empty() {

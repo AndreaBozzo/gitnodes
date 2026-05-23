@@ -9,7 +9,8 @@ pub(super) async fn ensure_target_id(
 ) -> Result<i64, BrainError> {
     let key = TargetKey::from(target);
     sqlx::query(
-        "INSERT INTO targets (key, org, repo, branch, default_branch) VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO targets (key, org, repo, branch, registered_at, default_branch)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
          ON CONFLICT(org, repo) DO UPDATE SET
             key = excluded.key,
             branch = excluded.branch,

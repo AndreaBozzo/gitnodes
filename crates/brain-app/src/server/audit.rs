@@ -12,24 +12,6 @@ fn pool() -> Option<&'static SqlitePool> {
     POOL.get()
 }
 
-pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL DEFAULT (datetime('now')),
-            kind TEXT NOT NULL,
-            actor TEXT,
-            detail TEXT
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts DESC)")
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// Fire-and-forget: log an event. Failures are swallowed so auth/CRUD paths
 /// never fail because of logging.
 pub async fn log(kind: &str, actor: Option<&str>, detail: &str) {
