@@ -186,6 +186,11 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError
     // Fan out the per-repo config probe concurrently. With up to 100 repos at
     // ~100ms each, a sequential scan would block the Brain Switcher open for
     // ~10s. JoinSet gives us bounded concurrency via reqwest's connection pool.
+    //
+    // Registry writes happen *after* the probe: we only persist a `targets` row
+    // for repos that are actually Brains (Accessible/ConfigInvalid). Persisting
+    // every accessible GitHub repo would pollute the admin projection-status
+    // table with permanently-stale rows and leak the user's repo list.
     let mut set = tokio::task::JoinSet::new();
     for r in repos.into_iter().filter(|r| !r.archived) {
         let parts: Vec<&str> = r.full_name.splitn(2, '/').collect();
@@ -193,35 +198,21 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError
             continue;
         }
         let (org, repo) = (parts[0].to_string(), parts[1].to_string());
-        let target = TargetConfig {
-            org: org.clone(),
-            repo: repo.clone(),
-            branch: r.default_branch,
-        };
-        if let Some(pool) = crate::server::projection::pool_handle()
-            && let Err(error) = crate::server::target_registry::remember_default_branch(
-                pool,
-                &org,
-                &repo,
-                &target.branch,
-                Some(&user),
-            )
-            .await
-        {
-            tracing::debug!(%error, %org, %repo, "failed to persist discovered default_branch");
-        }
+        let default_branch = r.default_branch;
+        // Honour an existing sticky branch from a prior onboarding; otherwise
+        // probe against the forge's default. Lookup is read-only.
         let active_branch = match crate::server::projection::pool_handle() {
             Some(pool) => crate::server::target_registry::lookup(pool, &org, &repo)
                 .await
                 .ok()
                 .flatten()
                 .map(|entry| entry.branch)
-                .unwrap_or_else(|| target.branch.clone()),
-            None => target.branch.clone(),
+                .unwrap_or_else(|| default_branch.clone()),
+            None => default_branch.clone(),
         };
         let active_target = TargetConfig {
-            org: target.org.clone(),
-            repo: target.repo.clone(),
+            org: org.clone(),
+            repo: repo.clone(),
             branch: active_branch.clone(),
         };
         let config_url = brain_domain::GithubClient::new(active_target.clone())
@@ -236,7 +227,7 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError
             AccessibleTarget {
                 org,
                 repo,
-                default_branch: target.branch,
+                default_branch,
                 active_branch,
                 has_brain_config: state == AccessibleTargetState::Accessible,
                 state,
@@ -258,6 +249,24 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError
             AccessibleTargetState::Accessible | AccessibleTargetState::ConfigInvalid
         )
     });
+    // Now that we know which repos are actually Brains, persist them so the
+    // admin status surface and legacy 3-segment URL routing have entries to
+    // resolve against. Failures are logged but non-fatal.
+    if let Some(pool) = crate::server::projection::pool_handle() {
+        for t in &targets {
+            if let Err(error) = crate::server::target_registry::remember_default_branch(
+                pool,
+                &t.org,
+                &t.repo,
+                &t.default_branch,
+                Some(&user),
+            )
+            .await
+            {
+                tracing::debug!(%error, org=%t.org, repo=%t.repo, "failed to persist discovered default_branch");
+            }
+        }
+    }
     // Preserve a stable, predictable order regardless of probe completion order.
     targets.sort_by(|a, b| a.org.cmp(&b.org).then_with(|| a.repo.cmp(&b.repo)));
     Ok(targets)
