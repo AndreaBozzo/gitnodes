@@ -449,12 +449,14 @@ async fn main() {
     // HSTS is only emitted when the app is actually serving over HTTPS
     // (signalled by `SESSION_COOKIE_SECURE`); on local http://127.0.0.1
     // dev it would force the browser to https and break the dev loop.
-    // Static CSP baseline. `img-src` includes `data:`/`blob:` for inline/preview
-    // images and `https:` so GitHub `raw.githubusercontent.com` images (non-asset
-    // markdown images rewritten to raw URLs) load; private-repo assets go through
-    // the same-origin proxy. `connect-src` covers the SSE endpoint and dev ws.
+    // Static CSP baseline. `script-src` includes the pinned Mermaid CDN bundle
+    // used by the Markdown diagram renderer. `img-src` includes `data:`/`blob:`
+    // for inline/preview images and `https:` so GitHub `raw.githubusercontent.com`
+    // images (non-asset markdown images rewritten to raw URLs) load; private-repo
+    // assets go through the same-origin proxy. `connect-src` covers the SSE
+    // endpoint and dev ws.
     const CSP_POLICY: &str = "default-src 'self'; \
-script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline' 'wasm-unsafe-eval'; \
 style-src 'self' 'unsafe-inline'; \
 img-src 'self' data: blob: https:; \
 font-src 'self' data:; \
@@ -479,11 +481,11 @@ form-action 'self'";
         );
         // Content-Security-Policy baseline. `frame-src 'none'` because no iframes
         // exist yet — when the embed allowlist lands it becomes dynamic. We keep
-        // `script-src`/`style-src` permissive enough for Leptos hydration:
-        // `HydrationScripts` emits an inline bootstrap and the WASM module needs
-        // `wasm-unsafe-eval`; Tailwind/Leptos inject inline styles. This still
-        // blocks the primary XSS vector (loading script from a foreign origin).
-        // Tightening to nonces is tracked as a future hardening step.
+        // `script-src`/`style-src` permissive enough for Leptos hydration and
+        // the pinned Mermaid renderer: `HydrationScripts` emits an inline
+        // bootstrap, the WASM module needs `wasm-unsafe-eval`, and Tailwind/
+        // Leptos inject inline styles. Tightening to nonces and self-hosting
+        // third-party bundles are tracked as future hardening steps.
         // `connect-src` allows ws: in dev for AutoReload/live reload.
         headers.insert(
             "Content-Security-Policy",

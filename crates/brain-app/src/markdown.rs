@@ -84,7 +84,18 @@ fn sanitize(html: String) -> String {
         code_classes.insert("language-mermaid");
         code_classes.insert("mermaid");
         // Also allow common syntax highlighting classes
-        for lang in &["rust", "javascript", "typescript", "css", "html", "json", "yaml", "markdown", "bash", "sh"] {
+        for lang in &[
+            "rust",
+            "javascript",
+            "typescript",
+            "css",
+            "html",
+            "json",
+            "yaml",
+            "markdown",
+            "bash",
+            "sh",
+        ] {
             code_classes.insert(lang);
             let lang_class = format!("language-{lang}");
             // Leak to 'static str to satisfy Ammonia's life-time requirements

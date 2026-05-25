@@ -32,36 +32,48 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
-                <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+                <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js"></script>
                 <script>
                     {r#"
-                        "mermaid" in window && mermaid.initialize({
-                            startOnLoad: false,
-                            theme: 'dark',
-                            themeVariables: {
-                                background: '#090d16',
-                                primaryColor: '#1e293b',
-                                primaryTextColor: '#f8fafc',
-                                primaryBorderColor: '#334155',
-                                lineColor: '#64748b',
-                                secondaryColor: '#0f172a',
-                                tertiaryColor: '#1e293b'
+                        window.brainMermaidReady = false;
+                        window.initializeBrainMermaid = function() {
+                            if (!window.mermaid || window.brainMermaidReady) {
+                                return;
                             }
-                        });
-                        window.renderBrainMermaid = function() {
-                            if (window.mermaid) {
-                                setTimeout(() => {
-                                    document.querySelectorAll('pre code.language-mermaid').forEach((el) => {
-                                        const pre = el.parentElement;
-                                        const div = document.createElement('div');
-                                        div.className = 'mermaid';
-                                        div.textContent = el.textContent;
-                                        pre.parentElement.replaceChild(div, pre);
-                                    });
-                                    mermaid.run();
-                                }, 50);
-                            }
+                            mermaid.initialize({
+                                startOnLoad: false,
+                                theme: 'dark',
+                                themeVariables: {
+                                    background: '#090d16',
+                                    primaryColor: '#1e293b',
+                                    primaryTextColor: '#f8fafc',
+                                    primaryBorderColor: '#334155',
+                                    lineColor: '#64748b',
+                                    secondaryColor: '#0f172a',
+                                    tertiaryColor: '#1e293b'
+                                }
+                            });
+                            window.brainMermaidReady = true;
                         };
+                        window.renderBrainMermaid = function() {
+                            setTimeout(() => {
+                                window.initializeBrainMermaid();
+                                if (!window.mermaid) {
+                                    return;
+                                }
+                                document.querySelectorAll('pre code.language-mermaid').forEach((el) => {
+                                    const pre = el.parentElement;
+                                    const div = document.createElement('div');
+                                    div.className = 'mermaid';
+                                    div.textContent = el.textContent;
+                                    pre.parentElement.replaceChild(div, pre);
+                                });
+                                mermaid.run().catch((err) => {
+                                    console.error('Unable to render Mermaid diagram', err);
+                                });
+                            }, 50);
+                        };
+                        window.initializeBrainMermaid();
                     "#}
                 </script>
             </head>
