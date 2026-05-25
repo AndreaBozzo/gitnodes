@@ -10,8 +10,9 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    AccessibleTargetState, FileQueryFilters, list_accessible_targets, list_brain_files,
-    load_brain_config_status_for_target, load_brain_graph_for_target, resolve_legacy_target,
+    AccessibleTarget, AccessibleTargetState, FileQueryFilters, list_accessible_targets,
+    list_brain_files, load_brain_config_status_for_target, load_brain_graph_for_target,
+    resolve_legacy_target,
 };
 use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, decode_path_segment, encode_path_segment};
@@ -136,16 +137,22 @@ pub fn BrainSwitcher(
     let current_repo = StoredValue::new(current_repo);
     let current_branch = StoredValue::new(current_branch);
 
-    let targets = Resource::new(
-        move || open.get(),
-        |is_open| async move {
-            if is_open {
-                list_accessible_targets().await.unwrap_or_default()
-            } else {
-                vec![]
-            }
-        },
-    );
+    let targets_cache = RwSignal::new(None::<Vec<AccessibleTarget>>);
+    let load_targets =
+        Action::new(
+            move |_: &()| async move { list_accessible_targets().await.unwrap_or_default() },
+        );
+    let targets_pending = load_targets.pending();
+    Effect::new(move |_| {
+        if let Some(list) = load_targets.value().get() {
+            targets_cache.set(Some(list));
+        }
+    });
+    let request_targets = move || {
+        if !targets_pending.get_untracked() {
+            load_targets.dispatch(());
+        }
+    };
 
     let current_label = current_org.with_value(|o| {
         current_repo.with_value(|r| match (o, r) {
@@ -170,7 +177,13 @@ pub fn BrainSwitcher(
             </div>
             <button
                 class="w-full flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/50 px-2.5 py-2 text-xs text-slate-300 hover:border-slate-700 hover:text-slate-100 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-600"
-                on:click=move |_| open.update(|v| *v = !*v)
+                on:click=move |_| {
+                    let next = !open.get_untracked();
+                    open.set(next);
+                    if next && targets_cache.with_untracked(Option::is_none) {
+                        request_targets();
+                    }
+                }
             >
                 <span class="flex items-center gap-1.5">
                     <svg class="w-3 h-3 text-teal-400 shrink-0" viewBox="0 0 16 16" fill="currentColor">
@@ -188,11 +201,27 @@ pub fn BrainSwitcher(
             </button>
 
             <Show when=move || open.get()>
-                <Suspense fallback=|| view! {
-                    <p class="text-[10px] text-slate-500 px-1 py-2">"Discovering repos…"</p>
-                }>
-                    {move || {
-                        let list = targets.get().unwrap_or_default();
+                <div class="mt-2 flex items-center justify-between px-1">
+                    <span class="text-[10px] text-slate-500">
+                        {move || if targets_pending.get() { "Refreshing…" } else { "Targets" }}
+                    </span>
+                    <button
+                        type="button"
+                        class="rounded border border-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-slate-400 transition-colors hover:border-slate-700 hover:text-slate-200 disabled:cursor-wait disabled:opacity-50"
+                        disabled=move || targets_pending.get()
+                        on:click=move |_| request_targets()
+                    >
+                        "Refresh"
+                    </button>
+                </div>
+                {move || {
+                    let list = targets_cache.get().unwrap_or_default();
+                    let is_loading_initial = targets_pending.get() && list.is_empty();
+                    if is_loading_initial {
+                        view! {
+                            <p class="text-[10px] text-slate-500 px-1 py-2">"Discovering repos…"</p>
+                        }.into_any()
+                    } else {
                         view! {
                             <div class="mt-2 max-h-64 overflow-y-auto rounded-md border border-slate-800 bg-slate-950/30 p-1">
                             {if list.is_empty() {
@@ -265,9 +294,9 @@ pub fn BrainSwitcher(
                                 }).collect_view().into_any()
                             }}
                             </div>
-                        }
-                    }}
-                </Suspense>
+                        }.into_any()
+                    }
+                }}
             </Show>
         </div>
     }

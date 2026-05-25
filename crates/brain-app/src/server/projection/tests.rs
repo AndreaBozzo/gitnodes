@@ -598,7 +598,7 @@ async fn migrate_records_schema_version_on_fresh_db() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 2, "expected migrations 0001 + 0002 applied");
+    assert_eq!(version, 3, "expected all projection migrations applied");
 }
 
 #[tokio::test]
@@ -606,8 +606,8 @@ async fn migrate_claims_baseline_on_legacy_db() {
     // Simulate a prod DB that already has the pre-versioned schema (every
     // table created by the old ad-hoc `migrate()`). The new sqlx migrator
     // must see the existing tables, treat 0001 as a no-op (every statement
-    // is idempotent), record 0001+0002 in `_sqlx_migrations`, and apply the
-    // v2 column additions cleanly.
+    // is idempotent), record the current migration chain in `_sqlx_migrations`,
+    // and apply the projection column additions cleanly.
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")
         .unwrap()
         .create_if_missing(true);
@@ -702,14 +702,17 @@ async fn migrate_claims_baseline_on_legacy_db() {
     // Now run the new migrator. This must not error even though tables exist.
     migrate(&pool).await.unwrap();
 
-    // Verify 0001 + 0002 are recorded.
+    // Verify 0001 + current migrations are recorded.
     let version: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 2, "legacy DB should claim baseline + apply 0002");
+    assert_eq!(
+        version, 3,
+        "legacy DB should claim baseline + apply current migrations"
+    );
 
-    // Verify v2 columns added.
+    // Verify projection extension columns added.
     let files_cols: Vec<(i64, String)> =
         sqlx::query_as("SELECT cid, name FROM pragma_table_info('files')")
             .fetch_all(&pool)
@@ -718,6 +721,7 @@ async fn migrate_claims_baseline_on_legacy_db() {
     let files_col_names: Vec<&str> = files_cols.iter().map(|(_, n)| n.as_str()).collect();
     assert!(files_col_names.contains(&"body_text"));
     assert!(files_col_names.contains(&"frontmatter_json"));
+    assert!(files_col_names.contains(&"blob_sha"));
 
     // node_authors table created.
     let authors_cols: Vec<(i64, String)> =
@@ -796,24 +800,30 @@ async fn snapshot_populates_body_frontmatter_and_authors() {
         .await
         .unwrap();
 
-    let (file_body, file_front): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT body_text, frontmatter_json FROM files WHERE target_id = ?")
-            .bind(target_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (file_body, file_front, file_blob_sha): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT body_text, frontmatter_json, blob_sha FROM files WHERE target_id = ?",
+        )
+        .bind(target_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(file_body.as_deref().unwrap_or("").contains("Body line"));
+    assert_eq!(file_blob_sha.as_deref(), Some("sha-a"));
     let front_json = file_front.expect("frontmatter_json populated");
     assert!(front_json.contains("\"alice\""));
 
-    let (node_body, node_front): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT body_text, frontmatter_json FROM nodes WHERE target_id = ?")
-            .bind(target_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (node_body, node_front, node_blob_sha): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT body_text, frontmatter_json, blob_sha FROM nodes WHERE target_id = ?",
+        )
+        .bind(target_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(node_body.as_deref().unwrap_or("").contains("Body line"));
     assert!(node_front.is_some());
+    assert_eq!(node_blob_sha.as_deref(), Some("sha-a"));
 
     let authors: Vec<(String, String)> =
         sqlx::query_as("SELECT author, role FROM node_authors WHERE target_id = ? ORDER BY author")
@@ -966,7 +976,10 @@ async fn legacy_db_smoke() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 2, "legacy DB should be at schema v2 after migrate");
+    assert_eq!(
+        version, 3,
+        "legacy DB should be at current schema after migrate"
+    );
 
     let files_cols: Vec<(i64, String)> =
         sqlx::query_as("SELECT cid, name FROM pragma_table_info('files')")
@@ -976,6 +989,7 @@ async fn legacy_db_smoke() {
     let names: Vec<&str> = files_cols.iter().map(|(_, n)| n.as_str()).collect();
     assert!(names.contains(&"body_text"), "files.body_text must exist");
     assert!(names.contains(&"frontmatter_json"));
+    assert!(names.contains(&"blob_sha"));
 
     let after_targets: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM targets")
         .fetch_one(&pool)
@@ -1022,7 +1036,7 @@ async fn projection_status_reports_schema_and_per_target_state() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 
     let row: (String, String, i64, i64, Option<i64>) = sqlx::query_as(
         "SELECT t.org, COALESCE(s.status, 'stale'), COALESCE(s.file_count, 0), COALESCE(s.node_count, 0), s.last_rebuild_duration_ms

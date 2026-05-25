@@ -66,13 +66,13 @@ pub async fn rebuild(
     let result = async {
         let raw_files = storage.fetch_raw_files(token).await?;
         let snapshot = ProjectionSnapshot::from_raw_files(&raw_files, config);
-        persist_snapshot(pool, target_id, &snapshot, reason).await?;
-        Ok::<i64, BrainError>(started.elapsed().as_millis() as i64)
+        let drift = persist_snapshot(pool, target_id, &snapshot, reason).await?;
+        Ok::<_, BrainError>((started.elapsed().as_millis() as i64, drift))
     }
     .await;
 
     match result {
-        Ok(duration_ms) => {
+        Ok((duration_ms, drift)) => {
             // Record total elapsed (fetch + parse + write) on the freshly
             // committed sync-state row. Best-effort: a failure here doesn't
             // invalidate the rebuild itself.
@@ -94,6 +94,10 @@ pub async fn rebuild(
                 target = %TargetKey::from(&target),
                 reason,
                 duration_ms,
+                changed_set_size = drift.total(),
+                added_files = drift.added,
+                changed_files = drift.changed,
+                deleted_files = drift.deleted,
                 "projection rebuild completed"
             );
             Ok(())
@@ -134,11 +138,13 @@ impl ProjectionSnapshot {
         // uses internally, so the result is byte-identical to what FTS5 will
         // index next slice.
         let mut body_by_path: HashMap<String, String> = HashMap::with_capacity(raw_files.len());
+        let mut blob_sha_by_path: HashMap<String, String> = HashMap::with_capacity(raw_files.len());
         let mut frontmatter_json_by_path: HashMap<String, String> = HashMap::new();
         let mut frontmatter_value_by_path: HashMap<String, serde_yaml::Value> = HashMap::new();
         for file in raw_files {
             let (front, body) = split_frontmatter(&file.content);
             body_by_path.insert(file.path.clone(), body.to_string());
+            blob_sha_by_path.insert(file.path.clone(), file.sha.clone());
             if front.is_empty() {
                 continue;
             }
@@ -155,6 +161,7 @@ impl ProjectionSnapshot {
             .map(|file| ProjectionFile {
                 path: file.path.clone(),
                 sha: file.sha.clone(),
+                blob_sha: file.sha.clone(),
                 size_bytes: file.content.len() as i64,
                 body_text: body_by_path.get(&file.path).cloned(),
                 frontmatter_json: frontmatter_json_by_path.get(&file.path).cloned(),
@@ -197,6 +204,7 @@ impl ProjectionSnapshot {
                 y: node.y as f64,
                 path: node.path.clone(),
                 sha: node.sha.clone(),
+                blob_sha: blob_sha_by_path.get(&node.path).cloned(),
                 is_virtual: node.path.is_empty(),
                 body_text,
                 frontmatter_json,
@@ -321,9 +329,23 @@ impl ProjectionSnapshot {
 pub(super) struct ProjectionFile {
     pub(super) path: String,
     pub(super) sha: String,
+    pub(super) blob_sha: String,
     pub(super) size_bytes: i64,
     pub(super) body_text: Option<String>,
     pub(super) frontmatter_json: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct DriftStats {
+    pub(super) added: usize,
+    pub(super) changed: usize,
+    pub(super) deleted: usize,
+}
+
+impl DriftStats {
+    pub(super) fn total(self) -> usize {
+        self.added + self.changed + self.deleted
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -338,7 +360,8 @@ pub(super) async fn persist_snapshot(
     target_id: i64,
     snapshot: &ProjectionSnapshot,
     reason: &str,
-) -> Result<(), BrainError> {
+) -> Result<DriftStats, BrainError> {
+    let drift = drift_stats(pool, target_id, snapshot).await?;
     let mut tx = pool.begin().await.map_err(sqlx_error)?;
 
     sqlx::query("DELETE FROM work_item_bindings WHERE target_id = ?")
@@ -410,5 +433,47 @@ pub(super) async fn persist_snapshot(
     .map_err(sqlx_error)?;
 
     tx.commit().await.map_err(sqlx_error)?;
-    Ok(())
+    Ok(drift)
+}
+
+async fn drift_stats(
+    pool: &SqlitePool,
+    target_id: i64,
+    snapshot: &ProjectionSnapshot,
+) -> Result<DriftStats, BrainError> {
+    let existing: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT path, blob_sha FROM files WHERE target_id = ?")
+            .bind(target_id)
+            .fetch_all(pool)
+            .await
+            .map_err(sqlx_error)?;
+    let existing_by_path: HashMap<String, Option<String>> = existing.into_iter().collect();
+    let next_by_path: HashMap<&str, &str> = snapshot
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.blob_sha.as_str()))
+        .collect();
+
+    let added = next_by_path
+        .keys()
+        .filter(|path| !existing_by_path.contains_key(**path))
+        .count();
+    let changed = next_by_path
+        .iter()
+        .filter(|(path, next_sha)| {
+            existing_by_path
+                .get(**path)
+                .is_some_and(|existing_sha| existing_sha.as_deref() != Some(**next_sha))
+        })
+        .count();
+    let deleted = existing_by_path
+        .keys()
+        .filter(|path| !next_by_path.contains_key(path.as_str()))
+        .count();
+
+    Ok(DriftStats {
+        added,
+        changed,
+        deleted,
+    })
 }

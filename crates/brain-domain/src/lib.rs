@@ -16,7 +16,7 @@ pub use config::{
     TargetRef, TargetRefError, ViewSpec, decode_path_segment, encode_path_segment,
     slugify_view_name,
 };
-pub use error::BrainError;
+pub use error::{BrainError, ConflictKind};
 pub use frontmatter::split_frontmatter;
 pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node};
 pub use work_items::{

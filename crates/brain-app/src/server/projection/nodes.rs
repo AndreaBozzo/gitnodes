@@ -161,6 +161,7 @@ pub(super) struct NodeInsertRow {
     pub(super) y: f64,
     pub(super) path: String,
     pub(super) sha: String,
+    pub(super) blob_sha: Option<String>,
     pub(super) is_virtual: bool,
     pub(super) body_text: Option<String>,
     pub(super) frontmatter_json: Option<String>,

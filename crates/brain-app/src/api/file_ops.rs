@@ -11,9 +11,9 @@ use super::sfe;
 use super::write_orchestrator::{
     open_write_pr, prepare_pr_write, rebuild_projection_after_write, should_fallback_to_pr,
 };
-#[cfg(feature = "ssr")]
-use brain_domain::BrainError;
 use brain_domain::TargetRef;
+#[cfg(feature = "ssr")]
+use brain_domain::{BrainError, ConflictKind};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RenameResult {
@@ -164,6 +164,7 @@ async fn perform_rename_on_storage(
     let (old_content, live_sha) = storage.read_file(token, old_path).await?;
     if live_sha != old_sha {
         return Err(BrainError::conflict(
+            ConflictKind::BlobShaMoved,
             "File was modified since you opened it; reload and retry",
         ));
     }

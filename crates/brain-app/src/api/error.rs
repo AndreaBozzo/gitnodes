@@ -15,6 +15,8 @@ use leptos::prelude::{FromServerFnError, ServerFnErrorErr};
 use leptos::server_fn::codec::JsonEncoding;
 use serde::{Deserialize, Serialize};
 
+use brain_domain::ConflictKind;
+
 /// Application error surfaced to the client. Variants map to the failure modes
 /// the UI is expected to react to differently. The `String` payloads carry a
 /// human-readable detail for display/logging; UI branching keys off the variant.
@@ -32,7 +34,7 @@ pub enum ApiError {
     NotFound(String),
     /// Optimistic-concurrency conflict (stale sha / precondition). UI → "reload
     /// and retry"; never a transparent retry.
-    Conflict(String),
+    Conflict { kind: ConflictKind, message: String },
     /// GitHub 429 / secondary rate limit. UI → "slow down / retry shortly".
     RateLimited(String),
     /// Input rejected before any side effect (size cap, invalid path/target).
@@ -67,11 +69,20 @@ impl ApiError {
             ApiError::NotFound(_) => {
                 "That file or item could not be found — it may have moved. Try reloading.".into()
             }
-            ApiError::Conflict(_) => {
-                "This was changed by someone else since you opened it. Reload to get the latest \
-                 version, then reapply your edit."
-                    .into()
-            }
+            ApiError::Conflict { kind, .. } => match kind {
+                ConflictKind::PathTaken => {
+                    "That destination already exists. Choose another path or reload before retrying."
+                        .into()
+                }
+                ConflictKind::RemotePathDeletedUnderUs => {
+                    "That file was deleted remotely. Reload to get the latest version.".into()
+                }
+                ConflictKind::RefNonFastForward | ConflictKind::BlobShaMoved => {
+                    "This was changed by someone else since you opened it. Reload to get the \
+                     latest version, then reapply your edit."
+                        .into()
+                }
+            },
             ApiError::RateLimited(_) => {
                 "GitHub is rate-limiting requests right now. Wait a few seconds and try again."
                     .into()
@@ -91,7 +102,7 @@ impl std::fmt::Display for ApiError {
             ApiError::Unauthenticated => write!(f, "not authenticated"),
             ApiError::PermissionDenied(m) => write!(f, "permission denied: {m}"),
             ApiError::NotFound(m) => write!(f, "not found: {m}"),
-            ApiError::Conflict(m) => write!(f, "conflict: {m}"),
+            ApiError::Conflict { kind, message } => write!(f, "conflict ({kind}): {message}"),
             ApiError::RateLimited(m) => write!(f, "rate limited: {m}"),
             ApiError::BadInput(m) => write!(f, "{m}"),
             ApiError::Internal(m) => write!(f, "{m}"),
@@ -114,7 +125,7 @@ impl From<brain_domain::BrainError> for ApiError {
         match e {
             B::Unauthenticated => ApiError::Unauthenticated,
             B::NotFound(m) => ApiError::NotFound(m),
-            B::Conflict(m) => ApiError::Conflict(m),
+            B::Conflict { kind, message } => ApiError::Conflict { kind, message },
             B::Parse(m) => ApiError::BadInput(m),
             B::GitHub(m) => classify_github(m),
             B::Io(m) => ApiError::Internal(m),
@@ -135,7 +146,10 @@ fn classify_github(msg: String) -> ApiError {
     } else if lower.contains("status 404") {
         ApiError::NotFound(msg)
     } else if lower.contains("status 409") || lower.contains("not a fast forward") {
-        ApiError::Conflict(msg)
+        ApiError::Conflict {
+            kind: brain_domain::ConflictKind::RefNonFastForward,
+            message: msg,
+        }
     } else if lower.contains("status 429")
         || lower.contains("rate limit")
         || lower.contains("secondary rate")
@@ -163,7 +177,7 @@ mod tests {
         ));
         assert!(matches!(
             ApiError::from(BrainError::github("patch status 409: not a fast forward")),
-            ApiError::Conflict(_)
+            ApiError::Conflict { .. }
         ));
         assert!(matches!(
             ApiError::from(BrainError::github("read status 429: secondary rate limit")),
@@ -182,8 +196,14 @@ mod tests {
             ApiError::Unauthenticated
         );
         assert!(matches!(
-            ApiError::from(BrainError::conflict("stale sha")),
-            ApiError::Conflict(_)
+            ApiError::from(BrainError::conflict(
+                ConflictKind::BlobShaMoved,
+                "stale sha"
+            )),
+            ApiError::Conflict {
+                kind: ConflictKind::BlobShaMoved,
+                ..
+            }
         ));
         assert!(matches!(
             ApiError::from(BrainError::parse("too large")),
@@ -197,7 +217,10 @@ mod tests {
 
     #[test]
     fn roundtrips_as_json() {
-        let e = ApiError::Conflict("stale".into());
+        let e = ApiError::Conflict {
+            kind: ConflictKind::BlobShaMoved,
+            message: "stale".into(),
+        };
         let json = serde_json::to_string(&e).unwrap();
         let back: ApiError = serde_json::from_str(&json).unwrap();
         assert_eq!(e, back);

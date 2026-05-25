@@ -20,7 +20,7 @@
 //!    caller declares preconditions via `GitTransaction::expect_absent` and
 //!    `GitTransaction::expect_sha`; before each PATCH we read the
 //!    `base_tree` recursively and reject the attempt with
-//!    [`BrainError::Conflict`] if any precondition no longer holds. This
+//!    [`BrainError::Conflict`] with a typed `ConflictKind` if any precondition no longer holds. This
 //!    surfaces as "reload and retry" to the user — never as a transparent
 //!    retry — because the user's edits may need to be re-derived.
 //!
@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use base64::Engine;
-use brain_domain::{BrainError, GithubClient};
+use brain_domain::{BrainError, ConflictKind, GithubClient};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -278,7 +278,7 @@ async fn run_transaction(
                 return Ok(outcome);
             }
             Err(AttemptError::FastForward(msg)) => {
-                last_error = Some(BrainError::github(msg));
+                last_error = Some(BrainError::conflict(ConflictKind::RefNonFastForward, msg));
                 if attempt < policy.max_attempts {
                     sleep_with_backoff(&policy, attempt).await;
                     continue;
@@ -337,23 +337,26 @@ async fn attempt_commit(
         }
         for path in &mutation.expect_absent {
             if by_path.contains_key(path.as_str()) {
-                return Err(AttemptError::Fatal(BrainError::conflict(format!(
-                    "destination already exists: {path}"
-                ))));
+                return Err(AttemptError::Fatal(BrainError::conflict(
+                    ConflictKind::PathTaken,
+                    format!("destination already exists: {path}"),
+                )));
             }
         }
         for (path, expected) in &mutation.expected_shas {
             match by_path.get(path.as_str()) {
                 Some(actual) if *actual == expected.as_str() => {}
                 Some(actual) => {
-                    return Err(AttemptError::Fatal(BrainError::conflict(format!(
-                        "{path} changed since read (expected {expected}, found {actual})"
-                    ))));
+                    return Err(AttemptError::Fatal(BrainError::conflict(
+                        ConflictKind::BlobShaMoved,
+                        format!("{path} changed since read (expected {expected}, found {actual})"),
+                    )));
                 }
                 None => {
-                    return Err(AttemptError::Fatal(BrainError::conflict(format!(
-                        "{path} no longer exists"
-                    ))));
+                    return Err(AttemptError::Fatal(BrainError::conflict(
+                        ConflictKind::RemotePathDeletedUnderUs,
+                        format!("{path} no longer exists"),
+                    )));
                 }
             }
         }
@@ -1020,8 +1023,14 @@ mod tests {
             .await
             .expect_err("destination occupied");
         assert!(
-            matches!(err, BrainError::Conflict(_)),
-            "expected Conflict, got {err:?}"
+            matches!(
+                err,
+                BrainError::Conflict {
+                    kind: ConflictKind::PathTaken,
+                    ..
+                }
+            ),
+            "expected PathTaken conflict, got {err:?}"
         );
         assert!(err.to_string().contains("notes/new.md"), "{err}");
     }
@@ -1053,8 +1062,14 @@ mod tests {
             .await
             .expect_err("drift detected");
         assert!(
-            matches!(err, BrainError::Conflict(_)),
-            "expected Conflict, got {err:?}"
+            matches!(
+                err,
+                BrainError::Conflict {
+                    kind: ConflictKind::BlobShaMoved,
+                    ..
+                }
+            ),
+            "expected BlobShaMoved conflict, got {err:?}"
         );
         assert!(err.to_string().contains("notes/refs.md"), "{err}");
     }
@@ -1076,7 +1091,16 @@ mod tests {
         let err = run(&http, &gh, "tok", m, BackoffPolicy::instant())
             .await
             .expect_err("missing path");
-        assert!(matches!(err, BrainError::Conflict(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                BrainError::Conflict {
+                    kind: ConflictKind::RemotePathDeletedUnderUs,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
         assert!(err.to_string().contains("no longer exists"), "{err}");
     }
 
@@ -1173,7 +1197,16 @@ mod tests {
         let err = run(&http, &gh, "tok", m, BackoffPolicy::instant())
             .await
             .expect_err("retry must surface conflict");
-        assert!(matches!(err, BrainError::Conflict(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                BrainError::Conflict {
+                    kind: ConflictKind::PathTaken,
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

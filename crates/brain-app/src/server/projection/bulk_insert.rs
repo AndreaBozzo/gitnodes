@@ -19,14 +19,15 @@ pub(super) async fn bulk_insert_files(
         return Ok(());
     }
 
-    for chunk in files.chunks(max_rows_per_insert(6)) {
+    for chunk in files.chunks(max_rows_per_insert(7)) {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO files (target_id, path, sha, size_bytes, body_text, frontmatter_json, updated_at) ",
+            "INSERT INTO files (target_id, path, sha, blob_sha, size_bytes, body_text, frontmatter_json, updated_at) ",
         );
         query.push_values(chunk, |mut row, file| {
             row.push_bind(target_id)
                 .push_bind(&file.path)
                 .push_bind(&file.sha)
+                .push_bind(&file.blob_sha)
                 .push_bind(file.size_bytes)
                 .push_bind(&file.body_text)
                 .push_bind(&file.frontmatter_json)
@@ -47,10 +48,10 @@ pub(super) async fn bulk_insert_nodes(
         return Ok(());
     }
 
-    for chunk in rows.chunks(max_rows_per_insert(13)) {
+    for chunk in rows.chunks(max_rows_per_insert(14)) {
         let mut query = QueryBuilder::<Sqlite>::new(
             "INSERT INTO nodes (
-                target_id, node_id, title, summary, node_type, tags_json, x, y, path, sha, is_virtual, body_text, frontmatter_json
+                target_id, node_id, title, summary, node_type, tags_json, x, y, path, sha, blob_sha, is_virtual, body_text, frontmatter_json
             ) ",
         );
         query.push_values(chunk, |mut row, node| {
@@ -64,6 +65,7 @@ pub(super) async fn bulk_insert_nodes(
                 .push_bind(node.y)
                 .push_bind(&node.path)
                 .push_bind(&node.sha)
+                .push_bind(&node.blob_sha)
                 .push_bind(node.is_virtual)
                 .push_bind(&node.body_text)
                 .push_bind(&node.frontmatter_json);
