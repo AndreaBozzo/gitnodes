@@ -114,6 +114,16 @@ pub fn DetailPanel(
     };
     let loaded_sha = move || loaded_file().map(|bf| bf.sha);
 
+    #[cfg(feature = "hydrate")]
+    {
+        Effect::new(move |_| {
+            if file.get().is_some() {
+                let _ =
+                    js_sys::eval("if (window.renderBrainMermaid) { window.renderBrainMermaid(); }");
+            }
+        });
+    }
+
     let request_delete = move || {
         delete_error.set(String::new());
         delete_prompt.set(Some(backlinks.get_untracked()));

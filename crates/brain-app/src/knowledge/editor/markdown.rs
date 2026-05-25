@@ -25,6 +25,17 @@ pub(super) fn MarkdownPreview(
     let upload_status = RwSignal::new(String::new());
     let dragging = RwSignal::new(false);
 
+    #[cfg(feature = "hydrate")]
+    {
+        Effect::new(move |_| {
+            if show_preview.get() {
+                let _ = preview_html.get(); // track preview_html updates
+                let _ =
+                    js_sys::eval("if (window.renderBrainMermaid) { window.renderBrainMermaid(); }");
+            }
+        });
+    }
+
     view! {
         <div>
             <div class="flex items-center justify-between mb-1">
