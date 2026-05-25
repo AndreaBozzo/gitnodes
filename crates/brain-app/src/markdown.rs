@@ -1,7 +1,7 @@
 //! Shared markdown helpers used by both SSR (rendering persisted files) and
 //! the client-side hydrate build (live preview in the editor).
 
-use brain_domain::{GithubClient, TargetConfig};
+use brain_domain::{GithubClient, TargetConfig, encode_path_segment};
 use std::path::{Component, Path};
 
 /// Split a YAML frontmatter block off the top of a markdown file.
@@ -164,7 +164,17 @@ fn rewrite_link_destination(
     let resolved = resolve_repo_path(file_path, path_part);
 
     if resolved.ends_with(".md") {
-        let mut url = format!("/knowledge?path={}", encode_query_value(&resolved));
+        let mut url = if let Some(cfg) = cfg {
+            format!(
+                "/{}/{}/{}/knowledge?path={}",
+                cfg.org,
+                cfg.repo,
+                encode_path_segment(&cfg.branch),
+                encode_query_value(&resolved)
+            )
+        } else {
+            format!("/knowledge?path={}", encode_query_value(&resolved))
+        };
         if let Some(fragment) = fragment {
             url.push('#');
             url.push_str(fragment);
@@ -368,7 +378,7 @@ mod tests {
             "concepts/foo.md",
             &test_cfg(),
         );
-        assert!(html.contains(r#"href="/knowledge?path=adrs%2F001-git-centric-automation.md""#));
+        assert!(html.contains(r#"href="/Dritara-Digital/Brain/main/knowledge?path=adrs%2F001-git-centric-automation.md""#));
     }
 
     #[test]
@@ -378,7 +388,9 @@ mod tests {
             "concepts/foo.md",
             &test_cfg(),
         );
-        assert!(html.contains(r#"href="/knowledge?path=templates%2FRunbook.md""#));
+        assert!(html.contains(
+            r#"href="/Dritara-Digital/Brain/main/knowledge?path=templates%2FRunbook.md""#
+        ));
     }
 
     #[test]
