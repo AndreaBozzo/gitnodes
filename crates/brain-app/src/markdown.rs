@@ -78,6 +78,22 @@ fn sanitize(html: String) -> String {
         // and `/{org}/{repo}/assets/…` (relative URLs, allowed by default).
         let schemes: HashSet<&str> = ["http", "https", "mailto", "tel"].into_iter().collect();
         b.url_schemes(schemes);
+
+        let mut allowed_classes = std::collections::HashMap::new();
+        let mut code_classes = std::collections::HashSet::new();
+        code_classes.insert("language-mermaid");
+        code_classes.insert("mermaid");
+        // Also allow common syntax highlighting classes
+        for lang in &["rust", "javascript", "typescript", "css", "html", "json", "yaml", "markdown", "bash", "sh"] {
+            code_classes.insert(lang);
+            let lang_class = format!("language-{lang}");
+            // Leak to 'static str to satisfy Ammonia's life-time requirements
+            let leaked: &'static str = Box::leak(lang_class.into_boxed_str());
+            code_classes.insert(leaked);
+        }
+        allowed_classes.insert("code", code_classes);
+        b.allowed_classes(allowed_classes);
+
         b
     });
     cleaner.clean(&html).to_string()
@@ -520,6 +536,23 @@ mod tests {
         assert_eq!(
             repo_relative_link_target(Some("foo.md"), "assets/2026/04/foo-abc.png"),
             "./assets/2026/04/foo-abc.png"
+        );
+    }
+
+    #[test]
+    fn render_preserves_mermaid_and_highlighting_classes() {
+        // Test that mermaid blocks preserve their class="language-mermaid"
+        let html = render("```mermaid\ngraph TD\n```");
+        assert!(
+            html.contains(r#"class="language-mermaid""#),
+            "expected language-mermaid class to be preserved by ammonia: {html}"
+        );
+
+        // Test that standard code highlighting classes (like rust) are also preserved
+        let html_rust = render("```rust\nlet x = 1;\n```");
+        assert!(
+            html_rust.contains(r#"class="language-rust""#),
+            "expected language-rust class to be preserved by ammonia: {html_rust}"
         );
     }
 }
