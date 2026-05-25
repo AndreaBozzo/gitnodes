@@ -615,13 +615,13 @@ pub fn DetailPanel(
                                                     let diagram = mermaid_modal.get().unwrap_or_default();
                                                     view! {
                                                         <div
-                                                            class="fixed inset-0 z-50 bg-slate-950/90 p-6 flex items-center justify-center"
+                                                            class="fixed inset-0 z-50 bg-slate-950/90 p-4 sm:p-6 flex items-center justify-center"
                                                             role="dialog"
                                                             aria-modal="true"
                                                             on:click=move |_| mermaid_modal.set(None)
                                                         >
                                                             <div
-                                                                class="max-w-[94vw] max-h-[92vh] flex flex-col gap-3"
+                                                                class="w-[min(96vw,1400px)] h-[min(90vh,960px)] flex flex-col gap-3"
                                                                 on:click=move |ev| ev.stop_propagation()
                                                             >
                                                                 <div class="flex justify-end">
@@ -635,10 +635,10 @@ pub fn DetailPanel(
                                                                     </button>
                                                                 </div>
                                                                 <div
-                                                                    class="max-w-[94vw] max-h-[84vh] overflow-auto rounded border border-slate-700 bg-slate-950 p-4"
+                                                                    class="flex-1 min-h-0 overflow-auto rounded border border-slate-700 bg-slate-950 p-4 sm:p-6"
                                                                 >
                                                                     <div
-                                                                        class="[&_.mermaid_svg]:max-w-none [&_.mermaid_svg]:h-auto"
+                                                                        class="mermaid-modal-diagram"
                                                                         inner_html=diagram
                                                                     ></div>
                                                                 </div>

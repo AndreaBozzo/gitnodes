@@ -28,6 +28,24 @@
 }
 
 @layer utilities {
+  .mermaid-modal-diagram,
+  .mermaid-modal-diagram .mermaid {
+    min-height: 100%;
+    width: 100%;
+  }
+
+  .mermaid-modal-diagram .mermaid {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+  }
+
+  .mermaid-modal-diagram .mermaid > svg {
+    height: auto !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+
   @keyframes brain-pulse {
     0%,
     100% {
