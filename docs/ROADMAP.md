@@ -188,6 +188,13 @@ Queste sono direzioni valide, ma tornano in gioco solo dopo il closeout di Fase 
     - Vincolo trasversale: tutti e tre i sotto-feature si basano sugli stessi dati di commit history e audit log materializzati nella projection — nessun nuovo store, nessuna chiamata GitHub live fuori dal rebuild.
     - Dipendenza: Watch/Follow richiede Task Inbox come container delle notifiche. Activity Stream e face-pile sono indipendenti.
 
+- [ ] **Detail-panel & view presentation: deferred small wins** _(spin-out della "Small Wins" PR 2026-05-25)_
+    - Razionale: nella prima passata abbiamo shippato `cover:`, backlink raggruppati per tipo e `weight:` per ordinare le saved views. Le quattro voci sotto sono state escluse dalla PR perché toccano CSP/sanitizer, decisioni di prodotto o nuove dipendenze JS — non sono "additive read-mostly" come le prime tre.
+    - **Mermaid theme sync con il tema Brain UI** — oggi ogni diagramma usa `style X fill:#...` hard-coded. Iniettare il tema corrente (light/dark) come variabile a `mermaid.initialize` quando il renderer parte e re-renderizzare al cambio tema. Vincolo: Mermaid è self-hosted sotto CSP stretto (vedi commit `b4ca8f5` e seguenti); decidere se forzare il re-render globale o solo su nuovi diagrammi.
+    - **KaTeX in code-fence `math`** — stessa famiglia di Mermaid (lib client + whitelist sanitizer Ammonia + CSP). Pattern già stabilito da `language-mermaid` in `crates/brain-app/src/markdown.rs:sanitize`. Costo iniziale di setup non triviale, da fare in PR dedicata.
+    - **Render automatico del diagramma "tipi e relazioni" dalle saved views** — generare lato server un diagramma Mermaid dalla struttura di `.brain-config.yml` e mostrarlo in una landing/home della knowledge. Decisione di prodotto da fare prima (dove vive, quando si aggiorna).
+    - **GFM task-list aggregator nei backlink panel** — i `.md` di tipo work item sono pieni di `- [ ]` / `- [x]`. Aggiungere un counter `3/7 done` accanto a ogni backlink (o nel group header) renderebbe immediatamente leggibile la salute di una vista. Estensione naturale del lavoro sui backlink raggruppati di questa PR.
+
 - [ ] **`detail_panel.rs` split** _(audit follow-up 2026-05-09)_
     - Stato: `crates/brain-app/src/knowledge/detail_panel.rs` è 1199 LoC con ~14 funzioni, 70+ `.clone()`, ~10 `RwSignal<String>` per stato UI transitorio. Già "next candidate" dopo la split di `editor.rs`.
     - Direzione: stessa pattern di `editor/{mod,frontmatter,location,markdown,related,tags}.rs` — estrarre `work_item_card.rs`, `comments.rs`, `delete_dialog.rs`, `rename_dialog.rs`, `backlinks.rs` come componenti separati. Niente nuovi state container globali.

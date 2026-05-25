@@ -75,6 +75,13 @@ Work items are configured the same way: node types can declare `work_item_kind`,
 the label taxonomy in `.brain-config.yml` drives provider-facing labels without hardcoding
 GitHub-specific names in the app.
 
+Saved views accept an optional `weight:` (integer; lower = earlier, default 0) so a
+single pinned view can float to the top without re-ordering every entry. Individual
+notes can declare an optional `cover:` in their frontmatter — a repo-relative image
+path or an absolute `https://` URL — to render a hero image at the top of the detail
+panel. Backlinks in the detail panel are grouped by node type, in the same order as
+`node_types[]`.
+
 ## Environment variables
 
 Required at runtime:

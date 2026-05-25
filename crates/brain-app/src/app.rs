@@ -44,6 +44,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                             }
                             mermaid.initialize({
                                 startOnLoad: false,
+                                securityLevel: 'strict',
                                 theme: 'dark',
                                 themeVariables: {
                                     background: '#090d16',

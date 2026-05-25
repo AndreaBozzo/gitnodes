@@ -61,8 +61,8 @@ pub fn FilterPanel(
         .collect_view();
 
     let view_buttons = config
-        .views
-        .iter()
+        .sorted_views()
+        .into_iter()
         .map(|v| {
             let view_tags: HashSet<String> = v.tags.iter().cloned().collect();
             let view_types: HashSet<String> = v.types.iter().cloned().collect();

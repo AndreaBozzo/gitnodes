@@ -25,6 +25,16 @@ pub struct BrainFile {
     pub content: String,
     #[serde(default)]
     pub rendered_html: String,
+    /// Optional hero image URL parsed from the frontmatter `cover:` field, with
+    /// repo-relative paths already resolved (via the same rules used for
+    /// inline markdown images). `None` when the file has no `cover:` value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_url: Option<String>,
+    /// Optional `alt` text override for the hero image, taken verbatim from
+    /// `cover_alt:` when present. The UI falls back to the document title when
+    /// this is `None`; it is never rendered when `cover_url` is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_alt: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,15 +151,57 @@ pub async fn read_brain_file(target: TargetRef, path: String) -> Result<BrainFil
     let storage = session::storage_for(cfg.clone()).map_err(sfe)?;
     let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
 
-    let (body, _fm) = crate::markdown::split_frontmatter(&content);
+    let (body, fm) = crate::markdown::split_frontmatter(&content);
     let rendered_html = crate::markdown::render_for_file(body, &path, &cfg);
+    let (cover_url, cover_alt) = extract_cover(fm, &path, &cfg);
 
     Ok(BrainFile {
         path,
         sha,
         content,
         rendered_html,
+        cover_url,
+        cover_alt,
     })
+}
+
+/// Pull `cover:` + optional `cover_alt:` out of the frontmatter, then resolve
+/// the path through the same image-URL rewriter the body uses. Returns
+/// `(None, None)` if the file has no frontmatter, no `cover:`, or the value is
+/// non-string / dangerous.
+#[cfg(feature = "ssr")]
+fn extract_cover(
+    frontmatter: Option<&str>,
+    file_path: &str,
+    cfg: &brain_domain::TargetConfig,
+) -> (Option<String>, Option<String>) {
+    let Some(raw) = frontmatter else {
+        return (None, None);
+    };
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(raw) else {
+        return (None, None);
+    };
+    let Some(map) = value.as_mapping() else {
+        return (None, None);
+    };
+    let cover = map
+        .get(serde_yaml::Value::String("cover".to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(cover) = cover else {
+        return (None, None);
+    };
+    let Some(url) = crate::markdown::resolve_cover_url(cover, file_path, cfg) else {
+        return (None, None);
+    };
+    let alt = map
+        .get(serde_yaml::Value::String("cover_alt".to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (Some(url), alt)
 }
 
 #[server(

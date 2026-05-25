@@ -626,6 +626,12 @@ pub struct ViewSpec {
     /// Type names to apply. Each must reference an existing `node_types[].name`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub types: Vec<String>,
+    /// Optional sort weight. Lower = earlier in the sidebar; ties (and views
+    /// without a weight) keep the order they appear in YAML. `None` is treated
+    /// as `0`, so a single pinned view with `weight: -10` floats to the top
+    /// without forcing the author to weight everything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<i32>,
 }
 
 /// Reserved names that clash with known repo paths. A node type cannot use
@@ -751,6 +757,17 @@ impl BrainConfig {
     /// label set on a forge project or building a filter predicate.
     pub fn all_kind_labels(&self) -> impl Iterator<Item = &str> {
         self.label_taxonomy.iter().map(|e| e.kind_label.as_str())
+    }
+
+    /// Views in display order: sorted by `weight` ascending (defaulting to 0),
+    /// with the original YAML order preserved as the tie-breaker. Callers that
+    /// just iterate `self.views` get the raw YAML order — use this whenever the
+    /// result is shown to a human, so authors can pin a view by giving it a
+    /// negative weight without re-ordering the whole list.
+    pub fn sorted_views(&self) -> Vec<&ViewSpec> {
+        let mut indexed: Vec<(usize, &ViewSpec)> = self.views.iter().enumerate().collect();
+        indexed.sort_by_key(|(idx, v)| (v.weight.unwrap_or(0), *idx));
+        indexed.into_iter().map(|(_, v)| v).collect()
     }
 }
 
@@ -1230,12 +1247,14 @@ node_types:
                     slug: "open-tasks".into(),
                     tags: vec!["urgent".into()],
                     types: vec!["concept".into()],
+                    weight: None,
                 },
                 ViewSpec {
                     name: "All ADRs".into(),
                     slug: "adrs".into(),
                     tags: vec![],
                     types: vec!["adr".into()],
+                    weight: None,
                 },
             ],
             ..Default::default()
@@ -1262,12 +1281,14 @@ node_types:
                 slug: "active-tasks".into(),
                 tags: vec!["urgent".into(), "blocked".into()],
                 types: vec!["concept".into(), "adr".into()],
+                weight: None,
             },
             ViewSpec {
                 name: "Recent decisions".into(),
                 slug: "recent-decisions".into(),
                 tags: vec![],
                 types: vec!["adr".into()],
+                weight: None,
             },
         ];
         cfg.validate().expect("post-mutation config must validate");
@@ -1329,6 +1350,7 @@ views:
             slug: "open-tasks".into(),
             tags: vec![],
             types: vec!["task".into()],
+            weight: None,
         });
         cfg.validate().unwrap();
 
@@ -1342,6 +1364,127 @@ views:
         assert_eq!(reparsed.views[0].slug, "pinned");
         assert_eq!(reparsed.views[1].slug, "open-tasks");
         assert_eq!(reparsed.views[1].types, vec!["task"]);
+    }
+
+    #[test]
+    fn sorted_views_falls_back_to_yaml_order_when_no_weights() {
+        let cfg = BrainConfig {
+            views: vec![
+                ViewSpec {
+                    name: "A".into(),
+                    slug: "a".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: None,
+                },
+                ViewSpec {
+                    name: "B".into(),
+                    slug: "b".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let order: Vec<&str> = cfg.sorted_views().iter().map(|v| v.slug.as_str()).collect();
+        assert_eq!(order, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn sorted_views_floats_negative_weight_to_top() {
+        let cfg = BrainConfig {
+            views: vec![
+                ViewSpec {
+                    name: "First in YAML".into(),
+                    slug: "first".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: None,
+                },
+                ViewSpec {
+                    name: "Pinned".into(),
+                    slug: "pinned".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: Some(-10),
+                },
+                ViewSpec {
+                    name: "Third".into(),
+                    slug: "third".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: None,
+                },
+            ],
+            ..Default::default()
+        };
+        // Pinned (-10) jumps to the front; the others keep their relative YAML
+        // order (both default to weight 0).
+        let order: Vec<&str> = cfg.sorted_views().iter().map(|v| v.slug.as_str()).collect();
+        assert_eq!(order, vec!["pinned", "first", "third"]);
+    }
+
+    #[test]
+    fn sorted_views_is_stable_on_equal_weights() {
+        let cfg = BrainConfig {
+            views: vec![
+                ViewSpec {
+                    name: "A".into(),
+                    slug: "a".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: Some(5),
+                },
+                ViewSpec {
+                    name: "B".into(),
+                    slug: "b".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: Some(5),
+                },
+            ],
+            ..Default::default()
+        };
+        let order: Vec<&str> = cfg.sorted_views().iter().map(|v| v.slug.as_str()).collect();
+        assert_eq!(order, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn view_weight_roundtrips_yaml_and_omits_default() {
+        let cfg = BrainConfig {
+            views: vec![
+                ViewSpec {
+                    name: "Pinned".into(),
+                    slug: "pinned".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: Some(-1),
+                },
+                ViewSpec {
+                    name: "Plain".into(),
+                    slug: "plain".into(),
+                    tags: vec![],
+                    types: vec![],
+                    weight: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        // Weight is emitted for the pinned view…
+        assert!(yaml.contains("weight: -1"), "yaml: {yaml}");
+        // …and omitted entirely for the one that uses the default. This keeps
+        // existing configs byte-equivalent after a roundtrip.
+        let plain_block_has_weight = yaml
+            .lines()
+            .skip_while(|l| !l.contains("slug: plain"))
+            .take(4)
+            .any(|l| l.contains("weight:"));
+        assert!(!plain_block_has_weight, "yaml: {yaml}");
+        let parsed = BrainConfig::parse(&yaml).unwrap();
+        assert_eq!(parsed.views[0].weight, Some(-1));
+        assert_eq!(parsed.views[1].weight, None);
     }
 
     #[test]

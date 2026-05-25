@@ -437,6 +437,11 @@ struct ViewDraft {
     slug_overridden: bool,
     tags: Vec<String>,
     types: Vec<String>,
+    /// Preserved verbatim through the draft → save roundtrip. The current admin
+    /// UI has no widget for editing weight; authors set it by hand in YAML, but
+    /// we must round-trip the value so that opening/saving the admin form on a
+    /// repo that uses pinned views doesn't silently strip the pins.
+    weight: Option<i32>,
 }
 
 impl ViewDraft {
@@ -454,6 +459,7 @@ impl ViewDraft {
             slug_overridden,
             tags: spec.tags,
             types: spec.types,
+            weight: spec.weight,
         }
     }
 
@@ -465,6 +471,7 @@ impl ViewDraft {
             slug_overridden: false,
             tags: Vec::new(),
             types: Vec::new(),
+            weight: None,
         }
     }
 
@@ -492,6 +499,7 @@ impl ViewDraft {
             slug,
             tags: self.tags.clone(),
             types: self.types.clone(),
+            weight: self.weight,
         })
     }
 }

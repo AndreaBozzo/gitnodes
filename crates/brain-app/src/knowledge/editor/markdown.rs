@@ -30,8 +30,7 @@ pub(super) fn MarkdownPreview(
         Effect::new(move |_| {
             if show_preview.get() {
                 let _ = preview_html.get(); // track preview_html updates
-                let _ =
-                    js_sys::eval("if (window.renderBrainMermaid) { window.renderBrainMermaid(); }");
+                crate::knowledge::mermaid::render_brain_mermaid();
             }
         });
     }

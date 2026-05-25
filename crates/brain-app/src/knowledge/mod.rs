@@ -9,6 +9,8 @@ mod editor;
 mod filter_panel;
 mod graph_canvas;
 pub mod live_sync;
+#[cfg(feature = "hydrate")]
+pub(crate) mod mermaid;
 mod orphan_banner;
 pub mod page;
 mod repo_structure;

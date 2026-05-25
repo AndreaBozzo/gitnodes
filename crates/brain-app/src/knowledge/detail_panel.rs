@@ -13,6 +13,12 @@ use brain_domain::{
     WorkItemSystemOfRecord,
 };
 
+/// Backlinks bucketed by node type, ordered by `config.node_types` first, then
+/// any unknown node types. Each bucket holds `(title, path)` pairs ready for
+/// the panel to render.
+type BacklinkGroups = Vec<(brain_domain::NodeTypeSpec, Vec<(String, String)>)>;
+type BacklinkEntry = (String, String, String);
+
 #[component]
 pub fn DetailPanel(
     nodes: StoredValue<Vec<Node>>,
@@ -79,9 +85,13 @@ pub fn DetailPanel(
     // virtual tag nodes (they'd produce noisy "don't worry about the tag"
     // warnings — tag nodes disappear automatically once docs stop referencing
     // them). Edges are undirected, so we match on either endpoint.
+    //
+    // Each entry carries `(node_type, title, path)` so the panel can group by
+    // type without re-reading the graph. The delete-confirm consumer drops
+    // `node_type` via `backlinks_titles` below.
     let backlinks = Memo::new(move |_| {
         let Some(id) = selected.get() else {
-            return Vec::<(String, String)>::new();
+            return Vec::<BacklinkEntry>::new();
         };
         nodes.with_value(|ns| {
             edges.with_value(|es| {
@@ -103,10 +113,22 @@ pub fn DetailPanel(
                         });
                         !is_tag && !n.path.is_empty()
                     })
-                    .map(|n| (n.title.clone(), n.path.clone()))
+                    .map(|n| (n.node_type.clone(), n.title.clone(), n.path.clone()))
                     .collect()
             })
         })
+    });
+
+    // Backlinks grouped by node type, in `config.node_types` order. Each group
+    // holds `(title, path)` pairs. Tag-only siblings are already filtered out
+    // upstream, so an empty result here means "no incoming links from any
+    // typed doc."
+    let grouped_backlinks: Memo<BacklinkGroups> = Memo::new(move |_| {
+        let entries = backlinks.get();
+        if entries.is_empty() {
+            return BacklinkGroups::new();
+        }
+        config.with_value(|c| group_backlinks(entries, c))
     });
 
     let loaded_file = move || match file.get() {
@@ -119,15 +141,21 @@ pub fn DetailPanel(
     {
         Effect::new(move |_| {
             if file.get().is_some() {
-                let _ =
-                    js_sys::eval("if (window.renderBrainMermaid) { window.renderBrainMermaid(); }");
+                crate::knowledge::mermaid::render_brain_mermaid();
             }
         });
     }
 
     let request_delete = move || {
         delete_error.set(String::new());
-        delete_prompt.set(Some(backlinks.get_untracked()));
+        // delete-confirm panel only needs (title, path) — drop the node_type
+        // we added for grouping.
+        let titles_paths: Vec<(String, String)> = backlinks
+            .get_untracked()
+            .into_iter()
+            .map(|(_node_type, title, path)| (title, path))
+            .collect();
+        delete_prompt.set(Some(titles_paths));
     };
     let cancel_delete = move || {
         delete_prompt.set(None);
@@ -554,7 +582,13 @@ pub fn DetailPanel(
                                             "No file backs this node."
                                         </div>
                                     }.into_any(),
-                                    Some(Ok(Some(bf))) => view! {
+                                    Some(Ok(Some(bf))) => {
+                                        let cover_url = bf.cover_url.clone();
+                                        let cover_alt = bf
+                                            .cover_alt
+                                            .clone()
+                                            .unwrap_or_else(|| node.title.clone());
+                                        view! {
                                         <>
                                             <Show when=move || matches!(work_item.get(), Some(Ok(Some(_))))>
                                                 {move || match work_item.get() {
@@ -564,11 +598,40 @@ pub fn DetailPanel(
                                                     _ => ().into_any(),
                                                 }}
                                             </Show>
+                                            {cover_url.clone().map(|src| {
+                                                let src_attr = src.clone();
+                                                let src_for_modal = src;
+                                                let alt_attr = cover_alt.clone();
+                                                let modal_alt = cover_alt.clone();
+                                                view! {
+                                                    <button
+                                                        type="button"
+                                                        class="block w-full mb-4 rounded-md overflow-hidden border border-slate-800 bg-slate-900 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                                                        aria-label="Open cover image"
+                                                        on:click=move |_| image_modal.set(
+                                                            Some((src_for_modal.clone(), modal_alt.clone()))
+                                                        )
+                                                    >
+                                                        <img
+                                                            src=src_attr
+                                                            alt=alt_attr
+                                                            class="w-full max-h-[260px] object-cover"
+                                                            loading="lazy"
+                                                        />
+                                                    </button>
+                                                }
+                                            })}
                                             <article
                                                 class="prose prose-invert max-w-prose"
                                                 on:click=open_clicked_visual
                                                 inner_html=bf.rendered_html
                                             ></article>
+                                            <BacklinksSection
+                                                grouped=grouped_backlinks
+                                                nodes=nodes
+                                                selected=selected
+                                                selected_path=selected_path
+                                            />
                                             <Show when=move || image_modal.with(|image| image.is_some())>
                                                 {move || {
                                                     let (src, alt) = image_modal.get().unwrap_or_default();
@@ -648,13 +711,156 @@ pub fn DetailPanel(
                                                 }}
                                             </Show>
                                         </>
-                                    }.into_any(),
+                                    }.into_any()
+                                    },
                                 }}
                             </Suspense>
                         </div>
                     </aside>
                 }
             }}
+        </Show>
+    }
+}
+
+fn group_backlinks(
+    entries: Vec<BacklinkEntry>,
+    config: &brain_domain::BrainConfig,
+) -> BacklinkGroups {
+    let mut by_type: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for (node_type, title, path) in entries {
+        by_type.entry(node_type).or_default().push((title, path));
+    }
+    // Stable within a group: ordered by title for readability.
+    for group in by_type.values_mut() {
+        group.sort_by_key(|(title, _)| title.to_lowercase());
+    }
+
+    let mut groups: BacklinkGroups = config
+        .node_types
+        .iter()
+        .filter_map(|spec| {
+            by_type
+                .remove(&spec.name)
+                .map(|group| (spec.clone(), group))
+        })
+        .collect();
+
+    let fallback = config.default_spec();
+    groups.extend(
+        by_type
+            .into_iter()
+            .map(|(node_type, group)| (unknown_backlink_spec(fallback, &node_type), group)),
+    );
+    groups
+}
+
+fn unknown_backlink_spec(
+    fallback: &brain_domain::NodeTypeSpec,
+    node_type: &str,
+) -> brain_domain::NodeTypeSpec {
+    let trimmed = node_type.trim();
+    let mut spec = fallback.clone();
+    spec.name = if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    };
+    spec.label = if trimmed.is_empty() {
+        "Unknown".to_string()
+    } else {
+        format!("Unknown ({trimmed})")
+    };
+    spec
+}
+
+#[component]
+fn BacklinksSection(
+    grouped: Memo<BacklinkGroups>,
+    nodes: StoredValue<Vec<Node>>,
+    selected: RwSignal<Option<u32>>,
+    selected_path: RwSignal<Option<String>>,
+) -> impl IntoView {
+    view! {
+        <Show when=move || !grouped.get().is_empty()>
+            <section class="mt-6 border-t border-slate-800 pt-4">
+                <header class="flex flex-wrap items-baseline gap-2 mb-3">
+                    <span class="text-[10px] uppercase tracking-widest text-slate-500">
+                        "Linked from"
+                    </span>
+                    <span class="text-[10px] text-slate-400">
+                        {move || {
+                            let summary = grouped
+                                .get()
+                                .iter()
+                                .map(|(spec, items)| format!("{} {}", items.len(), spec.label.as_str()))
+                                .collect::<Vec<_>>()
+                                .join(" · ");
+                            summary
+                        }}
+                    </span>
+                </header>
+                <div class="flex flex-col gap-3">
+                    {move || {
+                        grouped
+                            .get()
+                            .into_iter()
+                            .map(|(spec, items)| {
+                                let accent = spec.accent_var();
+                                let label = spec.label.clone();
+                                view! {
+                                    <div>
+                                        <div class="flex items-center gap-2 mb-1.5">
+                                            <span
+                                                class="inline-block w-1.5 h-1.5 rounded-full"
+                                                style=format!("background:{}", accent)
+                                            ></span>
+                                            <span class="text-[10px] uppercase tracking-widest text-slate-400">
+                                                {label}
+                                            </span>
+                                            <span class="text-[10px] tabular-nums text-slate-500">
+                                                {items.len()}
+                                            </span>
+                                        </div>
+                                        <ul class="space-y-1 ml-3">
+                                            {items
+                                                .into_iter()
+                                                .map(|(title, path)| {
+                                                    let path_for_click = path.clone();
+                                                    let path_for_lookup = path.clone();
+                                                    view! {
+                                                        <li>
+                                                            <button
+                                                                type="button"
+                                                                class="text-left text-xs text-slate-300 hover:text-teal-200 focus:outline-none focus:ring-1 focus:ring-slate-500 rounded px-1 -ml-1"
+                                                                title=path.clone()
+                                                                on:click=move |_| {
+                                                                    let id = nodes.with_value(|ns| {
+                                                                        ns.iter()
+                                                                            .find(|n| n.path == path_for_lookup)
+                                                                            .map(|n| n.id)
+                                                                    });
+                                                                    if let Some(id) = id {
+                                                                        selected.set(Some(id));
+                                                                    }
+                                                                    selected_path.set(Some(path_for_click.clone()));
+                                                                }
+                                                            >
+                                                                {title}
+                                                            </button>
+                                                        </li>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </ul>
+                                    </div>
+                                }
+                            })
+                            .collect_view()
+                    }}
+                </div>
+            </section>
         </Show>
     }
 }
@@ -1365,5 +1571,109 @@ fn external_system_label(system: &ExternalWorkItemSystem) -> &'static str {
         ExternalWorkItemSystem::Gitea => "Gitea",
         ExternalWorkItemSystem::Forgejo => "Forgejo",
         ExternalWorkItemSystem::Custom => "Custom",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use brain_domain::{BrainConfig, NodeTypeSpec};
+
+    use super::*;
+
+    fn spec(name: &str, label: &str) -> NodeTypeSpec {
+        NodeTypeSpec {
+            name: name.to_string(),
+            label: label.to_string(),
+            directory: format!("{name}s"),
+            accent: "#112233".to_string(),
+            template_filename: None,
+            creatable: true,
+            frontmatter_seed: BTreeMap::new(),
+            title_key: None,
+            date_create_field: None,
+            date_update_field: None,
+            body_label: None,
+            work_item_kind: None,
+        }
+    }
+
+    fn test_config() -> BrainConfig {
+        BrainConfig {
+            node_types: vec![spec("note", "Note"), spec("task", "Task")],
+            default_type: "note".to_string(),
+            label_taxonomy: Vec::new(),
+            views: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn group_backlinks_keeps_configured_order_and_sorts_titles() {
+        let groups = group_backlinks(
+            vec![
+                (
+                    "task".to_string(),
+                    "zeta".to_string(),
+                    "tasks/z.md".to_string(),
+                ),
+                (
+                    "note".to_string(),
+                    "beta".to_string(),
+                    "notes/b.md".to_string(),
+                ),
+                (
+                    "task".to_string(),
+                    "alpha".to_string(),
+                    "tasks/a.md".to_string(),
+                ),
+            ],
+            &test_config(),
+        );
+
+        let labels: Vec<&str> = groups.iter().map(|(spec, _)| spec.label.as_str()).collect();
+        assert_eq!(labels, vec!["Note", "Task"]);
+        let task_titles: Vec<&str> = groups[1]
+            .1
+            .iter()
+            .map(|(title, _)| title.as_str())
+            .collect();
+        assert_eq!(task_titles, vec!["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn group_backlinks_keeps_unknown_types_after_configured_groups() {
+        let groups = group_backlinks(
+            vec![
+                (
+                    "mystery".to_string(),
+                    "ghost".to_string(),
+                    "ghost.md".to_string(),
+                ),
+                (
+                    "task".to_string(),
+                    "todo".to_string(),
+                    "tasks/t.md".to_string(),
+                ),
+            ],
+            &test_config(),
+        );
+
+        let names: Vec<&str> = groups.iter().map(|(spec, _)| spec.name.as_str()).collect();
+        let labels: Vec<&str> = groups.iter().map(|(spec, _)| spec.label.as_str()).collect();
+        assert_eq!(names, vec!["task", "mystery"]);
+        assert_eq!(labels, vec!["Task", "Unknown (mystery)"]);
+        assert_eq!(groups[1].1[0].0, "ghost");
+    }
+
+    #[test]
+    fn group_backlinks_labels_blank_type_as_unknown() {
+        let groups = group_backlinks(
+            vec![("".to_string(), "untagged".to_string(), "x.md".to_string())],
+            &test_config(),
+        );
+
+        assert_eq!(groups[0].0.name, "unknown");
+        assert_eq!(groups[0].0.label, "Unknown");
     }
 }

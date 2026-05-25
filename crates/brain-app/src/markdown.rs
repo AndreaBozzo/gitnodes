@@ -303,6 +303,31 @@ fn resolve_repo_path(file_path: Option<&str>, dest: &str) -> String {
     normalize_repo_path(&joined)
 }
 
+/// Resolve a frontmatter `cover:` value into a browser-usable image URL.
+///
+/// `cover` may be one of:
+/// - an absolute http(s) URL: returned untouched
+/// - a repo-rooted `assets/...` path: routed through the authenticated proxy
+/// - any other repo path (relative or rooted): resolved to `raw.githubusercontent.com`
+///
+/// `file_path` is the markdown file the cover belongs to — used to resolve
+/// relative paths like `../assets/foo.png` exactly like inline image links.
+/// Dangerous schemes (`javascript:`, `data:`, `vbscript:`) yield `None` so the
+/// caller can omit the hero block entirely.
+pub fn resolve_cover_url(cover: &str, file_path: &str, cfg: &TargetConfig) -> Option<String> {
+    let trimmed = cover.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let rewritten = rewrite_link_destination(trimmed, Some(file_path), Some(cfg), true);
+    if rewritten == "#" {
+        // The destination carried a dangerous scheme; drop the cover rather
+        // than emit a placeholder anchor as an image src.
+        return None;
+    }
+    Some(rewritten)
+}
+
 /// Build a markdown link target from a repo-rooted file to a repo-rooted asset.
 ///
 /// When the file path is unknown, fall back to the app's asset route so live
@@ -381,7 +406,7 @@ fn encode_query_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render, render_for_file, repo_relative_link_target};
+    use super::{render, render_for_file, repo_relative_link_target, resolve_cover_url};
     use brain_domain::TargetConfig;
 
     fn test_cfg() -> TargetConfig {
@@ -548,6 +573,53 @@ mod tests {
             repo_relative_link_target(Some("foo.md"), "assets/2026/04/foo-abc.png"),
             "./assets/2026/04/foo-abc.png"
         );
+    }
+
+    #[test]
+    fn resolve_cover_url_routes_repo_assets_through_proxy() {
+        // `assets/...` (rooted from `.` of the doc) should go through the
+        // authenticated proxy, exactly like inline `![img](../assets/...)`.
+        let url = resolve_cover_url("../assets/hero.png", "concepts/foo.md", &test_cfg());
+        assert_eq!(
+            url.as_deref(),
+            Some("/Dritara-Digital/Brain/assets/hero.png")
+        );
+    }
+
+    #[test]
+    fn resolve_cover_url_keeps_absolute_https_untouched() {
+        let url = resolve_cover_url(
+            "https://example.com/hero.png",
+            "concepts/foo.md",
+            &test_cfg(),
+        );
+        assert_eq!(url.as_deref(), Some("https://example.com/hero.png"));
+    }
+
+    #[test]
+    fn resolve_cover_url_falls_back_to_raw_for_non_assets_paths() {
+        // A repo path that isn't under `assets/` falls back to the raw GitHub
+        // host — same rule as inline images. Useful for screenshots checked
+        // into other folders.
+        let url = resolve_cover_url("../screenshots/x.png", "concepts/foo.md", &test_cfg());
+        assert_eq!(
+            url.as_deref(),
+            Some("https://raw.githubusercontent.com/Dritara-Digital/Brain/main/screenshots/x.png")
+        );
+    }
+
+    #[test]
+    fn resolve_cover_url_drops_dangerous_schemes() {
+        // `javascript:` / `data:` covers must yield None so the panel can omit
+        // the hero block, not emit a placeholder `src="#"`.
+        assert!(resolve_cover_url("javascript:alert(1)", "x.md", &test_cfg()).is_none());
+        assert!(resolve_cover_url("data:image/svg+xml;base64,x", "x.md", &test_cfg()).is_none());
+    }
+
+    #[test]
+    fn resolve_cover_url_drops_empty() {
+        assert!(resolve_cover_url("", "x.md", &test_cfg()).is_none());
+        assert!(resolve_cover_url("   ", "x.md", &test_cfg()).is_none());
     }
 
     #[test]
