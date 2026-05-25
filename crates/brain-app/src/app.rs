@@ -71,8 +71,14 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                                     }
                                     const div = document.createElement('div');
                                     div.className = 'mermaid';
+                                    div.title = 'Open diagram preview';
+                                    div.style.cursor = 'zoom-in';
                                     div.textContent = el.textContent;
                                     pre.parentElement.replaceChild(div, pre);
+                                });
+                                document.querySelectorAll('.mermaid').forEach((el) => {
+                                    el.title = 'Open diagram preview';
+                                    el.style.cursor = 'zoom-in';
                                 });
                                 const pending = Array.from(
                                     document.querySelectorAll('.mermaid:not([data-processed="true"])')

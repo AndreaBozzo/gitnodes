@@ -62,6 +62,7 @@ pub fn DetailPanel(
 
     let deleting = RwSignal::new(false);
     let image_modal = RwSignal::new(Option::<(String, String)>::None);
+    let mermaid_modal = RwSignal::new(Option::<String>::None);
     let delete_error = RwSignal::new(String::new());
     let rename_input = RwSignal::new(Option::<String>::None);
     let rename_msg = RwSignal::new(String::new());
@@ -177,7 +178,7 @@ pub fn DetailPanel(
             let _ = (path, sha, &graph_version);
         }
     };
-    let open_clicked_image = move |ev: leptos::ev::MouseEvent| {
+    let open_clicked_visual = move |ev: leptos::ev::MouseEvent| {
         #[cfg(feature = "hydrate")]
         {
             use wasm_bindgen::JsCast;
@@ -188,14 +189,17 @@ pub fn DetailPanel(
             else {
                 return;
             };
-            if !target.tag_name().eq_ignore_ascii_case("img") {
+            if target.tag_name().eq_ignore_ascii_case("img") {
+                let Some(src) = target.get_attribute("src").filter(|src| !src.is_empty()) else {
+                    return;
+                };
+                let alt = target.get_attribute("alt").unwrap_or_default();
+                image_modal.set(Some((src, alt)));
                 return;
             }
-            let Some(src) = target.get_attribute("src").filter(|src| !src.is_empty()) else {
-                return;
-            };
-            let alt = target.get_attribute("alt").unwrap_or_default();
-            image_modal.set(Some((src, alt)));
+            if let Ok(Some(diagram)) = target.closest(".mermaid") {
+                mermaid_modal.set(Some(diagram.outer_html()));
+            }
         }
         #[cfg(not(feature = "hydrate"))]
         {
@@ -562,7 +566,7 @@ pub fn DetailPanel(
                                             </Show>
                                             <article
                                                 class="prose prose-invert max-w-prose"
-                                                on:click=open_clicked_image
+                                                on:click=open_clicked_visual
                                                 inner_html=bf.rendered_html
                                             ></article>
                                             <Show when=move || image_modal.with(|image| image.is_some())>
@@ -601,6 +605,43 @@ pub fn DetailPanel(
                                                                         {caption.clone()}
                                                                     </div>
                                                                 </Show>
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                }}
+                                            </Show>
+                                            <Show when=move || mermaid_modal.with(|diagram| diagram.is_some())>
+                                                {move || {
+                                                    let diagram = mermaid_modal.get().unwrap_or_default();
+                                                    view! {
+                                                        <div
+                                                            class="fixed inset-0 z-50 bg-slate-950/90 p-6 flex items-center justify-center"
+                                                            role="dialog"
+                                                            aria-modal="true"
+                                                            on:click=move |_| mermaid_modal.set(None)
+                                                        >
+                                                            <div
+                                                                class="max-w-[94vw] max-h-[92vh] flex flex-col gap-3"
+                                                                on:click=move |ev| ev.stop_propagation()
+                                                            >
+                                                                <div class="flex justify-end">
+                                                                    <button
+                                                                        type="button"
+                                                                        class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-slate-600 text-slate-200 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500"
+                                                                        aria-label="Close diagram preview"
+                                                                        on:click=move |_| mermaid_modal.set(None)
+                                                                    >
+                                                                        "Close"
+                                                                    </button>
+                                                                </div>
+                                                                <div
+                                                                    class="max-w-[94vw] max-h-[84vh] overflow-auto rounded border border-slate-700 bg-slate-950 p-4"
+                                                                >
+                                                                    <div
+                                                                        class="[&_.mermaid_svg]:max-w-none [&_.mermaid_svg]:h-auto"
+                                                                        inner_html=diagram
+                                                                    ></div>
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     }
