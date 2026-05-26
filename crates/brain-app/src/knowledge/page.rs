@@ -187,6 +187,14 @@ pub(crate) fn KnowledgeView(
     let active_path_prefix = RwSignal::new(Option::<String>::None);
     let active_orphan_filter = RwSignal::new(false);
     let active_search_query = RwSignal::new(String::new());
+    // Debounced mirror of the search input. The text field writes to
+    // `active_search_query` on every keystroke (so the input feels instant
+    // and the clear-x toggles immediately); the URL sync and the server-side
+    // `Resource` both key off this debounced signal so we don't navigate /
+    // refetch per keystroke. Keying the URL Effect on the live value caused
+    // a navigation round-trip per character, which restarted the route's
+    // blocking graph Resource — the "graph reload while typing" complaint.
+    let debounced_search_query = RwSignal::new(String::new());
     let hovered = RwSignal::new(None::<u32>);
     let selected = RwSignal::new(None::<u32>);
     let selected_path = RwSignal::new(None::<String>);
@@ -272,7 +280,12 @@ pub(crate) fn KnowledgeView(
             active_orphan_filter.set(next_orphan_filter);
         }
         if next_search_query != active_search_query.get_untracked() {
-            active_search_query.set(next_search_query);
+            active_search_query.set(next_search_query.clone());
+        }
+        // Inbound nav also seeds the debounced mirror so deep-linked `?q=`
+        // doesn't lag the search panel by 200 ms on first paint.
+        if next_search_query != debounced_search_query.get_untracked() {
+            debounced_search_query.set(next_search_query);
         }
     });
 
@@ -297,7 +310,7 @@ pub(crate) fn KnowledgeView(
         let path = selected_path.get();
         let path_prefix = active_path_prefix.get();
         let orphan_filter = active_orphan_filter.get();
-        let search_query = active_search_query.get();
+        let search_query = debounced_search_query.get();
         let mut parts: Vec<String> = Vec::new();
         if let Some(p) = path.as_ref().filter(|s| !s.is_empty()) {
             parts.push(format!("path={}", url_encode(p)));
@@ -368,12 +381,11 @@ pub(crate) fn KnowledgeView(
         }
     });
 
-    // Debounced mirror of the search input so we don't fire a server fn on
-    // every keystroke. The input itself keeps writing to `active_search_query`
-    // (URL sync stays immediate); only the server-side `Resource` keys off the
-    // debounced signal. SSR + non-hydrate builds use the live value directly —
-    // there's no event loop to schedule the timeout on.
-    let debounced_search_query = RwSignal::new(active_search_query.get_untracked());
+    // Mirror `active_search_query` into `debounced_search_query` 200ms after
+    // the user stops typing. The Timeout handle lives in a StoredValue so
+    // each new keystroke drops the previous timer (cancellation by Drop).
+    // Empty queries flush immediately so the panel closes without a stale
+    // trailing 200ms of results.
     #[cfg(feature = "hydrate")]
     {
         let debounce_handle: StoredValue<
@@ -383,8 +395,6 @@ pub(crate) fn KnowledgeView(
         Effect::new(move |_| {
             let next = active_search_query.get();
             if next.trim().is_empty() {
-                // Empty query: flush immediately so the panel closes without
-                // a trailing 200ms of stale results.
                 debounce_handle.set_value(None);
                 if debounced_search_query.get_untracked() != next {
                     debounced_search_query.set(next);
