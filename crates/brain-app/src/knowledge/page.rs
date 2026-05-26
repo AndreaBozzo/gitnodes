@@ -304,13 +304,24 @@ pub(crate) fn KnowledgeView(
     // event would make Back unusable on this page).
     let navigate = use_navigate();
     let base_path_nav = base_path.clone();
+    #[cfg(feature = "hydrate")]
+    fn replace_url_without_navigation(target: &str) {
+        use wasm_bindgen::JsValue;
+
+        if let Some(window) = web_sys::window()
+            && let Ok(history) = window.history()
+        {
+            let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(target));
+        }
+    }
+
     Effect::new(move |_| {
         let tags = active_tags.get();
         let types = active_types.get();
         let path = selected_path.get();
         let path_prefix = active_path_prefix.get();
         let orphan_filter = active_orphan_filter.get();
-        let search_query = debounced_search_query.get();
+        let search_query = debounced_search_query.get().trim().to_string();
         let mut parts: Vec<String> = Vec::new();
         if let Some(p) = path.as_ref().filter(|s| !s.is_empty()) {
             parts.push(format!("path={}", url_encode(p)));
@@ -330,8 +341,8 @@ pub(crate) fn KnowledgeView(
         if orphan_filter {
             parts.push("orphan=true".to_string());
         }
-        if !search_query.trim().is_empty() {
-            parts.push(format!("q={}", url_encode(search_query.trim())));
+        if !search_query.is_empty() {
+            parts.push(format!("q={}", url_encode(&search_query)));
         }
         let target = if parts.is_empty() {
             base_path_nav.clone()
@@ -353,15 +364,24 @@ pub(crate) fn KnowledgeView(
         let current_orphan_filter = current
             .get_str("orphan")
             .is_some_and(|raw| raw == "true" || raw == "1");
-        let current_search_query = current.get_str("q").map(str::to_string).unwrap_or_default();
-        if current_tags == tags
+        let current_search_query = current
+            .get_str("q")
+            .map(|raw| raw.trim().to_string())
+            .unwrap_or_default();
+        let non_search_params_match = current_tags == tags
             && current_types == types
             && current_path == path
             && current_path_prefix == path_prefix
-            && current_orphan_filter == orphan_filter
-            && current_search_query == search_query
-        {
+            && current_orphan_filter == orphan_filter;
+        if non_search_params_match && current_search_query == search_query {
             return;
+        }
+        if non_search_params_match {
+            #[cfg(feature = "hydrate")]
+            {
+                replace_url_without_navigation(&target);
+                return;
+            }
         }
         navigate(
             &target,

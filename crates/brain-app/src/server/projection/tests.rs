@@ -463,6 +463,56 @@ async fn search_indexes_title_body_and_tags_with_snippets() {
 }
 
 #[tokio::test]
+async fn search_finds_path_prefix_and_prefers_title_matches() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+    let target = target("org", "repo-search-pokemon", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    let snapshot = ProjectionSnapshot::from_raw_files(
+        &[
+            raw(
+                "pokemon/025-pikachu.md",
+                "sha-a",
+                "---\ntype: concept\ntopic: Electric Mouse\ntags: [electric]\n---\nStatic ability.\n",
+            ),
+            raw(
+                "pokemon/026-raichu.md",
+                "sha-b",
+                "---\ntype: concept\ntopic: Raichu\ntags: [electric]\n---\nPikachu evolves with a thunder stone.\n",
+            ),
+        ],
+        &config,
+    );
+    persist_snapshot(&pool, target_id, &snapshot, "test-search-pokemon")
+        .await
+        .unwrap();
+
+    let slug_hits = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "pika".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(slug_hits[0].path, "pokemon/025-pikachu.md");
+
+    let title_hits = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "raichu".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(title_hits[0].path, "pokemon/026-raichu.md");
+}
+
+#[tokio::test]
 async fn search_applies_structured_filters() {
     let pool = test_pool().await;
     let config = BrainConfig::default();
@@ -780,7 +830,7 @@ async fn migrate_records_schema_version_on_fresh_db() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 4, "expected all projection migrations applied");
+    assert_eq!(version, 5, "expected all projection migrations applied");
 }
 
 #[tokio::test]
@@ -890,7 +940,7 @@ async fn migrate_claims_baseline_on_legacy_db() {
         .await
         .unwrap();
     assert_eq!(
-        version, 4,
+        version, 5,
         "legacy DB should claim baseline + apply current migrations"
     );
 
@@ -1159,7 +1209,7 @@ async fn legacy_db_smoke() {
         .await
         .unwrap();
     assert_eq!(
-        version, 4,
+        version, 5,
         "legacy DB should be at current schema after migrate"
     );
 
@@ -1218,7 +1268,7 @@ async fn projection_status_reports_schema_and_per_target_state() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 
     let row: (String, String, i64, i64, Option<i64>) = sqlx::query_as(
         "SELECT t.org, COALESCE(s.status, 'stale'), COALESCE(s.file_count, 0), COALESCE(s.node_count, 0), s.last_rebuild_duration_ms

@@ -72,7 +72,7 @@ pub(super) async fn search_nodes_from_pool(
             node_type,
             tags,
             snippet(node_search_fts, -1, '[', ']', '...', 24) AS snippet,
-            bm25(node_search_fts) AS rank
+            bm25(node_search_fts, 0.0, 0.0, 5.0, 0.0, 10.0, 3.0, 2.0, 1.0) AS rank
          FROM node_search_fts
          WHERE node_search_fts MATCH ",
     );
@@ -171,6 +171,36 @@ fn structured_overlap(
     path_prefix: Option<&str>,
 ) -> i64 {
     let mut score = 0;
+    let raw_query = filters.q.trim().to_lowercase();
+    let query_tokens = search_tokens(&filters.q)
+        .into_iter()
+        .map(|token| token.to_lowercase())
+        .collect::<Vec<_>>();
+    let title = candidate.title.to_lowercase();
+    let path = candidate.path.to_lowercase();
+    let path_stem = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path.as_str())
+        .strip_suffix(".md")
+        .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path.as_str()));
+
+    if !raw_query.is_empty() {
+        if title == raw_query {
+            score += 12;
+        }
+        if path_stem == raw_query {
+            score += 10;
+        }
+    }
+    if !query_tokens.is_empty() {
+        if query_tokens.iter().all(|token| title.contains(token)) {
+            score += 6;
+        }
+        if query_tokens.iter().all(|token| path.contains(token)) {
+            score += 5;
+        }
+    }
     if !filters.node_types.is_empty() && filters.node_types.contains(&candidate.node_type) {
         score += 1;
     }
@@ -195,13 +225,19 @@ fn structured_overlap(
 }
 
 fn fts_match_query(raw: &str) -> Option<String> {
-    let tokens = raw
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+    let tokens = search_tokens(raw)
+        .into_iter()
+        .map(|token| format!("{token}*"))
         .collect::<Vec<_>>();
     (!tokens.is_empty()).then(|| tokens.join(" AND "))
+}
+
+fn search_tokens(raw: &str) -> Vec<String> {
+    raw.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 pub(super) fn reciprocal_rank_fusion<T>(primary: &[T], secondary: &[T], k: f64) -> HashMap<T, f64>
@@ -225,7 +261,7 @@ mod tests {
     fn fts_match_query_tokenizes_user_text_safely() {
         assert_eq!(
             fts_match_query("error: E0425 borrow-checker").as_deref(),
-            Some("\"error\" AND \"E0425\" AND \"borrow\" AND \"checker\"")
+            Some("error* AND E0425* AND borrow* AND checker*")
         );
         assert_eq!(fts_match_query("?!"), None);
     }

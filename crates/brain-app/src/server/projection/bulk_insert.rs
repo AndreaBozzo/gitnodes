@@ -92,7 +92,7 @@ pub(super) async fn bulk_insert_search_rows(
     for chunk in rows.chunks(max_rows_per_insert(7)) {
         let mut query = QueryBuilder::<Sqlite>::new(
             "INSERT INTO node_search_fts (
-                target_id, node_id, path, node_type, title, tags, body_text
+                target_id, node_id, path, node_type, title, tags, summary, body_text
             ) ",
         );
         query.push_values(chunk, |mut row, node| {
@@ -102,6 +102,7 @@ pub(super) async fn bulk_insert_search_rows(
                 .push_bind(&node.node_type)
                 .push_bind(&node.title)
                 .push_bind(&node.tags_json)
+                .push_bind(&node.summary)
                 .push_bind(node.body_text.as_deref().unwrap_or(""));
         });
         query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
