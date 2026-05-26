@@ -20,6 +20,14 @@ use crate::api::{
 use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, encode_path_segment};
 
+const MIN_SEARCH_QUERY_CHARS: usize = 2;
+#[cfg(feature = "hydrate")]
+const SEARCH_DEBOUNCE_MS: u32 = 450;
+
+fn search_query_ready(query: &str) -> bool {
+    query.trim().chars().count() >= MIN_SEARCH_QUERY_CHARS
+}
+
 fn knowledge_loading_view() -> impl IntoView {
     view! {
         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
@@ -322,6 +330,11 @@ pub(crate) fn KnowledgeView(
         let path_prefix = active_path_prefix.get();
         let orphan_filter = active_orphan_filter.get();
         let search_query = debounced_search_query.get().trim().to_string();
+        let search_query = if search_query_ready(&search_query) {
+            search_query
+        } else {
+            String::new()
+        };
         let mut parts: Vec<String> = Vec::new();
         if let Some(p) = path.as_ref().filter(|s| !s.is_empty()) {
             parts.push(format!("path={}", url_encode(p)));
@@ -401,11 +414,11 @@ pub(crate) fn KnowledgeView(
         }
     });
 
-    // Mirror `active_search_query` into `debounced_search_query` 200ms after
+    // Mirror `active_search_query` into `debounced_search_query` after
     // the user stops typing. The Timeout handle lives in a StoredValue so
     // each new keystroke drops the previous timer (cancellation by Drop).
-    // Empty queries flush immediately so the panel closes without a stale
-    // trailing 200ms of results.
+    // Empty and one-character queries flush immediately so the UI clears
+    // search state without firing server search or graph filtering.
     #[cfg(feature = "hydrate")]
     {
         let debounce_handle: StoredValue<
@@ -414,14 +427,14 @@ pub(crate) fn KnowledgeView(
         > = StoredValue::new_local(None);
         Effect::new(move |_| {
             let next = active_search_query.get();
-            if next.trim().is_empty() {
+            if !search_query_ready(&next) {
                 debounce_handle.set_value(None);
                 if debounced_search_query.get_untracked() != next {
                     debounced_search_query.set(next);
                 }
                 return;
             }
-            let handle = gloo_timers::callback::Timeout::new(200, move || {
+            let handle = gloo_timers::callback::Timeout::new(SEARCH_DEBOUNCE_MS, move || {
                 if debounced_search_query.get_untracked() != next {
                     debounced_search_query.set(next.clone());
                 }
@@ -442,8 +455,14 @@ pub(crate) fn KnowledgeView(
     let target_for_search = target_ref.clone();
     let search_results = Resource::new(
         move || {
+            let q = debounced_search_query.get().trim().to_string();
+            let q = if search_query_ready(&q) {
+                q
+            } else {
+                String::new()
+            };
             (
-                debounced_search_query.get(),
+                q,
                 sorted_vec(&active_tags.get()),
                 sorted_vec(&active_types.get()),
                 active_path_prefix.get(),
@@ -471,7 +490,7 @@ pub(crate) fn KnowledgeView(
     );
 
     let search_paths = Memo::new(move |_| {
-        if active_search_query.with(|q| q.trim().is_empty()) {
+        if !debounced_search_query.with(|q| search_query_ready(q)) {
             return None;
         }
         search_results
@@ -630,7 +649,8 @@ pub(crate) fn KnowledgeView(
                             "Search"
                         </span>
                         <input
-                            type="search"
+                            type="text"
+                            autocomplete="off"
                             placeholder="Find text in this Brain"
                             class="w-full rounded-md border border-slate-800 bg-slate-900/70 py-2 pl-14 pr-9 text-sm text-slate-100 placeholder:text-slate-600 focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-500"
                             prop:value=move || active_search_query.get()
@@ -774,6 +794,7 @@ pub(crate) fn KnowledgeView(
                     />
                     <SearchResultsPanel
                         query=active_search_query
+                        searched_query=debounced_search_query
                         results=search_results
                         selected_path=selected_path
                     />
@@ -803,28 +824,24 @@ pub(crate) fn KnowledgeView(
 #[component]
 fn SearchResultsPanel(
     query: RwSignal<String>,
+    searched_query: RwSignal<String>,
     results: Resource<Result<Vec<SearchHit>, crate::api::ApiError>>,
     selected_path: RwSignal<Option<String>>,
 ) -> impl IntoView {
     view! {
-        <Show when=move || !query.with(|q| q.trim().is_empty())>
+        <Show when=move || {
+            let live = query.with(|q| q.trim().to_string());
+            let searched = searched_query.with(|q| q.trim().to_string());
+            search_query_ready(&live) && live == searched
+        }>
             <section class="absolute left-4 top-4 z-20 w-[min(520px,calc(100%-2rem))] rounded-md border border-slate-800 bg-slate-950/95 shadow-2xl shadow-black/30 backdrop-blur">
                 <div class="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-2">
                     <div class="min-w-0">
                         <h2 class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
                             "Search Results"
                         </h2>
-                        <p class="mt-0.5 truncate text-xs text-slate-400">{move || query.get()}</p>
+                        <p class="mt-0.5 truncate text-xs text-slate-400">{move || searched_query.get()}</p>
                     </div>
-                    <button
-                        type="button"
-                        class="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-                        title="Clear search"
-                        aria-label="Clear search"
-                        on:click=move |_| query.set(String::new())
-                    >
-                        <span aria-hidden="true">"x"</span>
-                    </button>
                 </div>
                 <div class="max-h-[42vh] overflow-y-auto p-2">
                     {move || match results.get() {
