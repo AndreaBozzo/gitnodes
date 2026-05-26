@@ -24,7 +24,7 @@ pub struct SyncStatusSignal(pub RwSignal<SyncStatus>);
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
         <!DOCTYPE html>
-        <html lang="en" data-theme="brain">
+        <html lang="en">
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>

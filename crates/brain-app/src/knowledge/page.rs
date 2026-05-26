@@ -710,23 +710,20 @@ pub(crate) fn KnowledgeView(
                             let config_rest = config.get_value();
                             let extra = rest.len();
                             view! {
-                                <div class="dropdown dropdown-end">
-                                    <div
-                                        tabindex="0"
-                                        role="button"
-                                        class="px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400 hover:text-slate-200 cursor-pointer"
+                                <details class="relative">
+                                    <summary
+                                        class="list-none px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400 hover:text-slate-200 cursor-pointer"
                                         title="Show remaining types"
                                     >
                                         "+" {extra} " more"
-                                    </div>
+                                    </summary>
                                     <ul
-                                        tabindex="0"
-                                        class="dropdown-content menu menu-sm z-10 mt-1 p-2 shadow-lg bg-slate-900 border border-slate-800 rounded-md min-w-[180px]"
+                                        class="absolute right-0 z-10 mt-1 p-2 shadow-lg bg-slate-900 border border-slate-800 rounded-md min-w-[180px] space-y-1"
                                     >
                                         {rest.into_iter().map(move |(t_name, count)| {
                                             let spec = config_rest.lookup(&t_name).unwrap_or(config_rest.default_spec());
                                             view! {
-                                                <li>
+                                                <li class="px-2 py-1 rounded hover:bg-slate-800">
                                                     <span class="flex items-center justify-between gap-3 text-[11px] text-slate-300">
                                                         <span>{spec.label.clone()}</span>
                                                         <span class="tabular-nums text-slate-400">{count}</span>
@@ -735,13 +732,13 @@ pub(crate) fn KnowledgeView(
                                             }
                                         }).collect_view()}
                                     </ul>
-                                </div>
+                                </details>
                             }
                         })
                     }
                     <RefreshButton graph_version=graph_version sync_status=sync_status />
                     <button
-                        class="btn btn-primary btn-outline btn-xs ml-2"
+                        class="ml-2 px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/60 text-teal-200 hover:bg-teal-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500"
                         title="Create a new Brain document"
                         on:click=move |_| {
                             edit_mode.update(|m| {
@@ -890,7 +887,7 @@ fn RefreshButton(graph_version: RwSignal<u64>, sync_status: RwSignal<SyncStatus>
     let target = expect_context::<TargetRef>();
     view! {
         <button
-            class="btn btn-ghost btn-xs"
+            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 disabled:opacity-40 disabled:cursor-not-allowed"
             title="Rebuild the local graph projection from the repo."
             disabled=move || busy.get()
             on:click=move |_| {
