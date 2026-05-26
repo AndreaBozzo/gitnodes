@@ -10,7 +10,8 @@ use sqlx::SqlitePool;
 use super::{
     bulk_insert::{
         bulk_insert_backlinks, bulk_insert_edges, bulk_insert_files, bulk_insert_node_authors,
-        bulk_insert_nodes, bulk_insert_work_item_bindings, bulk_insert_work_items,
+        bulk_insert_nodes, bulk_insert_search_rows, bulk_insert_work_item_bindings,
+        bulk_insert_work_items,
     },
     links::{Backlink, resolve_link_path},
     nodes::{NodeInsertRow, load_cached_graph},
@@ -364,6 +365,15 @@ pub(super) async fn persist_snapshot(
     let drift = drift_stats(pool, target_id, snapshot).await?;
     let mut tx = pool.begin().await.map_err(sqlx_error)?;
 
+    // `target_id` is UNINDEXED so this scans the FTS table column store.
+    // Acceptable while node counts per Brain stay in the thousands; revisit
+    // with a packed-rowid scheme if rebuilds become a hot path across many
+    // co-tenanted targets.
+    sqlx::query("DELETE FROM node_search_fts WHERE target_id = ?")
+        .bind(target_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(sqlx_error)?;
     sqlx::query("DELETE FROM work_item_bindings WHERE target_id = ?")
         .bind(target_id)
         .execute(&mut *tx)
@@ -402,6 +412,7 @@ pub(super) async fn persist_snapshot(
 
     bulk_insert_files(&mut tx, target_id, &snapshot.files).await?;
     bulk_insert_nodes(&mut tx, target_id, &snapshot.nodes).await?;
+    bulk_insert_search_rows(&mut tx, target_id, &snapshot.nodes).await?;
     bulk_insert_edges(&mut tx, target_id, &snapshot.edges).await?;
     bulk_insert_backlinks(&mut tx, target_id, &snapshot.backlinks).await?;
     bulk_insert_node_authors(&mut tx, target_id, &snapshot.node_authors).await?;

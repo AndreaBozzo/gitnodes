@@ -45,6 +45,11 @@ pub use graph::{
     LoadBrainGraphForTarget, ReadNode, RefreshBrainGraph, ResolveLegacyTarget,
 };
 
+mod search;
+#[cfg(feature = "ssr")]
+pub use search::SearchBrain;
+pub use search::{SearchBrainQuery, SearchHit, search_brain};
+
 mod work_items;
 #[cfg(feature = "ssr")]
 pub use work_items::{
@@ -179,6 +184,7 @@ const SERVER_FNS: &[&str] = &[
     "BindWorkItem",
     "ListViews",
     "SaveViews",
+    "SearchBrain",
 ];
 
 #[cfg(feature = "ssr")]
@@ -223,6 +229,7 @@ pub fn register_server_functions() {
     register_explicit::<BindWorkItem>();
     register_explicit::<ListViews>();
     register_explicit::<SaveViews>();
+    register_explicit::<SearchBrain>();
 }
 
 /// Regression guard for caveat #9: `lto = true` strips Leptos's
@@ -242,6 +249,7 @@ mod server_fn_registration_tests {
         include_str!("api/file_ops.rs"),
         include_str!("api/files.rs"),
         include_str!("api/graph.rs"),
+        include_str!("api/search.rs"),
         include_str!("api/work_items.rs"),
     ];
 

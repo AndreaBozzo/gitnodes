@@ -10,6 +10,7 @@ mod migrations;
 mod nodes;
 pub mod pending_sync;
 mod rebuild;
+mod search;
 mod sync_state;
 mod target;
 #[cfg(test)]
@@ -21,6 +22,7 @@ pub use migrations::migrate;
 pub use nodes::{NodeFilters, list_nodes, read_node};
 pub use pending_sync::PendingSyncRecord;
 pub use rebuild::{load_graph, rebuild};
+pub use search::{SearchFilters, SearchHit, search_nodes};
 pub use work_items::{
     WorkItemFilters, find_work_item_by_external, list_work_items, load_work_item_by_brain_id,
     load_work_item_by_path, read_work_item_by_path, update_work_item_assignees,

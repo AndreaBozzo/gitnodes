@@ -14,6 +14,7 @@ use super::{
     nodes::{list_nodes_from_pool, load_cached_graph},
     pending_sync,
     rebuild::{ProjectionSnapshot, persist_snapshot},
+    search::{SearchFilters, search_nodes_from_pool},
     sync_state::load_sync_state,
     target::ensure_target_id,
     work_items::{list_work_items_from_pool, load_work_item_by_path_from_pool},
@@ -391,6 +392,187 @@ async fn list_files_reports_structure_metadata() {
 }
 
 #[tokio::test]
+async fn migration_creates_usable_fts_table() {
+    let pool = test_pool().await;
+
+    sqlx::query("INSERT INTO node_search_fts (target_id, node_id, path, node_type, title, tags, body_text) VALUES (1, 1, 'concepts/a.md', 'concept', 'Alpha', '[]', 'replica drift recovery')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM node_search_fts WHERE node_search_fts MATCH ?")
+            .bind("\"replica\"")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn search_indexes_title_body_and_tags_with_snippets() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+    let target = target("org", "repo-search", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    let snapshot = ProjectionSnapshot::from_raw_files(
+        &[
+            raw(
+                "concepts/replica.md",
+                "sha-a",
+                "---\ntype: concept\ntopic: Replica Drift\ntags: [sync, priority]\n---\nA recovery note about replica drift after webhook lag.\n",
+            ),
+            raw(
+                "runbooks/cache.md",
+                "sha-b",
+                "---\ntype: runbook\ntopic: Cache Flush\ntags: [ops]\n---\nFlush cache state after deploy.\n",
+            ),
+        ],
+        &config,
+    );
+    persist_snapshot(&pool, target_id, &snapshot, "test-search")
+        .await
+        .unwrap();
+
+    let hits = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "replica drift".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "concepts/replica.md");
+    assert!(hits[0].snippet.contains("[replica]") || hits[0].snippet.contains("[Replica]"));
+    assert!(hits[0].score > 0.0);
+
+    let tag_hits = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "priority".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(tag_hits[0].path, "concepts/replica.md");
+}
+
+#[tokio::test]
+async fn search_applies_structured_filters() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+    let target = target("org", "repo-search-filters", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    let snapshot = ProjectionSnapshot::from_raw_files(
+        &[
+            raw(
+                "concepts/alpha.md",
+                "sha-a",
+                "---\ntype: concept\ntopic: Alpha\ntags: [sync]\n---\nShared recovery checklist.\n",
+            ),
+            raw(
+                "runbooks/beta.md",
+                "sha-b",
+                "---\ntype: runbook\ntopic: Beta\ntags: [ops]\n---\nShared recovery checklist.\n",
+            ),
+        ],
+        &config,
+    );
+    persist_snapshot(&pool, target_id, &snapshot, "test-search-filters")
+        .await
+        .unwrap();
+
+    let hits = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "recovery checklist".to_string(),
+            node_types: vec!["runbook".to_string()],
+            path_prefix: Some("runbooks".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "runbooks/beta.md");
+
+    let tagged = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "recovery checklist".to_string(),
+            tags: vec!["SYNC".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(tagged.len(), 1);
+    assert_eq!(tagged[0].path, "concepts/alpha.md");
+}
+
+#[tokio::test]
+async fn search_rebuild_removes_stale_rows() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+    let target = target("org", "repo-search-stale", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    let first = ProjectionSnapshot::from_raw_files(
+        &[raw(
+            "concepts/old.md",
+            "sha-a",
+            "---\ntype: concept\ntopic: Old\n---\nstale-only phrase\n",
+        )],
+        &config,
+    );
+    persist_snapshot(&pool, target_id, &first, "first")
+        .await
+        .unwrap();
+
+    let second = ProjectionSnapshot::from_raw_files(
+        &[raw(
+            "concepts/new.md",
+            "sha-b",
+            "---\ntype: concept\ntopic: New\n---\nfresh-only phrase\n",
+        )],
+        &config,
+    );
+    persist_snapshot(&pool, target_id, &second, "second")
+        .await
+        .unwrap();
+
+    let stale = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "stale-only".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let fresh = search_nodes_from_pool(
+        &pool,
+        target_id,
+        &SearchFilters {
+            q: "fresh-only".to_string(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(stale.is_empty());
+    assert_eq!(fresh.len(), 1);
+    assert_eq!(fresh[0].path, "concepts/new.md");
+}
+
+#[tokio::test]
 async fn list_work_items_filters_projection_rows() {
     let pool = test_pool().await;
     let config = BrainConfig::parse(
@@ -598,7 +780,7 @@ async fn migrate_records_schema_version_on_fresh_db() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 3, "expected all projection migrations applied");
+    assert_eq!(version, 4, "expected all projection migrations applied");
 }
 
 #[tokio::test]
@@ -708,7 +890,7 @@ async fn migrate_claims_baseline_on_legacy_db() {
         .await
         .unwrap();
     assert_eq!(
-        version, 3,
+        version, 4,
         "legacy DB should claim baseline + apply current migrations"
     );
 
@@ -977,7 +1159,7 @@ async fn legacy_db_smoke() {
         .await
         .unwrap();
     assert_eq!(
-        version, 3,
+        version, 4,
         "legacy DB should be at current schema after migrate"
     );
 
@@ -1036,7 +1218,7 @@ async fn projection_status_reports_schema_and_per_target_state() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 
     let row: (String, String, i64, i64, Option<i64>) = sqlx::query_as(
         "SELECT t.org, COALESCE(s.status, 'stale'), COALESCE(s.file_count, 0), COALESCE(s.node_count, 0), s.last_rebuild_duration_ms

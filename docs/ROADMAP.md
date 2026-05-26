@@ -142,7 +142,7 @@ Queste sono direzioni valide, ma tornano in gioco solo dopo il closeout di Fase 
     - Versioning custom dei blob (R2 ha le sue versioning policy, non duplicarle).
     - Pre-rendering/thumbnail di asset binari server-side — fuori scope, vive eventualmente in un servizio separato.
 
-- [ ] **Full-Text Search (FTS5) con RRF fusion**
+- [x] **Full-Text Search (FTS5) con RRF fusion** _(DONE 2026-05-26)_
 
     Razionale: i filtri per tag, tipo e cartella (3.7) coprono la navigazione strutturata, ma non il recupero per contenuto. Un utente che ricorda una frase specifica, un codice di errore, o un paragrafo non ha oggi nessun percorso diretto — deve aprire GitHub o fare `grep` locale. La projection SQLite è già il punto di aggancio naturale: FTS5 è un'estensione built-in di SQLite, zero dipendenze aggiuntive, indicizzazione incrementale sopra `nodes.body`/`files.content_path` + frontmatter.
 

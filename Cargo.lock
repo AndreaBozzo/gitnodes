@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "brain-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ammonia",
  "axum",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "brain-auth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "brain-domain",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "brain-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "brain-graph"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brain-domain",
  "serde_yaml",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "brain-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "brain-domain",

@@ -13,8 +13,9 @@ use super::live_sync::SyncStatus;
 use super::orphan_banner::OrphanBanner;
 use super::types::{Edge, EditMode, Node};
 use crate::api::{
-    AppConfig, ConfigLoadDiagnostic, FileQueryFilters, RepoFile, list_brain_files,
-    load_brain_config_status, load_brain_graph, refresh_brain_graph,
+    AppConfig, ConfigLoadDiagnostic, FileQueryFilters, RepoFile, SearchBrainQuery, SearchHit,
+    list_brain_files, load_brain_config_status, load_brain_graph, refresh_brain_graph,
+    search_brain,
 };
 use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, encode_path_segment};
@@ -185,6 +186,7 @@ pub(crate) fn KnowledgeView(
     let active_types = RwSignal::new(HashSet::<String>::new());
     let active_path_prefix = RwSignal::new(Option::<String>::None);
     let active_orphan_filter = RwSignal::new(false);
+    let active_search_query = RwSignal::new(String::new());
     let hovered = RwSignal::new(None::<u32>);
     let selected = RwSignal::new(None::<u32>);
     let selected_path = RwSignal::new(None::<String>);
@@ -205,6 +207,12 @@ pub(crate) fn KnowledgeView(
         let mut v: Vec<&str> = set.iter().map(String::as_str).collect();
         v.sort();
         v.join(",")
+    }
+
+    fn sorted_vec(set: &HashSet<String>) -> Vec<String> {
+        let mut v: Vec<String> = set.iter().cloned().collect();
+        v.sort();
+        v
     }
 
     // Minimal percent-encoder: anything outside RFC 3986 unreserved + a few
@@ -250,6 +258,7 @@ pub(crate) fn KnowledgeView(
         let next_orphan_filter = params
             .get_str("orphan")
             .is_some_and(|raw| raw == "true" || raw == "1");
+        let next_search_query = params.get_str("q").map(str::to_string).unwrap_or_default();
         if next_tags != active_tags.get_untracked() {
             active_tags.set(next_tags);
         }
@@ -261,6 +270,9 @@ pub(crate) fn KnowledgeView(
         }
         if next_orphan_filter != active_orphan_filter.get_untracked() {
             active_orphan_filter.set(next_orphan_filter);
+        }
+        if next_search_query != active_search_query.get_untracked() {
+            active_search_query.set(next_search_query);
         }
     });
 
@@ -285,6 +297,7 @@ pub(crate) fn KnowledgeView(
         let path = selected_path.get();
         let path_prefix = active_path_prefix.get();
         let orphan_filter = active_orphan_filter.get();
+        let search_query = active_search_query.get();
         let mut parts: Vec<String> = Vec::new();
         if let Some(p) = path.as_ref().filter(|s| !s.is_empty()) {
             parts.push(format!("path={}", url_encode(p)));
@@ -303,6 +316,9 @@ pub(crate) fn KnowledgeView(
         }
         if orphan_filter {
             parts.push("orphan=true".to_string());
+        }
+        if !search_query.trim().is_empty() {
+            parts.push(format!("q={}", url_encode(search_query.trim())));
         }
         let target = if parts.is_empty() {
             base_path_nav.clone()
@@ -324,11 +340,13 @@ pub(crate) fn KnowledgeView(
         let current_orphan_filter = current
             .get_str("orphan")
             .is_some_and(|raw| raw == "true" || raw == "1");
+        let current_search_query = current.get_str("q").map(str::to_string).unwrap_or_default();
         if current_tags == tags
             && current_types == types
             && current_path == path
             && current_path_prefix == path_prefix
             && current_orphan_filter == orphan_filter
+            && current_search_query == search_query
         {
             return;
         }
@@ -348,6 +366,88 @@ pub(crate) fn KnowledgeView(
         if next != selected.get_untracked() {
             selected.set(next);
         }
+    });
+
+    // Debounced mirror of the search input so we don't fire a server fn on
+    // every keystroke. The input itself keeps writing to `active_search_query`
+    // (URL sync stays immediate); only the server-side `Resource` keys off the
+    // debounced signal. SSR + non-hydrate builds use the live value directly —
+    // there's no event loop to schedule the timeout on.
+    let debounced_search_query = RwSignal::new(active_search_query.get_untracked());
+    #[cfg(feature = "hydrate")]
+    {
+        let debounce_handle: StoredValue<
+            Option<gloo_timers::callback::Timeout>,
+            leptos::prelude::LocalStorage,
+        > = StoredValue::new_local(None);
+        Effect::new(move |_| {
+            let next = active_search_query.get();
+            if next.trim().is_empty() {
+                // Empty query: flush immediately so the panel closes without
+                // a trailing 200ms of stale results.
+                debounce_handle.set_value(None);
+                if debounced_search_query.get_untracked() != next {
+                    debounced_search_query.set(next);
+                }
+                return;
+            }
+            let handle = gloo_timers::callback::Timeout::new(200, move || {
+                if debounced_search_query.get_untracked() != next {
+                    debounced_search_query.set(next.clone());
+                }
+            });
+            debounce_handle.set_value(Some(handle));
+        });
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        Effect::new(move |_| {
+            let next = active_search_query.get();
+            if debounced_search_query.get_untracked() != next {
+                debounced_search_query.set(next);
+            }
+        });
+    }
+
+    let target_for_search = target_ref.clone();
+    let search_results = Resource::new(
+        move || {
+            (
+                debounced_search_query.get(),
+                sorted_vec(&active_tags.get()),
+                sorted_vec(&active_types.get()),
+                active_path_prefix.get(),
+            )
+        },
+        move |(q, tags, node_types, path_prefix)| {
+            let target = target_for_search.clone();
+            async move {
+                if q.trim().is_empty() {
+                    return Ok::<Vec<SearchHit>, crate::api::ApiError>(Vec::new());
+                }
+                search_brain(
+                    target,
+                    SearchBrainQuery {
+                        q,
+                        node_types,
+                        tags,
+                        path_prefix,
+                        limit: Some(30),
+                    },
+                )
+                .await
+            }
+        },
+    );
+
+    let search_paths = Memo::new(move |_| {
+        if active_search_query.with(|q| q.trim().is_empty()) {
+            return None;
+        }
+        search_results
+            .get()
+            .and_then(Result::ok)
+            .map(|hits| hits.into_iter().map(|hit| hit.path).collect::<HashSet<_>>())
     });
 
     // Esc cascade: close the editor first if it's open, otherwise clear the
@@ -413,6 +513,7 @@ pub(crate) fn KnowledgeView(
         let types = active_types.get();
         let path_prefix = active_path_prefix.get();
         let orphan_filter = active_orphan_filter.get();
+        let search_paths = search_paths.get();
         let orphan_paths: HashSet<String> = if orphan_filter {
             repo_files.with_value(|files| {
                 files
@@ -436,6 +537,11 @@ pub(crate) fn KnowledgeView(
                         .is_none_or(|prefix| n.path.starts_with(prefix))
                 })
                 .filter(|n| !orphan_filter || orphan_paths.contains(&n.path))
+                .filter(|n| {
+                    search_paths
+                        .as_ref()
+                        .is_none_or(|paths| paths.contains(&n.path))
+                })
                 .map(|n| n.id)
                 .collect::<HashSet<u32>>()
         })
@@ -488,6 +594,31 @@ pub(crate) fn KnowledgeView(
                 >
                     "Status"
                 </a>
+                <div class="min-w-[240px] max-w-xl flex-1">
+                    <label class="relative block">
+                        <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">
+                            "Search"
+                        </span>
+                        <input
+                            type="search"
+                            placeholder="Find text in this Brain"
+                            class="w-full rounded-md border border-slate-800 bg-slate-900/70 py-2 pl-14 pr-9 text-sm text-slate-100 placeholder:text-slate-600 focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                            prop:value=move || active_search_query.get()
+                            on:input=move |ev| active_search_query.set(event_target_value(&ev))
+                        />
+                        <Show when=move || !active_search_query.with(|q| q.trim().is_empty())>
+                            <button
+                                type="button"
+                                class="absolute right-2 top-1/2 -translate-y-1/2 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                                title="Clear search"
+                                aria-label="Clear search"
+                                on:click=move |_| active_search_query.set(String::new())
+                            >
+                                <span aria-hidden="true">"x"</span>
+                            </button>
+                        </Show>
+                    </label>
+                </div>
                 <div class="ml-auto flex items-center gap-2 flex-wrap justify-end">
                     <span
                         class="px-2.5 py-1 rounded-md bg-slate-900/80 border border-slate-800 text-[10px] uppercase tracking-widest text-slate-400"
@@ -601,15 +732,22 @@ pub(crate) fn KnowledgeView(
                         config=config.get_value()
                     />
                 </Show>
-                <GraphCanvas
-                    nodes=nodes
-                    edges=edges
-                    visible_ids=visible_ids.into()
-                    hovered=hovered
-                    selected=selected
-                    selected_path=selected_path
-                    config=config.get_value()
-                />
+                <div class="flex-1 relative min-w-0 flex">
+                    <GraphCanvas
+                        nodes=nodes
+                        edges=edges
+                        visible_ids=visible_ids.into()
+                        hovered=hovered
+                        selected=selected
+                        selected_path=selected_path
+                        config=config.get_value()
+                    />
+                    <SearchResultsPanel
+                        query=active_search_query
+                        results=search_results
+                        selected_path=selected_path
+                    />
+                </div>
                 <DetailPanel
                     nodes=nodes
                     edges=edges
@@ -629,6 +767,71 @@ pub(crate) fn KnowledgeView(
                 config=config.get_value()
             />
         </div>
+    }
+}
+
+#[component]
+fn SearchResultsPanel(
+    query: RwSignal<String>,
+    results: Resource<Result<Vec<SearchHit>, crate::api::ApiError>>,
+    selected_path: RwSignal<Option<String>>,
+) -> impl IntoView {
+    view! {
+        <Show when=move || !query.with(|q| q.trim().is_empty())>
+            <section class="absolute left-4 top-4 z-20 w-[min(520px,calc(100%-2rem))] rounded-md border border-slate-800 bg-slate-950/95 shadow-2xl shadow-black/30 backdrop-blur">
+                <div class="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-2">
+                    <div class="min-w-0">
+                        <h2 class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+                            "Search Results"
+                        </h2>
+                        <p class="mt-0.5 truncate text-xs text-slate-400">{move || query.get()}</p>
+                    </div>
+                    <button
+                        type="button"
+                        class="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                        title="Clear search"
+                        aria-label="Clear search"
+                        on:click=move |_| query.set(String::new())
+                    >
+                        <span aria-hidden="true">"x"</span>
+                    </button>
+                </div>
+                <div class="max-h-[42vh] overflow-y-auto p-2">
+                    {move || match results.get() {
+                        None => view! {
+                            <p class="px-2 py-3 text-xs text-slate-500">"Searching..."</p>
+                        }.into_any(),
+                        Some(Err(error)) => view! {
+                            <p class="px-2 py-3 text-xs text-rose-200">{error.actionable_message()}</p>
+                        }.into_any(),
+                        Some(Ok(hits)) if hits.is_empty() => view! {
+                            <p class="px-2 py-3 text-xs text-slate-500">"No matching nodes."</p>
+                        }.into_any(),
+                        Some(Ok(hits)) => view! {
+                            <div class="space-y-1">
+                                {hits.into_iter().map(|hit| {
+                                    let path = hit.path.clone();
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="block w-full rounded-md border border-transparent px-3 py-2 text-left hover:border-slate-700 hover:bg-slate-900/80 focus:border-teal-400 focus:outline-none"
+                                            on:click=move |_| selected_path.set(Some(path.clone()))
+                                        >
+                                            <div class="flex items-start justify-between gap-3">
+                                                <span class="min-w-0 truncate text-sm font-medium text-slate-100">{hit.title}</span>
+                                                <span class="shrink-0 font-mono text-[10px] text-slate-600">{format!("{:.4}", hit.score)}</span>
+                                            </div>
+                                            <div class="mt-0.5 truncate font-mono text-[10px] text-slate-500">{hit.path}</div>
+                                            <p class="mt-1 line-clamp-2 text-xs leading-5 text-slate-300">{hit.snippet}</p>
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        }.into_any(),
+                    }}
+                </div>
+            </section>
+        </Show>
     }
 }
 

@@ -76,6 +76,40 @@ pub(super) async fn bulk_insert_nodes(
     Ok(())
 }
 
+pub(super) async fn bulk_insert_search_rows(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_id: i64,
+    rows: &[NodeInsertRow],
+) -> Result<(), BrainError> {
+    let rows = rows
+        .iter()
+        .filter(|node| !node.is_virtual && !node.path.is_empty())
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in rows.chunks(max_rows_per_insert(7)) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO node_search_fts (
+                target_id, node_id, path, node_type, title, tags, body_text
+            ) ",
+        );
+        query.push_values(chunk, |mut row, node| {
+            row.push_bind(target_id)
+                .push_bind(node.node_id)
+                .push_bind(&node.path)
+                .push_bind(&node.node_type)
+                .push_bind(&node.title)
+                .push_bind(&node.tags_json)
+                .push_bind(node.body_text.as_deref().unwrap_or(""));
+        });
+        query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
+    }
+
+    Ok(())
+}
+
 pub(super) async fn bulk_insert_node_authors(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     target_id: i64,
