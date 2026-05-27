@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
+use brain_domain::EdgeKind;
 use brain_domain::{BrainConfig, BrainError, Edge, Node, TargetKey, split_frontmatter};
 use brain_graph::{RawFile, build_graph, parse_file};
 use brain_storage::GithubStorage;
@@ -264,7 +265,7 @@ impl ProjectionSnapshot {
 
         let parsed: Vec<_> = raw_files
             .iter()
-            .filter_map(|file| parse_file(&file.content, &file.path, &file.sha))
+            .filter_map(|file| parse_file(&file.content, &file.path, &file.sha, config))
             .collect();
         let parsed_by_path: HashMap<&str, _> =
             parsed.iter().map(|doc| (doc.rel.as_str(), doc)).collect();
@@ -298,7 +299,10 @@ impl ProjectionSnapshot {
         for doc in parsed {
             let from_dir = Path::new(&doc.rel).parent().unwrap_or(Path::new(""));
             for link in doc.links {
-                let Some(target_path) = resolve_link_path(from_dir, &link) else {
+                if link.kind != EdgeKind::Body {
+                    continue;
+                }
+                let Some(target_path) = resolve_link_path(from_dir, &link.target) else {
                     continue;
                 };
                 if target_path == doc.rel || !known_paths.contains(&target_path) {

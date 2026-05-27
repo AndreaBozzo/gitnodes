@@ -704,6 +704,7 @@ mod merge_frontmatter_tests {
             date_update_field: Some("aggiornato_il".into()),
             body_label: Some("Corpo".into()),
             work_item_kind: None,
+            link_fields: BTreeMap::new(),
         });
 
         // Create path: title_key and date_create_field both get injected.
@@ -769,6 +770,7 @@ mod merge_frontmatter_tests {
             date_update_field: Some("last_updated".into()),
             body_label: Some("Description".into()),
             work_item_kind: Some(WorkItemKind::Task),
+            link_fields: BTreeMap::new(),
         });
 
         let mut payload = base_payload("task".to_string());
@@ -798,6 +800,7 @@ mod merge_frontmatter_tests {
             date_update_field: Some("last_updated".into()),
             body_label: Some("Description".into()),
             work_item_kind: Some(WorkItemKind::Task),
+            link_fields: BTreeMap::new(),
         });
 
         let mut payload = base_payload("task".to_string());

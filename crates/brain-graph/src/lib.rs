@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use brain_domain::{BrainConfig, Edge, Node};
+use brain_domain::{BrainConfig, Edge, EdgeKind, Node};
 
 mod layout;
 mod parse;
@@ -33,7 +33,7 @@ pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<E
     let mut parsed: Vec<Parsed> = files
         .iter()
         .filter(|f| is_included_md(&f.path))
-        .filter_map(|f| parse_file(&f.content, &f.path, &f.sha))
+        .filter_map(|f| parse_file(&f.content, &f.path, &f.sha, config))
         .collect();
     parsed.sort_by(|a, b| {
         let label_a = config
@@ -57,21 +57,29 @@ pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<E
         .collect();
 
     // 3. Resolve inter-doc links into edges (deduplicated).
-    let mut edge_pairs: Vec<(u32, u32)> = Vec::new();
-    let mut seen: HashSet<(u32, u32)> = HashSet::new();
+    let mut edge_pairs: Vec<EdgeDraft> = Vec::new();
+    let mut seen: HashSet<EdgeKey> = HashSet::new();
     for p in &parsed {
         let from = path_to_id[&p.rel];
         let dir = std::path::Path::new(&p.rel)
             .parent()
             .unwrap_or(std::path::Path::new(""));
         for link in &p.links {
-            if let Some(resolved) = resolve_link(dir, link)
+            let resolved = match link.kind {
+                EdgeKind::Body => resolve_link(dir, &link.target),
+                EdgeKind::Frontmatter(_) | EdgeKind::Tag => Some(link.target.clone()),
+            };
+            if let Some(resolved) = resolved
                 && let Some(&to) = path_to_id.get(&resolved)
                 && from != to
             {
-                let key = if from < to { (from, to) } else { (to, from) };
+                let key = EdgeKey::new(from, to, &link.kind);
                 if seen.insert(key) {
-                    edge_pairs.push((from, to));
+                    edge_pairs.push(EdgeDraft {
+                        from,
+                        to,
+                        kind: link.kind.clone(),
+                    });
                 }
             }
         }
@@ -95,15 +103,21 @@ pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<E
     }
     for (_, tid, docs) in &tag_nodes {
         for d in docs {
-            let key = if *d < *tid { (*d, *tid) } else { (*tid, *d) };
+            let key = EdgeKey::new(*d, *tid, &EdgeKind::Tag);
             if seen.insert(key) {
-                edge_pairs.push((*d, *tid));
+                edge_pairs.push(EdgeDraft {
+                    from: *d,
+                    to: *tid,
+                    kind: EdgeKind::Tag,
+                });
             }
         }
     }
 
     // 5. Layout.
-    let positions = layout(&parsed, &tag_nodes, &edge_pairs);
+    let layout_edges: Vec<(u32, u32)> =
+        edge_pairs.iter().map(|edge| (edge.from, edge.to)).collect();
+    let positions = layout(&parsed, &tag_nodes, &layout_edges, config);
 
     // 6. Materialize into public Node/Edge shapes.
     let mut nodes: Vec<Node> = Vec::with_capacity(parsed.len() + tag_nodes.len());
@@ -141,10 +155,39 @@ pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<E
 
     let edges: Vec<Edge> = edge_pairs
         .into_iter()
-        .map(|(from, to)| Edge { from, to })
+        .map(|edge| Edge {
+            from: edge.from,
+            to: edge.to,
+            kind: edge.kind,
+        })
         .collect();
 
     (nodes, edges)
+}
+
+#[derive(Clone, Debug)]
+struct EdgeDraft {
+    from: u32,
+    to: u32,
+    kind: EdgeKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct EdgeKey {
+    low: u32,
+    high: u32,
+    kind: EdgeKind,
+}
+
+impl EdgeKey {
+    fn new(from: u32, to: u32, kind: &EdgeKind) -> Self {
+        let (low, high) = if from < to { (from, to) } else { (to, from) };
+        Self {
+            low,
+            high,
+            kind: kind.clone(),
+        }
+    }
 }
 
 fn resolve_link(from_dir: &std::path::Path, link: &str) -> Option<String> {
@@ -202,6 +245,26 @@ mod tests {
         let (nodes, edges) = build_graph(&[f("concepts/A.md", a), f("concepts/B.md", b)], &config);
         assert_eq!(nodes.len(), 2);
         assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind, EdgeKind::Body);
+    }
+
+    #[test]
+    fn configured_frontmatter_link_produces_typed_edge() {
+        let mut config = BrainConfig::default();
+        config
+            .node_types
+            .iter_mut()
+            .find(|spec| spec.name == "concept")
+            .unwrap()
+            .link_fields
+            .insert("trainer".to_string(), "runbook".to_string());
+        let a = "---\ntype: concept\ntopic: A\ntrainer: owner\n---\n";
+        let b = "---\ntype: runbook\ntopic: Owner\n---\n";
+        let (_nodes, edges) =
+            build_graph(&[f("concepts/A.md", a), f("runbooks/owner.md", b)], &config);
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].kind, EdgeKind::Frontmatter("trainer".to_string()));
     }
 
     #[test]
@@ -215,6 +278,7 @@ mod tests {
         assert!(nodes.iter().any(|n| n.node_type == "tag"));
         // 2 doc↔tag edges
         assert_eq!(edges.len(), 2);
+        assert!(edges.iter().all(|edge| edge.kind == EdgeKind::Tag));
     }
 
     #[test]

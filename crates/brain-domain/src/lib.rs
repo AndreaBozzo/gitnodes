@@ -18,7 +18,7 @@ pub use config::{
 };
 pub use error::{BrainError, ConflictKind};
 pub use frontmatter::split_frontmatter;
-pub use types::{BrainFilePayload, Edge, EditMode, EditPrefill, Node};
+pub use types::{BrainFilePayload, Edge, EdgeKind, EditMode, EditPrefill, Node};
 pub use work_items::{
     ExternalWorkItemBinding, ExternalWorkItemSystem, WorkItem, WorkItemKind, WorkItemState,
     WorkItemSystemOfRecord,

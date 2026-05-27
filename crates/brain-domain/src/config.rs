@@ -543,6 +543,10 @@ pub struct NodeTypeSpec {
     /// without the domain model changing shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_kind: Option<WorkItemKind>,
+    /// Frontmatter fields whose scalar or sequence values are slugs pointing
+    /// to nodes of the configured target type.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub link_fields: BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -671,6 +675,14 @@ pub enum ConfigError {
     InvalidViewSlug(String),
     #[error("view tag {tag:?} in view {view:?} must be lowercase")]
     NonLowercaseViewTag { view: String, tag: String },
+    #[error(
+        "link field {field:?} for type {name:?} references unknown target type {target_type:?}"
+    )]
+    UnknownLinkFieldTarget {
+        name: String,
+        field: String,
+        target_type: String,
+    },
 }
 
 impl BrainConfig {
@@ -712,6 +724,7 @@ impl BrainConfig {
         if !names.contains(&self.default_type) {
             return Err(ConfigError::UnknownDefault(self.default_type.clone()));
         }
+        validate_link_fields(&self.node_types, &names)?;
         validate_views(&self.views, &names)?;
         Ok(())
     }
@@ -931,6 +944,31 @@ fn validate_frontmatter_fields(spec: &NodeTypeSpec) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_link_fields(
+    specs: &[NodeTypeSpec],
+    type_names: &std::collections::HashSet<String>,
+) -> Result<(), ConfigError> {
+    for spec in specs {
+        for (field, target_type) in &spec.link_fields {
+            if field.trim().is_empty() || RESERVED_FRONTMATTER_FIELDS.contains(&field.as_str()) {
+                return Err(ConfigError::InvalidFrontmatterField {
+                    name: spec.name.clone(),
+                    field: "link_fields",
+                    key: field.clone(),
+                });
+            }
+            if !type_names.contains(target_type) {
+                return Err(ConfigError::UnknownLinkFieldTarget {
+                    name: spec.name.clone(),
+                    field: field.clone(),
+                    target_type: target_type.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Default for BrainConfig {
     /// Equivalent to the hardcoded `NodeType` enum — repos without a
     /// `.brain-config.yml` must behave identically to pre-Phase-1 installs.
@@ -959,6 +997,7 @@ impl Default for BrainConfig {
                     date_update_field: None,
                     body_label: Some("Summary".into()),
                     work_item_kind: None,
+                    link_fields: BTreeMap::new(),
                 },
                 NodeTypeSpec {
                     name: "adr".into(),
@@ -973,6 +1012,7 @@ impl Default for BrainConfig {
                     date_update_field: None,
                     body_label: Some("Context".into()),
                     work_item_kind: None,
+                    link_fields: BTreeMap::new(),
                 },
                 NodeTypeSpec {
                     name: "meeting".into(),
@@ -987,6 +1027,7 @@ impl Default for BrainConfig {
                     date_update_field: None,
                     body_label: Some("Summary / Notes".into()),
                     work_item_kind: None,
+                    link_fields: BTreeMap::new(),
                 },
                 NodeTypeSpec {
                     name: "post-mortem".into(),
@@ -1001,6 +1042,7 @@ impl Default for BrainConfig {
                     date_update_field: None,
                     body_label: Some("Incident Summary".into()),
                     work_item_kind: None,
+                    link_fields: BTreeMap::new(),
                 },
                 NodeTypeSpec {
                     name: "preventivo".into(),
@@ -1019,6 +1061,7 @@ impl Default for BrainConfig {
                     date_update_field: None,
                     body_label: Some("Riepilogo".into()),
                     work_item_kind: None,
+                    link_fields: BTreeMap::new(),
                 },
                 NodeTypeSpec {
                     name: "runbook".into(),
@@ -1033,6 +1076,7 @@ impl Default for BrainConfig {
                     date_update_field: Some("last_updated".into()),
                     body_label: Some("Description".into()),
                     work_item_kind: None,
+                    link_fields: BTreeMap::new(),
                 },
                 NodeTypeSpec {
                     name: "tag".into(),
@@ -1047,6 +1091,7 @@ impl Default for BrainConfig {
                     date_update_field: None,
                     body_label: Some("Body".into()),
                     work_item_kind: None,
+                    link_fields: BTreeMap::new(),
                 },
             ],
             default_type: "concept".into(),
@@ -1217,6 +1262,51 @@ node_types:
 "##;
         let cfg = BrainConfig::parse(yaml).unwrap();
         assert_eq!(cfg.label_taxonomy.len(), 6);
+    }
+
+    #[test]
+    fn link_fields_roundtrip_yaml() {
+        let yaml = r##"
+default_type: pokemon
+node_types:
+  - name: pokemon
+    label: Pokemon
+    directory: pokemon
+    accent: "#ef4444"
+    link_fields:
+      trainer: trainer
+  - { name: trainer, label: Trainer, directory: trainers, accent: "#2563eb" }
+"##;
+        let cfg = BrainConfig::parse(yaml).unwrap();
+        assert_eq!(
+            cfg.lookup("pokemon")
+                .unwrap()
+                .link_fields
+                .get("trainer")
+                .map(String::as_str),
+            Some("trainer")
+        );
+
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        assert!(yaml.contains("link_fields:"));
+    }
+
+    #[test]
+    fn rejects_link_field_unknown_target_type() {
+        let yaml = r##"
+default_type: pokemon
+node_types:
+  - name: pokemon
+    label: Pokemon
+    directory: pokemon
+    accent: "#ef4444"
+    link_fields:
+      trainer: trainer
+"##;
+        assert!(matches!(
+            BrainConfig::parse(yaml),
+            Err(ConfigError::UnknownLinkFieldTarget { .. })
+        ));
     }
 
     #[test]

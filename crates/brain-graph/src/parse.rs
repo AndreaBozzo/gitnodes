@@ -1,6 +1,6 @@
 //! Parsing helpers: markdown file → internal `Parsed` intermediate.
 
-use brain_domain::split_frontmatter;
+use brain_domain::{BrainConfig, EdgeKind, split_frontmatter};
 use serde_yaml::Value;
 
 /// A typed Brain doc parsed out of raw markdown. Internal to the graph build;
@@ -12,7 +12,13 @@ pub struct Parsed {
     pub summary: String,
     pub node_type: String,
     pub tags: Vec<String>,
-    pub links: Vec<String>,
+    pub links: Vec<ParsedLink>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedLink {
+    pub target: String,
+    pub kind: EdgeKind,
 }
 
 /// True if a path should be included in the Brain graph.
@@ -33,7 +39,7 @@ pub fn is_included_md(path: &str) -> bool {
     true
 }
 
-pub fn parse_file(raw: &str, rel: &str, sha: &str) -> Option<Parsed> {
+pub fn parse_file(raw: &str, rel: &str, sha: &str, config: &BrainConfig) -> Option<Parsed> {
     let (front, body) = split_frontmatter(raw);
     if front.is_empty() {
         return None;
@@ -56,7 +62,8 @@ pub fn parse_file(raw: &str, rel: &str, sha: &str) -> Option<Parsed> {
     };
 
     let summary = extract_summary(body);
-    let links = extract_links(body);
+    let mut links = extract_links(body);
+    links.extend(extract_frontmatter_links(&frontmatter, &node_type, config));
 
     Some(Parsed {
         rel: rel.to_string(),
@@ -214,7 +221,7 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-fn extract_links(body: &str) -> Vec<String> {
+fn extract_links(body: &str) -> Vec<ParsedLink> {
     let mut out = Vec::new();
     let bytes = body.as_bytes();
     let mut i = 0;
@@ -227,7 +234,10 @@ fn extract_links(body: &str) -> Vec<String> {
             let url = &body[i + 2..i + 2 + end];
             if url.ends_with(".md") && !url.starts_with("http") {
                 let clean = url.split('#').next().unwrap_or(url).to_string();
-                out.push(clean);
+                out.push(ParsedLink {
+                    target: clean,
+                    kind: EdgeKind::Body,
+                });
             }
             i = i + 2 + end + 1;
             continue;
@@ -235,6 +245,68 @@ fn extract_links(body: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+fn extract_frontmatter_links(
+    frontmatter: &Value,
+    node_type: &str,
+    config: &BrainConfig,
+) -> Vec<ParsedLink> {
+    let Some(spec) = config.lookup(node_type) else {
+        return Vec::new();
+    };
+    let Some(mapping) = frontmatter.as_mapping() else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for (field, target_type) in &spec.link_fields {
+        let Some(target_spec) = config.lookup(target_type) else {
+            continue;
+        };
+        let Some(value) = mapping.get(Value::String(field.clone())) else {
+            continue;
+        };
+        for slug in yaml_link_values(value) {
+            if let Some(target) = frontmatter_slug_to_path(&slug, target_spec.directory.as_str()) {
+                out.push(ParsedLink {
+                    target,
+                    kind: EdgeKind::Frontmatter(field.clone()),
+                });
+            }
+        }
+    }
+    out
+}
+
+fn yaml_link_values(value: &Value) -> Vec<String> {
+    if let Some(single) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return vec![single.to_string()];
+    }
+    value
+        .as_sequence()
+        .map(|seq| {
+            seq.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn frontmatter_slug_to_path(slug: &str, directory: &str) -> Option<String> {
+    let slug = slug.trim().trim_start_matches('/');
+    let directory = directory.trim_matches('/');
+    if slug.is_empty() || directory.is_empty() {
+        return None;
+    }
+    if slug.ends_with(".md") {
+        Some(format!("{directory}/{slug}"))
+    } else {
+        Some(format!("{directory}/{slug}.md"))
+    }
 }
 
 #[cfg(test)]
@@ -257,6 +329,7 @@ mod tests {
             "---\ntype: concept\ntopic: alpha-beta\n---\nbody",
             "concepts/AB.md",
             "sha1",
+            &BrainConfig::default(),
         )
         .unwrap();
         assert_eq!(p.title, "Alpha Beta");
@@ -266,40 +339,83 @@ mod tests {
     #[test]
     fn parse_extracts_block_sequence_tags() {
         let raw = "---\ntype: task\ntopic: Brain_UI Development\ntags:\n- Brain\n- brain-ui\n- rustlang\n---\nbody";
-        let p = parse_file(raw, "tasks/BrainUI-Development-.md", "sha").unwrap();
+        let p = parse_file(
+            raw,
+            "tasks/BrainUI-Development-.md",
+            "sha",
+            &BrainConfig::default(),
+        )
+        .unwrap();
         assert_eq!(p.tags, vec!["Brain", "brain-ui", "rustlang"]);
     }
 
     #[test]
     fn parse_extracts_inline_sequence_tags() {
         let raw = "---\ntype: runbook\ntags: [\"Brain\", \"brain-ui\", workflow]\n---\nbody";
-        let p = parse_file(raw, "runbooks/usage.md", "sha").unwrap();
+        let p = parse_file(raw, "runbooks/usage.md", "sha", &BrainConfig::default()).unwrap();
         assert_eq!(p.tags, vec!["Brain", "brain-ui", "workflow"]);
     }
 
     #[test]
     fn parse_extracts_md_links_excluding_external() {
         let raw = "---\ntype: concept\ntopic: X\n---\nsee [A](../a.md) and [ext](https://e.com)\n";
-        let p = parse_file(raw, "concepts/X.md", "s").unwrap();
-        assert_eq!(p.links, vec!["../a.md"]);
+        let p = parse_file(raw, "concepts/X.md", "s", &BrainConfig::default()).unwrap();
+        assert_eq!(p.links[0].target, "../a.md");
+        assert_eq!(p.links[0].kind, EdgeKind::Body);
     }
 
     #[test]
     fn parse_rejects_missing_frontmatter() {
-        assert!(parse_file("# just a heading", "x.md", "s").is_none());
+        assert!(parse_file("# just a heading", "x.md", "s", &BrainConfig::default()).is_none());
     }
 
     #[test]
     fn parse_preserves_unknown_type() {
         let raw = "---\ntype: unknown\n---\n";
-        let parsed = parse_file(raw, "x.md", "s").expect("unknown types now round-trip");
+        let parsed = parse_file(raw, "x.md", "s", &BrainConfig::default())
+            .expect("unknown types now round-trip");
         assert_eq!(parsed.node_type, "unknown");
     }
 
     #[test]
     fn summary_prefers_summary_section() {
         let raw = "---\ntype: concept\ntopic: X\n---\n# Head\n\n## Summary\nHello world.\n\n## Other\nignore\n";
-        let p = parse_file(raw, "x.md", "s").unwrap();
+        let p = parse_file(raw, "x.md", "s", &BrainConfig::default()).unwrap();
         assert_eq!(p.summary, "Hello world.");
+    }
+
+    #[test]
+    fn parse_extracts_configured_frontmatter_links() {
+        let mut config = BrainConfig::default();
+        let concept = config
+            .node_types
+            .iter_mut()
+            .find(|spec| spec.name == "concept")
+            .unwrap();
+        concept
+            .link_fields
+            .insert("trainer".to_string(), "meeting".to_string());
+
+        let raw = "---\ntype: concept\ntopic: X\ntrainer: ash-ketchum\n---\n";
+        let p = parse_file(raw, "concepts/X.md", "s", &config).unwrap();
+
+        assert_eq!(p.links.len(), 1);
+        assert_eq!(p.links[0].target, "meetings/ash-ketchum.md");
+        assert_eq!(
+            p.links[0].kind,
+            EdgeKind::Frontmatter("trainer".to_string())
+        );
+    }
+
+    #[test]
+    fn frontmatter_nested_slug_stays_under_target_directory() {
+        assert_eq!(
+            frontmatter_slug_to_path("kanto/ash.md", "trainers").as_deref(),
+            Some("trainers/kanto/ash.md")
+        );
+        assert_eq!(
+            frontmatter_slug_to_path("/kanto/ash", "trainers").as_deref(),
+            Some("trainers/kanto/ash.md")
+        );
     }
 }

@@ -3,13 +3,16 @@
 use std::collections::BTreeMap;
 
 use crate::parse::Parsed;
+use brain_domain::BrainConfig;
 
 pub fn layout(
     parsed: &[Parsed],
     tag_nodes: &[(String, u32, Vec<u32>)],
     edges: &[(u32, u32)],
+    config: &BrainConfig,
 ) -> BTreeMap<u32, (f32, f32)> {
     let mut pos: BTreeMap<u32, (f32, f32)> = BTreeMap::new();
+    let mut cluster_centers: BTreeMap<u32, (f32, f32)> = BTreeMap::new();
 
     let mut by_type: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
     for (i, p) in parsed.iter().enumerate() {
@@ -18,28 +21,37 @@ pub fn layout(
             .or_default()
             .push((i as u32) + 1);
     }
-    let clusters: &[(&str, f32, f32, f32)] = &[
-        ("concept", 22.0, 38.0, 14.0),
-        ("adr", 52.0, 20.0, 10.0),
-        ("meeting", 80.0, 74.0, 9.0),
-        ("post-mortem", 78.0, 28.0, 9.0),
-        ("preventivo", 25.0, 78.0, 9.0),
-        ("runbook", 50.0, 80.0, 9.0),
-    ];
-    for (name, cx, cy, r) in clusters {
+    let configured_types: Vec<&str> = config
+        .node_types
+        .iter()
+        .filter(|spec| spec.creatable || !spec.directory.is_empty())
+        .map(|spec| spec.name.as_str())
+        .collect();
+    let cluster_count = configured_types.len().max(1);
+    let graph_center = (50.0_f32, 50.0_f32);
+    let cluster_ring_radius = if cluster_count <= 1 { 0.0 } else { 30.0 };
+    for (index, name) in configured_types.iter().enumerate() {
         if let Some(ids) = by_type.get(name) {
+            let theta = (index as f32) / (cluster_count as f32) * std::f32::consts::TAU - 1.35;
+            let cx = graph_center.0 + cluster_ring_radius * theta.cos();
+            let cy = graph_center.1 + cluster_ring_radius * theta.sin();
             let n = ids.len().max(1) as f32;
-            let radius = if ids.len() <= 1 { 0.0 } else { *r };
+            let radius = if ids.len() <= 1 {
+                0.0
+            } else {
+                cluster_inner_radius(ids.len())
+            };
             for (k, id) in ids.iter().enumerate() {
                 let theta = (k as f32) / n * std::f32::consts::TAU + 0.7;
                 pos.insert(*id, (cx + radius * theta.cos(), cy + radius * theta.sin()));
+                cluster_centers.insert(*id, (cx, cy));
             }
         }
     }
 
     let mut unseen: Vec<u32> = Vec::new();
     for (name, ids) in &by_type {
-        if !clusters.iter().any(|c| c.0 == *name) {
+        if !configured_types.iter().any(|configured| configured == name) {
             unseen.extend(ids.iter().copied());
         }
     }
@@ -52,6 +64,7 @@ pub fn layout(
         for (k, id) in unseen.iter().enumerate() {
             let theta = (k as f32) / n * std::f32::consts::TAU;
             pos.insert(*id, (cx + radius * theta.cos(), cy + radius * theta.sin()));
+            cluster_centers.insert(*id, (cx, cy));
         }
     }
 
@@ -125,6 +138,15 @@ pub fn layout(
             }
         }
         for id in &ids {
+            if let Some(&(cx, cy)) = cluster_centers.get(id) {
+                let (x, y) = pos[id];
+                if let Some(e) = delta.get_mut(id) {
+                    e.0 += (cx - x) * 0.025;
+                    e.1 += (cy - y) * 0.025;
+                }
+            }
+        }
+        for id in &ids {
             let d = delta[id];
             if let Some(p) = pos.get_mut(id) {
                 p.0 = (p.0 + d.0).clamp(6.0, 94.0);
@@ -134,6 +156,10 @@ pub fn layout(
     }
 
     pos
+}
+
+fn cluster_inner_radius(count: usize) -> f32 {
+    (4.5 + (count as f32).sqrt() * 1.65).clamp(6.0, 14.0)
 }
 
 fn small_hash(s: &str) -> u32 {

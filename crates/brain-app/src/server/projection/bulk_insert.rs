@@ -145,13 +145,14 @@ pub(super) async fn bulk_insert_edges(
         return Ok(());
     }
 
-    for chunk in edges.chunks(max_rows_per_insert(3)) {
+    for chunk in edges.chunks(max_rows_per_insert(4)) {
         let mut query =
-            QueryBuilder::<Sqlite>::new("INSERT INTO edges (target_id, from_id, to_id) ");
+            QueryBuilder::<Sqlite>::new("INSERT INTO edges (target_id, from_id, to_id, kind) ");
         query.push_values(chunk, |mut row, edge| {
             row.push_bind(target_id)
                 .push_bind(i64::from(edge.from))
-                .push_bind(i64::from(edge.to));
+                .push_bind(i64::from(edge.to))
+                .push_bind(edge.kind.storage_key());
         });
         query.build().execute(&mut **tx).await.map_err(sqlx_error)?;
     }

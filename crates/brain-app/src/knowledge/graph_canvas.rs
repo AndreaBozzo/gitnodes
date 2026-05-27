@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use wasm_bindgen::{JsCast, closure::Closure};
 
 use super::types::{Edge, Node};
+use brain_domain::EdgeKind;
 
 #[cfg(feature = "hydrate")]
 type RafClosure = Closure<dyn FnMut(f64)>;
@@ -326,11 +327,11 @@ fn label_budget(visible_count: usize, has_focus: bool) -> usize {
     if has_focus {
         18
     } else if visible_count > 90 {
-        12
+        25
     } else if visible_count > 55 {
-        16
+        28
     } else {
-        24
+        30
     }
 }
 
@@ -443,6 +444,93 @@ fn visible_label_ids(
     ids
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum EdgeLegendGroup {
+    Body,
+    Ownership,
+    Evolution,
+    Geography,
+    Other,
+}
+
+impl EdgeLegendGroup {
+    const ALL: [Self; 5] = [
+        Self::Body,
+        Self::Ownership,
+        Self::Evolution,
+        Self::Geography,
+        Self::Other,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Body => "Body",
+            Self::Ownership => "Ownership",
+            Self::Evolution => "Evolution",
+            Self::Geography => "Geography",
+            Self::Other => "Other",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EdgeStyle {
+    stroke: &'static str,
+    width: &'static str,
+    dasharray: &'static str,
+}
+
+fn edge_legend_group(kind: &EdgeKind) -> EdgeLegendGroup {
+    match kind {
+        EdgeKind::Body => EdgeLegendGroup::Body,
+        EdgeKind::Tag => EdgeLegendGroup::Other,
+        EdgeKind::Frontmatter(field) => match field.as_str() {
+            "trainer" => EdgeLegendGroup::Ownership,
+            "evolves_to" | "evolves_from" => EdgeLegendGroup::Evolution,
+            "locations" | "encounters" => EdgeLegendGroup::Geography,
+            _ => EdgeLegendGroup::Other,
+        },
+    }
+}
+
+fn edge_style(kind: &EdgeKind, touches: bool) -> EdgeStyle {
+    let width = if touches { "0.42" } else { "0.22" };
+    match kind {
+        EdgeKind::Body => EdgeStyle {
+            stroke: "#475569",
+            width,
+            dasharray: "none",
+        },
+        EdgeKind::Tag => EdgeStyle {
+            stroke: "#94a3b8",
+            width: if touches { "0.34" } else { "0.16" },
+            dasharray: "0.01 0.8",
+        },
+        EdgeKind::Frontmatter(field) => match field.as_str() {
+            "trainer" => EdgeStyle {
+                stroke: "#0ea5e9",
+                width,
+                dasharray: "none",
+            },
+            "evolves_to" | "evolves_from" => EdgeStyle {
+                stroke: "#f59e0b",
+                width,
+                dasharray: "1.4 1.0",
+            },
+            "locations" | "encounters" => EdgeStyle {
+                stroke: "#22c55e",
+                width,
+                dasharray: "0.01 0.95",
+            },
+            _ => EdgeStyle {
+                stroke: "#d946ef",
+                width: if touches { "0.36" } else { "0.18" },
+                dasharray: "none",
+            },
+        },
+    }
+}
+
 #[component]
 pub fn GraphCanvas(
     nodes: StoredValue<Vec<Node>>,
@@ -474,6 +562,7 @@ pub fn GraphCanvas(
     let rendered_viewport = RwSignal::new(initial_viewport);
     let target_viewport = RwSignal::new(initial_viewport);
     let animation_epoch = RwSignal::new(0_u32);
+    let enabled_edge_groups = RwSignal::new(HashSet::from(EdgeLegendGroup::ALL));
 
     let view_box = Memo::new(move |_| rendered_viewport.get().view_box());
     let bg_rect = Memo::new(move |_| rendered_viewport.get().rect());
@@ -565,49 +654,52 @@ pub fn GraphCanvas(
     let edges_view = move || {
         let vis = visible_ids.get();
         let f = visual_focus.get();
-        edges.with_value(|es| {
-            positions.with_value(|pos| {
-                es.iter()
-                    .filter(|e| vis.contains(&e.from) && vis.contains(&e.to))
-                    .map(|e| {
-                        let (x1, y1) = pos[&e.from];
-                        let (x2, y2) = pos[&e.to];
-                        let mx = (x1 + x2) / 2.0;
-                        let my = (y1 + y2) / 2.0;
-                        let dx = x2 - x1;
-                        let dy = y2 - y1;
-                        let len = (dx * dx + dy * dy).sqrt().max(0.001);
-                        let ox = -dy / len;
-                        let oy = dx / len;
-                        let bow = (len * 0.12).min(6.0);
-                        let cx = mx + ox * bow;
-                        let cy = my + oy * bow;
-                        let touches = match f {
-                            Some(id) => id == e.from || id == e.to,
-                            None => false,
-                        };
-                        let opacity = if f.is_none() {
-                            0.50
-                        } else if touches {
-                            0.95
-                        } else {
-                            0.05
-                        };
-                        let stroke = if touches { "#5eead4" } else { "#334155" };
-                        let width = if touches { "0.35" } else { "0.18" };
-                        view! {
-                            <path
-                                d=format!("M{:.3},{:.3} Q{:.3},{:.3} {:.3},{:.3}", x1, y1, cx, cy, x2, y2)
-                                fill="none"
-                                stroke=stroke
-                                stroke-width=width
-                                stroke-linecap="round"
-                                stroke-opacity=opacity
-                                style="transition: stroke 200ms ease, stroke-width 200ms ease, stroke-opacity 200ms ease;"
-                            />
-                        }
-                    })
-                    .collect_view()
+        enabled_edge_groups.with(|enabled| {
+            edges.with_value(|es| {
+                positions.with_value(|pos| {
+                    es.iter()
+                        .filter(|e| vis.contains(&e.from) && vis.contains(&e.to))
+                        .filter(|e| enabled.contains(&edge_legend_group(&e.kind)))
+                        .map(|e| {
+                            let (x1, y1) = pos[&e.from];
+                            let (x2, y2) = pos[&e.to];
+                            let mx = (x1 + x2) / 2.0;
+                            let my = (y1 + y2) / 2.0;
+                            let dx = x2 - x1;
+                            let dy = y2 - y1;
+                            let len = (dx * dx + dy * dy).sqrt().max(0.001);
+                            let ox = -dy / len;
+                            let oy = dx / len;
+                            let bow = (len * 0.12).min(6.0);
+                            let cx = mx + ox * bow;
+                            let cy = my + oy * bow;
+                            let touches = match f {
+                                Some(id) => id == e.from || id == e.to,
+                                None => false,
+                            };
+                            let opacity = if f.is_none() {
+                                0.50
+                            } else if touches {
+                                0.95
+                            } else {
+                                0.05
+                            };
+                            let style = edge_style(&e.kind, touches);
+                            view! {
+                                <path
+                                    d=format!("M{:.3},{:.3} Q{:.3},{:.3} {:.3},{:.3}", x1, y1, cx, cy, x2, y2)
+                                    fill="none"
+                                    stroke=style.stroke
+                                    stroke-width=style.width
+                                    stroke-dasharray=style.dasharray
+                                    stroke-linecap="round"
+                                    stroke-opacity=opacity
+                                    style="transition: stroke 200ms ease, stroke-width 200ms ease, stroke-opacity 200ms ease;"
+                                />
+                            }
+                        })
+                        .collect_view()
+                })
             })
         })
     };
@@ -830,6 +922,37 @@ pub fn GraphCanvas(
                 }).collect_view()}
             </div>
 
+            <div class="absolute bottom-3 left-4 flex max-w-[calc(100%-14rem)] flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-widest text-slate-500">
+                {EdgeLegendGroup::ALL.into_iter().map(|group| {
+                    let active = Memo::new(move |_| enabled_edge_groups.with(|enabled| enabled.contains(&group)));
+                    view! {
+                        <button
+                            type="button"
+                            class=move || {
+                                if active.get() {
+                                    "rounded-md border border-slate-700 bg-slate-900/80 px-2 py-1 text-slate-200 backdrop-blur transition-colors"
+                                } else {
+                                    "rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1 text-slate-600 backdrop-blur transition-colors"
+                                }
+                            }
+                            title=format!("Toggle {} edges", group.label())
+                            aria-label=format!("Toggle {} edges", group.label())
+                            on:click=move |_| {
+                                enabled_edge_groups.update(|enabled| {
+                                    if enabled.contains(&group) && enabled.len() > 1 {
+                                        enabled.remove(&group);
+                                    } else {
+                                        enabled.insert(group);
+                                    }
+                                });
+                            }
+                        >
+                            <span>{group.label()}</span>
+                        </button>
+                    }
+                }).collect_view()}
+            </div>
+
             <div class="absolute bottom-3 right-4 flex items-center gap-1 text-[10px] uppercase tracking-widest text-slate-600">
                 <button
                     class="h-7 min-w-7 rounded-md bg-slate-900/70 border border-slate-800 px-2 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors"
@@ -984,6 +1107,21 @@ mod tests {
 
         assert!(labels.contains(&1));
         assert!(!labels.contains(&2));
+    }
+
+    #[test]
+    fn edge_style_follows_kind_contract() {
+        let trainer = EdgeKind::Frontmatter("trainer".to_string());
+        let evolution = EdgeKind::Frontmatter("evolves_to".to_string());
+        let geography = EdgeKind::Frontmatter("locations".to_string());
+        let other = EdgeKind::Frontmatter("custom".to_string());
+
+        assert_eq!(edge_style(&EdgeKind::Body, false).stroke, "#475569");
+        assert_eq!(edge_style(&trainer, false).stroke, "#0ea5e9");
+        assert_eq!(edge_style(&evolution, false).dasharray, "1.4 1.0");
+        assert_eq!(edge_style(&geography, false).stroke, "#22c55e");
+        assert_eq!(edge_style(&other, false).stroke, "#d946ef");
+        assert_eq!(edge_style(&EdgeKind::Tag, false).dasharray, "0.01 0.8");
     }
 
     #[test]

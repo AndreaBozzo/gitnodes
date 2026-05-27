@@ -109,7 +109,7 @@ pub(super) async fn list_edges_from_pool(
     target_id: i64,
 ) -> Result<Vec<Edge>, BrainError> {
     let edge_rows = sqlx::query(
-        "SELECT from_id, to_id FROM edges WHERE target_id = ? ORDER BY from_id ASC, to_id ASC",
+        "SELECT from_id, to_id, kind FROM edges WHERE target_id = ? ORDER BY from_id ASC, to_id ASC, kind ASC",
     )
     .bind(target_id)
     .fetch_all(pool)
@@ -120,6 +120,7 @@ pub(super) async fn list_edges_from_pool(
         .map(|row| Edge {
             from: row.get::<i64, _>("from_id") as u32,
             to: row.get::<i64, _>("to_id") as u32,
+            kind: brain_domain::EdgeKind::from_storage_key(&row.get::<String, _>("kind")),
         })
         .collect())
 }

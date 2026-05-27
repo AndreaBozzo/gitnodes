@@ -155,6 +155,18 @@ Queste sono direzioni valide, ma tornano in gioco solo dopo il closeout di Fase 
     - **Candidato naturale per l'endpoint MCP di Fase 5**: `SearchBrain` esposta come tool MCP-compliant è uno dei casi d'uso più ovvi per un AI assistant che interroga la knowledge base. La firma va disegnata coerentemente con la query layer di 3.5 fin da subito.
     - Success criterion: un utente digita una frase nella search bar e vede in <200ms una lista di nodi con snippet contestuale; i risultati sono filtrabili per tipo/tag via filter panel; l'URL `?q=` è condivisibile e sopravvive a refresh.
 
+- [x] **Graph edges tipizzati e layout config-driven** _(DONE 2026-05-27)_
+
+    Razionale: i Brain custom con molti `node_types` (es. mock Pokémon) espongono relazioni strutturate in frontmatter che il grafo body-link non vedeva. Il risultato era visivamente piatto: cluster hardcoded per i tipi storici e archi indistinguibili tra citazioni narrative, relazioni geografiche, ownership, evoluzioni e tag.
+
+    Implementazione:
+    - `Edge` acquisisce `kind: EdgeKind` (`Body`, `Frontmatter(field)`, `Tag`) e la projection SQLite conserva il kind con una migration su `edges`.
+    - `NodeTypeSpec.link_fields` dichiara i campi YAML che contengono slug verso un tipo target; il graph builder risolve `slug -> directory/slug.md` e materializza edge tipizzati senza introdurre store o daemon aggiuntivi.
+    - `layout` deriva i cluster dai `node_types` del `BrainConfig` invece che da una lista hardcoded, distribuendoli su cerchio e aggiungendo una lieve gravità intra-cluster durante il force-directed pass.
+    - Il canvas stila gli archi per kind e aggiunge una legenda/toggle in basso-sinistra; il budget label overview sale a 25-30 grazie alla separazione spaziale dei cluster.
+
+    Vincoli mantenuti: config backward-compatible (`link_fields` assente = nessun link frontmatter), body link Markdown invariati, tag virtuali ancora derivati dalla soglia di condivisione esistente.
+
 ### Future UX Backlog: post-dogfooding signals
 - [ ] **Task Inbox e segnali operativi sui nodi** _(follow-up UX emerso dal dogfooding, 2026-04-29)_
     - Aggiungere una sezione o pannello "My Tasks" nella Knowledge UI che usa il read model già esistente (`list_work_items`) per mostrare le task assegnate all'utente corrente GitHub, escludendo di default `done` e `cancelled`.

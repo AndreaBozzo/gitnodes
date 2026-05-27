@@ -1,6 +1,7 @@
 use crate::config::{BrainConfig, TargetRef};
 use crate::frontmatter::split_frontmatter;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,10 +21,40 @@ pub struct Node {
     pub sha: String,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EdgeKind {
+    #[default]
+    Body,
+    Frontmatter(String),
+    Tag,
+}
+
+impl EdgeKind {
+    pub fn storage_key(&self) -> Cow<'_, str> {
+        match self {
+            Self::Body => Cow::Borrowed("body"),
+            Self::Frontmatter(field) => Cow::Owned(format!("frontmatter:{field}")),
+            Self::Tag => Cow::Borrowed("tag"),
+        }
+    }
+
+    pub fn from_storage_key(value: &str) -> Self {
+        if let Some(field) = value.strip_prefix("frontmatter:") {
+            Self::Frontmatter(field.to_string())
+        } else if value == "tag" {
+            Self::Tag
+        } else {
+            Self::Body
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Edge {
     pub from: u32,
     pub to: u32,
+    #[serde(default)]
+    pub kind: EdgeKind,
 }
 
 /// Snapshot of an existing doc's structured fields, used to prefill the editor on edit.
@@ -284,6 +315,7 @@ mod tests {
             date_update_field: None,
             body_label: Some("Corpo".into()),
             work_item_kind: None,
+            link_fields: BTreeMap::new(),
         });
         let raw = "---\ntype: articolo\ntitolo: \"Il Mio Pezzo\"\n---\n";
         let p = EditPrefill::from_raw("articoli/Foo.md", "s", raw, &cfg);

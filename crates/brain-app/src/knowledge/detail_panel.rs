@@ -1596,6 +1596,7 @@ mod tests {
             date_update_field: None,
             body_label: None,
             work_item_kind: None,
+            link_fields: BTreeMap::new(),
         }
     }
 

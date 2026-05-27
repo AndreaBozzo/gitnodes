@@ -830,7 +830,7 @@ async fn migrate_records_schema_version_on_fresh_db() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 5, "expected all projection migrations applied");
+    assert_eq!(version, 6, "expected all projection migrations applied");
 }
 
 #[tokio::test]
@@ -940,7 +940,7 @@ async fn migrate_claims_baseline_on_legacy_db() {
         .await
         .unwrap();
     assert_eq!(
-        version, 5,
+        version, 6,
         "legacy DB should claim baseline + apply current migrations"
     );
 
@@ -953,6 +953,14 @@ async fn migrate_claims_baseline_on_legacy_db() {
     let files_col_names: Vec<&str> = files_cols.iter().map(|(_, n)| n.as_str()).collect();
     assert!(files_col_names.contains(&"body_text"));
     assert!(files_col_names.contains(&"frontmatter_json"));
+
+    let edge_cols: Vec<(i64, String)> =
+        sqlx::query_as("SELECT cid, name FROM pragma_table_info('edges')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let edge_col_names: Vec<&str> = edge_cols.iter().map(|(_, n)| n.as_str()).collect();
+    assert!(edge_col_names.contains(&"kind"));
     assert!(files_col_names.contains(&"blob_sha"));
 
     // node_authors table created.
@@ -1209,7 +1217,7 @@ async fn legacy_db_smoke() {
         .await
         .unwrap();
     assert_eq!(
-        version, 5,
+        version, 6,
         "legacy DB should be at current schema after migrate"
     );
 
@@ -1268,7 +1276,7 @@ async fn projection_status_reports_schema_and_per_target_state() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 
     let row: (String, String, i64, i64, Option<i64>) = sqlx::query_as(
         "SELECT t.org, COALESCE(s.status, 'stale'), COALESCE(s.file_count, 0), COALESCE(s.node_count, 0), s.last_rebuild_duration_ms
