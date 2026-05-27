@@ -13,7 +13,7 @@ use brain_domain::{BrainConfig, Edge, EdgeKind, Node};
 mod layout;
 mod parse;
 
-pub use layout::layout;
+pub use layout::{edge_attraction_multiplier, layout};
 pub use parse::{Parsed, is_included_md, parse_file};
 
 /// A file fetched from the Brain repo, fed into `build_graph`.
@@ -114,9 +114,19 @@ pub fn build_graph(files: &[RawFile], config: &BrainConfig) -> (Vec<Node>, Vec<E
         }
     }
 
-    // 5. Layout.
-    let layout_edges: Vec<(u32, u32)> =
-        edge_pairs.iter().map(|edge| (edge.from, edge.to)).collect();
+    // 5. Layout. Precompute the per-kind attraction multiplier so the
+    // force-directed loop in `layout.rs` operates on plain `f32`s and we
+    // don't clone the `String` inside every `EdgeKind::Frontmatter`.
+    let layout_edges: Vec<(u32, u32, f32)> = edge_pairs
+        .iter()
+        .map(|edge| {
+            (
+                edge.from,
+                edge.to,
+                layout::edge_attraction_multiplier(&edge.kind),
+            )
+        })
+        .collect();
     let positions = layout(&parsed, &tag_nodes, &layout_edges, config);
 
     // 6. Materialize into public Node/Edge shapes.

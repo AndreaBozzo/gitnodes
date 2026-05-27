@@ -3,12 +3,29 @@
 use std::collections::BTreeMap;
 
 use crate::parse::Parsed;
-use brain_domain::BrainConfig;
+use brain_domain::{BrainConfig, EdgeKind};
+
+/// Per-kind attraction multiplier applied to edge spring forces. Body links
+/// shape distances at full strength because they encode the narrative
+/// neighborhood; frontmatter edges and tag membership are progressively
+/// damped so structural metadata and tag bundles don't dissolve the
+/// type-based clusters that intra-cluster gravity is trying to hold.
+///
+/// Exposed so the caller can precompute the multiplier once per edge and
+/// pass it as a plain `f32` into `layout`, avoiding a `String` clone per
+/// `EdgeKind::Frontmatter` on every rebuild.
+pub fn edge_attraction_multiplier(kind: &EdgeKind) -> f32 {
+    match kind {
+        EdgeKind::Body => 1.0,
+        EdgeKind::Frontmatter(_) => 0.5,
+        EdgeKind::Tag => 0.25,
+    }
+}
 
 pub fn layout(
     parsed: &[Parsed],
     tag_nodes: &[(String, u32, Vec<u32>)],
-    edges: &[(u32, u32)],
+    edges: &[(u32, u32, f32)],
     config: &BrainConfig,
 ) -> BTreeMap<u32, (f32, f32)> {
     let mut pos: BTreeMap<u32, (f32, f32)> = BTreeMap::new();
@@ -29,7 +46,16 @@ pub fn layout(
         .collect();
     let cluster_count = configured_types.len().max(1);
     let graph_center = (50.0_f32, 50.0_f32);
-    let cluster_ring_radius = if cluster_count <= 1 { 0.0 } else { 30.0 };
+    // Cluster ring radius pushes cluster centers toward the canvas bounds so
+    // the graph has visual breathing room around each cluster instead of
+    // piling them in the center 40% of the canvas. The post-relaxation
+    // clamp is asymmetric — `x ∈ [6, 94]` (88-unit usable width) and
+    // `y ∈ [8, 92]` (84-unit usable height) — so the binding dimension is
+    // the vertical one. A ring of 40 puts cluster centers near the edge
+    // but still leaves room for the in-cluster spread (`cluster_inner_radius`
+    // caps at 14) plus a small border before the clamp kicks in on the
+    // tighter axis.
+    let cluster_ring_radius = if cluster_count <= 1 { 0.0 } else { 40.0 };
     for (index, name) in configured_types.iter().enumerate() {
         if let Some(ids) = by_type.get(name) {
             let theta = (index as f32) / (cluster_count as f32) * std::f32::consts::TAU - 1.35;
@@ -91,7 +117,12 @@ pub fn layout(
 
     let ids: Vec<u32> = pos.keys().copied().collect();
     let min_dist = 6.0_f32;
-    let ideal_edge = 10.0_f32;
+    // Ideal edge length: target distance the spring pulls connected pairs to.
+    // Shorter values compact the graph; on dense brains (Pokémon mock with
+    // 213 typed edges) values below ~12 stack hubs on top of their neighbors.
+    // 13 leaves the body link spine readable without pushing leaf nodes
+    // against the canvas clamp.
+    let ideal_edge = 13.0_f32;
     for _ in 0..120 {
         let mut delta: BTreeMap<u32, (f32, f32)> = ids.iter().map(|i| (*i, (0.0, 0.0))).collect();
         for i in 0..ids.len() {
@@ -119,13 +150,13 @@ pub fn layout(
                 }
             }
         }
-        for (a, b) in edges {
+        for (a, b, multiplier) in edges {
             let (ax, ay) = pos[a];
             let (bx, by) = pos[b];
             let dx = bx - ax;
             let dy = by - ay;
             let d = (dx * dx + dy * dy).sqrt().max(0.5);
-            let diff = (d - ideal_edge) * 0.05;
+            let diff = (d - ideal_edge) * 0.05 * multiplier;
             let ux = dx / d;
             let uy = dy / d;
             if let Some(e) = delta.get_mut(a) {
@@ -176,4 +207,35 @@ fn small_hash(s: &str) -> u32 {
         h = h.wrapping_mul(16777619);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_attraction_hierarchy_holds() {
+        // Layout invariant: body links shape the strongest distance signal
+        // (they encode the narrative neighborhood); frontmatter edges are
+        // dampened so structural metadata doesn't drag nodes across type
+        // clusters; tag membership is the weakest because virtual tag hubs
+        // would otherwise pull every doc sharing a tag toward the same
+        // spot. If this ordering is ever inverted, type clusters dissolve
+        // under typed-edge attraction on dense brains like the Pokémon mock.
+        let body = edge_attraction_multiplier(&EdgeKind::Body);
+        let fm = edge_attraction_multiplier(&EdgeKind::Frontmatter("trainer".to_string()));
+        let tag = edge_attraction_multiplier(&EdgeKind::Tag);
+        assert!(
+            body > fm,
+            "body multiplier {body} must exceed frontmatter {fm}"
+        );
+        assert!(
+            fm > tag,
+            "frontmatter multiplier {fm} must exceed tag {tag}"
+        );
+        assert!(
+            tag > 0.0,
+            "tag multiplier {tag} must stay positive so tag hubs still cluster their docs"
+        );
+    }
 }

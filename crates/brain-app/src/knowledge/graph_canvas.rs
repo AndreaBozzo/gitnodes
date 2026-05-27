@@ -126,10 +126,15 @@ fn node_visual_radius(base_r: f32, is_selected: bool, is_hovered: bool) -> f32 {
 }
 
 fn node_base_radius(is_tag: bool, degree: usize) -> f32 {
+    // Document nodes: linear scaling up to degree 4 (was 6). Past degree 4
+    // the visual hub footprint was large enough to cover 2-3 of its
+    // neighbours on dense brains like the Pokémon mock, making leaf nodes
+    // hidden under their own hub. Capping earlier keeps super-hubs
+    // distinguishable without swallowing their neighbourhood.
     if is_tag {
         0.9_f32 + (degree as f32).min(4.0) * 0.12
     } else {
-        1.5_f32 + (degree as f32).min(6.0) * 0.18
+        1.5_f32 + (degree as f32).min(4.0) * 0.18
     }
 }
 
@@ -450,15 +455,17 @@ enum EdgeLegendGroup {
     Ownership,
     Evolution,
     Geography,
+    Tag,
     Other,
 }
 
 impl EdgeLegendGroup {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Body,
         Self::Ownership,
         Self::Evolution,
         Self::Geography,
+        Self::Tag,
         Self::Other,
     ];
 
@@ -468,6 +475,7 @@ impl EdgeLegendGroup {
             Self::Ownership => "Ownership",
             Self::Evolution => "Evolution",
             Self::Geography => "Geography",
+            Self::Tag => "Tag",
             Self::Other => "Other",
         }
     }
@@ -483,7 +491,12 @@ struct EdgeStyle {
 fn edge_legend_group(kind: &EdgeKind) -> EdgeLegendGroup {
     match kind {
         EdgeKind::Body => EdgeLegendGroup::Body,
-        EdgeKind::Tag => EdgeLegendGroup::Other,
+        // Tag edges get their own legend group so the "Tags" node toggle
+        // can coordinate with the edge group: showing tag nodes while the
+        // edge group is off would leave disconnected hubs floating on the
+        // canvas. They used to be folded into Other, but conflating
+        // membership edges with frontmatter catch-alls hid this bug.
+        EdgeKind::Tag => EdgeLegendGroup::Tag,
         EdgeKind::Frontmatter(field) => match field.as_str() {
             "trainer" => EdgeLegendGroup::Ownership,
             "evolves_to" | "evolves_from" => EdgeLegendGroup::Evolution,
@@ -558,7 +571,11 @@ pub fn GraphCanvas(
     selected_path: RwSignal<Option<String>>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
-    let adjacency: StoredValue<HashMap<u32, HashSet<u32>>> = StoredValue::new({
+    // Full adjacency built from every edge in the graph, including those
+    // connecting to virtual tag nodes. When the user hides tag nodes (the
+    // default), we derive a doc-only adjacency from this one — see
+    // `effective_adjacency` below.
+    let full_adjacency: StoredValue<HashMap<u32, HashSet<u32>>> = StoredValue::new({
         let mut m: HashMap<u32, HashSet<u32>> = HashMap::new();
         edges.with_value(|es| {
             for e in es {
@@ -580,6 +597,68 @@ pub fn GraphCanvas(
     let target_viewport = RwSignal::new(initial_viewport);
     let animation_epoch = RwSignal::new(0_u32);
     let enabled_edge_groups = RwSignal::new(HashSet::from(EdgeLegendGroup::ALL));
+    // Tag node visibility: virtual `#tag` nodes contribute ~25% of the node
+    // count on tag-rich brains and produce star-shaped edge bundles that
+    // cross the whole canvas. Hidden by default; the legend exposes a
+    // toggle that pulls them back in when the user explicitly asks.
+    // Brains without a synthetic tag spec (no `tag` type configured) have an
+    // empty `tag_node_ids` set, so this code path is a no-op for them.
+    let show_tag_nodes = RwSignal::new(false);
+    let tag_node_ids: StoredValue<HashSet<u32>> = StoredValue::new({
+        let tag_type_name = config
+            .synthetic_tag_spec()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        if tag_type_name.is_empty() {
+            HashSet::new()
+        } else {
+            nodes.with_value(|ns| {
+                ns.iter()
+                    .filter(|n| n.node_type == tag_type_name)
+                    .map(|n| n.id)
+                    .collect()
+            })
+        }
+    });
+    let effective_visible: Memo<HashSet<u32>> = Memo::new(move |_| {
+        let base = visible_ids.get();
+        if show_tag_nodes.get() {
+            base
+        } else {
+            tag_node_ids.with_value(|tags| {
+                if tags.is_empty() {
+                    base
+                } else {
+                    base.into_iter().filter(|id| !tags.contains(id)).collect()
+                }
+            })
+        }
+    });
+
+    // If the user has a tag node selected or hovered and then hides tag
+    // nodes (default or via toggle), the stale id would re-center the
+    // viewport on an unrendered node and leave a phantom hover. Clear them
+    // proactively so the canvas state matches what's visible.
+    Effect::new(move |_| {
+        if show_tag_nodes.get() {
+            return;
+        }
+        tag_node_ids.with_value(|tags| {
+            if tags.is_empty() {
+                return;
+            }
+            if let Some(id) = selected.get_untracked()
+                && tags.contains(&id)
+            {
+                selected.set(None);
+            }
+            if let Some(id) = hovered.get_untracked()
+                && tags.contains(&id)
+            {
+                hovered.set(None);
+            }
+        });
+    });
 
     let view_box = Memo::new(move |_| rendered_viewport.get().view_box());
     let bg_rect = Memo::new(move |_| rendered_viewport.get().rect());
@@ -642,8 +721,49 @@ pub fn GraphCanvas(
 
     let last_pinch_distance = RwSignal::new(None::<f64>);
 
-    let degrees: StoredValue<HashMap<u32, usize>> =
-        StoredValue::new(adjacency.with_value(|a| a.iter().map(|(k, v)| (*k, v.len())).collect()));
+    let full_degrees: StoredValue<HashMap<u32, usize>> = StoredValue::new(
+        full_adjacency.with_value(|a| a.iter().map(|(k, v)| (*k, v.len())).collect()),
+    );
+
+    // Effective adjacency/degrees follow `show_tag_nodes`. When tags are
+    // hidden, derive a doc-only view: drop tag node entries entirely and
+    // strip tag-node ids out of each doc's neighbour set. Hit radii,
+    // label priorities, and hover heuristics then reflect what's actually
+    // rendered instead of inflating doc nodes by their now-invisible tag
+    // connections.
+    let effective_adjacency: Memo<HashMap<u32, HashSet<u32>>> = Memo::new(move |_| {
+        let show = show_tag_nodes.get();
+        full_adjacency.with_value(|full| {
+            if show {
+                return full.clone();
+            }
+            tag_node_ids.with_value(|tags| {
+                if tags.is_empty() {
+                    return full.clone();
+                }
+                full.iter()
+                    .filter(|(id, _)| !tags.contains(id))
+                    .map(|(id, neighbours)| {
+                        let trimmed: HashSet<u32> = neighbours
+                            .iter()
+                            .filter(|n| !tags.contains(n))
+                            .copied()
+                            .collect();
+                        (*id, trimmed)
+                    })
+                    .collect()
+            })
+        })
+    });
+    let effective_degrees: Memo<HashMap<u32, usize>> = Memo::new(move |_| {
+        let show = show_tag_nodes.get();
+        if show {
+            return full_degrees.with_value(Clone::clone);
+        }
+        // Derive directly from effective_adjacency so the doc-only counts
+        // stay consistent with the trimmed neighbour sets.
+        effective_adjacency.with(|a| a.iter().map(|(k, v)| (*k, v.len())).collect())
+    });
 
     #[cfg(feature = "hydrate")]
     let update_hover_from_pointer = {
@@ -652,15 +772,14 @@ pub fn GraphCanvas(
             let Some((x, y)) = pointer_graph_coords(&ev, rendered_viewport.get_untracked()) else {
                 return;
             };
-            let visible = visible_ids.get_untracked();
+            let visible = effective_visible.get_untracked();
             let current = hovered.get_untracked();
             let tag_type = config_for_hover
                 .synthetic_tag_spec()
                 .map(|spec| spec.name.clone());
             let next = nodes.with_value(|ns| {
-                degrees.with_value(|d| {
-                    hover_node_at(ns, &visible, d, tag_type.as_deref(), current, x, y)
-                })
+                effective_degrees
+                    .with(|d| hover_node_at(ns, &visible, d, tag_type.as_deref(), current, x, y))
             });
             if next != current {
                 hovered.set(next);
@@ -669,7 +788,7 @@ pub fn GraphCanvas(
     };
 
     let edges_view = move || {
-        let vis = visible_ids.get();
+        let vis = effective_visible.get();
         let f = visual_focus.get();
         enabled_edge_groups.with(|enabled| {
             edges.with_value(|es| {
@@ -723,16 +842,15 @@ pub fn GraphCanvas(
 
     let config_for_nodes = config.clone();
     let nodes_view = move || {
-        let vis = visible_ids.get();
+        let vis = effective_visible.get();
         let label_focus = selected.get();
         let tag_type = config_for_nodes
             .synthetic_tag_spec()
             .map(|s| s.name.clone());
         let label_ids = nodes.with_value(|ns| {
-            degrees.with_value(|d| {
-                adjacency.with_value(|a| {
-                    visible_label_ids(ns, &vis, d, a, label_focus, tag_type.as_deref())
-                })
+            effective_degrees.with(|d| {
+                effective_adjacency
+                    .with(|a| visible_label_ids(ns, &vis, d, a, label_focus, tag_type.as_deref()))
             })
         });
         nodes.with_value(|ns| {
@@ -749,14 +867,14 @@ pub fn GraphCanvas(
                     let title = n.title.clone();
                     let x = n.x;
                     let y = n.y;
-                    let deg = degrees.with_value(|d| *d.get(&id).unwrap_or(&0));
+                    let deg = effective_degrees.with(|d| *d.get(&id).unwrap_or(&0));
                     let base_r = node_base_radius(is_tag, deg);
 
                     let bright = Memo::new(move |_| match visual_focus.get() {
                         None => true,
                         Some(f) if f == id => true,
-                        Some(f) => adjacency
-                            .with_value(|a| a.get(&f).map(|s| s.contains(&id)).unwrap_or(false)),
+                        Some(f) => effective_adjacency
+                            .with(|a| a.get(&f).map(|s| s.contains(&id)).unwrap_or(false)),
                     });
                     let is_selected = Memo::new(move |_| selected.get() == Some(id));
                     let is_hovered = Memo::new(move |_| hovered.get() == Some(id));
@@ -915,14 +1033,18 @@ pub fn GraphCanvas(
                 <g>{nodes_view}</g>
             </svg>
 
-            <Show when=move || visible_ids.with(HashSet::is_empty)>
+            <Show when=move || effective_visible.with(HashSet::is_empty)>
                 <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
                     <div class="max-w-sm rounded-md border border-slate-800 bg-slate-950/80 px-5 py-4 text-center shadow-2xl shadow-black/20">
                         <div class="text-xs font-semibold uppercase tracking-widest text-slate-400">
                             "No nodes in this view"
                         </div>
                         <p class="mt-2 text-sm text-slate-300">
-                            "Clear the active scope or choose another saved view."
+                            {move || if !show_tag_nodes.get() && !visible_ids.with(HashSet::is_empty) {
+                                "Only virtual tag nodes match this scope. Toggle Tags in the edge legend to see them."
+                            } else {
+                                "Clear the active scope or choose another saved view."
+                            }}
                         </p>
                     </div>
                 </div>
@@ -968,6 +1090,35 @@ pub fn GraphCanvas(
                         </button>
                     }
                 }).collect_view()}
+                {(!tag_node_ids.with_value(HashSet::is_empty)).then(|| view! {
+                    <button
+                        type="button"
+                        class=move || {
+                            if show_tag_nodes.get() {
+                                "rounded-md border border-slate-700 bg-slate-900/80 px-2 py-1 text-slate-200 backdrop-blur transition-colors"
+                            } else {
+                                "rounded-md border border-slate-800 bg-slate-950/60 px-2 py-1 text-slate-600 backdrop-blur transition-colors"
+                            }
+                        }
+                        title="Toggle virtual tag nodes"
+                        aria-label="Toggle virtual tag nodes"
+                        on:click=move |_| {
+                            show_tag_nodes.update(|v| *v = !*v);
+                            // When pulling tag nodes back in, also make sure
+                            // their connecting edges are visible — otherwise
+                            // the user gets disconnected hubs floating on
+                            // the canvas if they had previously toggled the
+                            // Tag edge group off.
+                            if show_tag_nodes.get() {
+                                enabled_edge_groups.update(|groups| {
+                                    groups.insert(EdgeLegendGroup::Tag);
+                                });
+                            }
+                        }
+                    >
+                        <span>"Tags"</span>
+                    </button>
+                })}
             </div>
 
             <div class="absolute bottom-3 right-4 flex items-center gap-1 text-[10px] uppercase tracking-widest text-slate-600">
@@ -996,7 +1147,7 @@ pub fn GraphCanvas(
                     "+"
                 </button>
                 <span class="px-2 py-1">
-                    {move || format!("graph · {} nodes", visible_ids.get().len())}
+                    {move || format!("graph · {} nodes", effective_visible.get().len())}
                 </span>
             </div>
         </div>
