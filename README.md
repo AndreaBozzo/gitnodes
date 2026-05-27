@@ -82,6 +82,33 @@ path or an absolute `https://` URL — to render a hero image at the top of the 
 panel. Backlinks in the detail panel are grouped by node type, in the same order as
 `node_types[]`.
 
+### Typed graph edges (`link_fields`)
+
+Node types can opt into **typed edges** by declaring `link_fields:` — a map from a
+frontmatter field name to the target node type. The graph builder resolves slug
+values in those fields against existing files and materializes edges tagged with
+the source field name, alongside the body-link edges that already exist.
+
+```yaml
+- name: pokemon
+  directory: pokemon
+  link_fields:
+    trainer: trainer          # pokemon.trainer  → ownership
+    locations: route          # pokemon.locations → encounter geography
+    evolves_to: pokemon       # pokemon.evolves_to → evolution chain
+```
+
+The canvas styles edges by their kind (`Body`, `Frontmatter(field)`, `Tag`) and
+exposes a toggle legend in the bottom-left so users can isolate ownership,
+geography, evolution, or tag relations from narrative body citations. Slugs that
+don't resolve to an existing file are silently ignored — useful for documenting
+future entities without breaking the graph. The field is optional and
+backward-compatible (empty = no typed edges, behavior identical to pre-PR-19
+installs). The Pokémon mock declares 40 `link_fields` across 11 types and
+materializes ~213 typed edges; see
+[`Brain-Pokemon-Mock/.brain-config.yml`](https://github.com/Dritara-Digital/Brain-Pokemon-Mock/blob/main/.brain-config.yml)
+for a worked example.
+
 ## Environment variables
 
 Required at runtime:
