@@ -494,37 +494,54 @@ fn edge_legend_group(kind: &EdgeKind) -> EdgeLegendGroup {
 }
 
 fn edge_style(kind: &EdgeKind, touches: bool) -> EdgeStyle {
-    let width = if touches { "0.42" } else { "0.22" };
+    // Visual hierarchy (thicker = more visible by default):
+    //   Body (narrative) ── 0.26  ── the story spine
+    //   Frontmatter VIPs ── 0.22  ── trainer / evolves / locations
+    //   Frontmatter other ─ 0.13  ── catch-all typed edges (background metadata)
+    //   Tag ─────────────── 0.16  ── virtual tag membership
+    //
+    // The previous calibration had Body and "Other" Frontmatter at the same
+    // weight, which let the catch-all bucket (often the largest population —
+    // 26x `applies_to`, 14x `moves`, 12x `pokemon_pool`, … on the Pokémon
+    // mock) drown out body citations under a uniform magenta wash. Now the
+    // narrative spine reads first; the catch-all Frontmatter sits behind it
+    // as structural metadata, and the three semantically-loaded kinds
+    // (ownership / evolution / geography) keep their dedicated weight and
+    // hue so the legend remains useful.
+    let body_width = if touches { "0.46" } else { "0.26" };
+    let vip_width = if touches { "0.42" } else { "0.22" };
+    let other_width = if touches { "0.30" } else { "0.13" };
+    let tag_width = if touches { "0.34" } else { "0.16" };
     match kind {
         EdgeKind::Body => EdgeStyle {
             stroke: "#475569",
-            width,
+            width: body_width,
             dasharray: "none",
         },
         EdgeKind::Tag => EdgeStyle {
             stroke: "#94a3b8",
-            width: if touches { "0.34" } else { "0.16" },
+            width: tag_width,
             dasharray: "0.01 0.8",
         },
         EdgeKind::Frontmatter(field) => match field.as_str() {
             "trainer" => EdgeStyle {
                 stroke: "#0ea5e9",
-                width,
+                width: vip_width,
                 dasharray: "none",
             },
             "evolves_to" | "evolves_from" => EdgeStyle {
                 stroke: "#f59e0b",
-                width,
+                width: vip_width,
                 dasharray: "1.4 1.0",
             },
             "locations" | "encounters" => EdgeStyle {
                 stroke: "#22c55e",
-                width,
+                width: vip_width,
                 dasharray: "0.01 0.95",
             },
             _ => EdgeStyle {
-                stroke: "#d946ef",
-                width: if touches { "0.36" } else { "0.18" },
+                stroke: "#a78bfa",
+                width: other_width,
                 dasharray: "none",
             },
         },
@@ -1120,8 +1137,25 @@ mod tests {
         assert_eq!(edge_style(&trainer, false).stroke, "#0ea5e9");
         assert_eq!(edge_style(&evolution, false).dasharray, "1.4 1.0");
         assert_eq!(edge_style(&geography, false).stroke, "#22c55e");
-        assert_eq!(edge_style(&other, false).stroke, "#d946ef");
+        assert_eq!(edge_style(&other, false).stroke, "#a78bfa");
         assert_eq!(edge_style(&EdgeKind::Tag, false).dasharray, "0.01 0.8");
+    }
+
+    #[test]
+    fn body_edges_are_thicker_than_catch_all_frontmatter() {
+        // Visual hierarchy invariant: narrative body citations must read
+        // first; the catch-all Frontmatter bucket sits behind them as
+        // background metadata. Regressing this lets a dense `link_fields`
+        // taxonomy drown out the body spine (the issue that surfaced on the
+        // Pokémon mock with 70+ `applies_to`/`moves`/`pokemon_pool` edges).
+        let body = edge_style(&EdgeKind::Body, false);
+        let other = edge_style(&EdgeKind::Frontmatter("custom".to_string()), false);
+        let body_w: f32 = body.width.parse().expect("body width is numeric");
+        let other_w: f32 = other.width.parse().expect("other width is numeric");
+        assert!(
+            body_w > other_w,
+            "expected body width {body_w} > catch-all frontmatter width {other_w}"
+        );
     }
 
     #[test]

@@ -137,12 +137,19 @@ pub fn layout(
                 e.1 -= uy * diff;
             }
         }
+        // Intra-cluster gravity: pulls each node toward its type's cluster
+        // centroid. Tuned to ~match the edge-attraction coefficient (0.05) so
+        // typed-edge attraction across cluster boundaries doesn't dissolve the
+        // type-based grouping. Lower values (e.g. 0.025) let cross-cluster
+        // edges drag nodes out of their cluster on dense graphs like the
+        // Pokémon mock; higher values risk overlapping cluster cores when
+        // many types share the ring.
         for id in &ids {
             if let Some(&(cx, cy)) = cluster_centers.get(id) {
                 let (x, y) = pos[id];
                 if let Some(e) = delta.get_mut(id) {
-                    e.0 += (cx - x) * 0.025;
-                    e.1 += (cy - y) * 0.025;
+                    e.0 += (cx - x) * 0.06;
+                    e.1 += (cy - y) * 0.06;
                 }
             }
         }
