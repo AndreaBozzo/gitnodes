@@ -26,6 +26,19 @@ fn search_query_ready(query: &str) -> bool {
     query.trim().chars().count() >= MIN_SEARCH_QUERY_CHARS
 }
 
+#[cfg(feature = "hydrate")]
+fn element_or_ancestor_has_attr(mut element: web_sys::Element, attr: &str) -> bool {
+    loop {
+        if element.get_attribute(attr).is_some() {
+            return true;
+        }
+        let Some(parent) = element.parent_element() else {
+            return false;
+        };
+        element = parent;
+    }
+}
+
 fn knowledge_loading_view() -> impl IntoView {
     view! {
         <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
@@ -530,13 +543,9 @@ pub(crate) fn KnowledgeView(
                     let inside_search = ev
                         .target()
                         .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                        .and_then(|element| {
-                            element
-                                .closest_with_selector("[data-search-surface]")
-                                .ok()
-                                .flatten()
-                        })
-                        .is_some();
+                        .is_some_and(|element| {
+                            element_or_ancestor_has_attr(element, "data-search-surface")
+                        });
                     if !inside_search {
                         search_panel_open.set(false);
                     }
