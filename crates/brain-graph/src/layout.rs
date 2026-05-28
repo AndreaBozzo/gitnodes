@@ -17,8 +17,11 @@ use brain_domain::{BrainConfig, EdgeKind};
 pub fn edge_attraction_multiplier(kind: &EdgeKind) -> f32 {
     match kind {
         EdgeKind::Body => 1.0,
-        EdgeKind::Frontmatter(_) => 0.5,
-        EdgeKind::Tag => 0.25,
+        EdgeKind::Frontmatter(field) => match field.as_str() {
+            "trainer" | "evolves_to" | "evolves_from" | "locations" | "encounters" => 0.42,
+            _ => 0.28,
+        },
+        EdgeKind::Tag => 0.18,
     }
 }
 
@@ -122,8 +125,8 @@ pub fn layout(
     // 213 typed edges) values below ~12 stack hubs on top of their neighbors.
     // 13 leaves the body link spine readable without pushing leaf nodes
     // against the canvas clamp.
-    let ideal_edge = 13.0_f32;
-    for _ in 0..120 {
+    let ideal_edge = 15.0_f32;
+    for _ in 0..150 {
         let mut delta: BTreeMap<u32, (f32, f32)> = ids.iter().map(|i| (*i, (0.0, 0.0))).collect();
         for i in 0..ids.len() {
             for j in (i + 1)..ids.len() {
@@ -135,8 +138,8 @@ pub fn layout(
                 let dy = ay - by;
                 let d2 = (dx * dx + dy * dy).max(0.25);
                 let d = d2.sqrt();
-                if d < min_dist * 2.5 {
-                    let force = (min_dist * 2.5 - d) * 0.18;
+                if d < min_dist * 2.8 {
+                    let force = (min_dist * 2.8 - d) * 0.20;
                     let ux = dx / d;
                     let uy = dy / d;
                     if let Some(e) = delta.get_mut(&a) {
@@ -179,8 +182,8 @@ pub fn layout(
             if let Some(&(cx, cy)) = cluster_centers.get(id) {
                 let (x, y) = pos[id];
                 if let Some(e) = delta.get_mut(id) {
-                    e.0 += (cx - x) * 0.06;
-                    e.1 += (cy - y) * 0.06;
+                    e.0 += (cx - x) * 0.05;
+                    e.1 += (cy - y) * 0.05;
                 }
             }
         }
@@ -197,7 +200,7 @@ pub fn layout(
 }
 
 fn cluster_inner_radius(count: usize) -> f32 {
-    (4.5 + (count as f32).sqrt() * 1.65).clamp(6.0, 14.0)
+    (5.5 + (count as f32).sqrt() * 2.0).clamp(7.0, 17.0)
 }
 
 fn small_hash(s: &str) -> u32 {
@@ -224,14 +227,20 @@ mod tests {
         // under typed-edge attraction on dense brains like the Pokémon mock.
         let body = edge_attraction_multiplier(&EdgeKind::Body);
         let fm = edge_attraction_multiplier(&EdgeKind::Frontmatter("trainer".to_string()));
+        let other_fm =
+            edge_attraction_multiplier(&EdgeKind::Frontmatter("pokemon_pool".to_string()));
         let tag = edge_attraction_multiplier(&EdgeKind::Tag);
         assert!(
             body > fm,
             "body multiplier {body} must exceed frontmatter {fm}"
         );
         assert!(
-            fm > tag,
-            "frontmatter multiplier {fm} must exceed tag {tag}"
+            fm > other_fm,
+            "semantic frontmatter {fm} must exceed catch-all frontmatter {other_fm}"
+        );
+        assert!(
+            other_fm > tag,
+            "catch-all frontmatter {other_fm} must exceed tag {tag}"
         );
         assert!(
             tag > 0.0,

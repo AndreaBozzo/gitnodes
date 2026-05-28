@@ -329,28 +329,46 @@ struct LabelCandidate {
 }
 
 fn label_budget(visible_count: usize, has_focus: bool) -> usize {
-    if has_focus {
+    if has_focus || visible_count > 70 {
+        14
+    } else if visible_count > 45 {
         18
-    } else if visible_count > 90 {
-        25
-    } else if visible_count > 55 {
-        28
     } else {
-        30
+        26
+    }
+}
+
+fn presentation_label(title: &str, is_tag: bool, is_focus: bool) -> String {
+    if is_tag || is_focus {
+        return title.trim().to_string();
+    }
+
+    let Some((prefix, rest)) = title.split_once(':') else {
+        return title.trim().to_string();
+    };
+    let rest = rest.trim();
+    let prefix = prefix.trim();
+
+    if rest.is_empty() || prefix.chars().count() > 24 {
+        title.trim().to_string()
+    } else {
+        rest.to_string()
     }
 }
 
 fn compact_label(title: &str, is_tag: bool, is_focus: bool) -> String {
+    let title = presentation_label(title, is_tag, is_focus);
+    let title_len = title.chars().count();
     let limit = if is_focus {
         34
-    } else if is_tag {
+    } else if is_tag || title_len <= 18 {
         18
     } else {
-        24
+        21
     };
 
-    if title.chars().count() <= limit {
-        return title.to_string();
+    if title_len <= limit {
+        return title;
     }
 
     let mut out: String = title.chars().take(limit.saturating_sub(3)).collect();
@@ -358,13 +376,27 @@ fn compact_label(title: &str, is_tag: bool, is_focus: bool) -> String {
     out
 }
 
+fn label_font_size(is_tag: bool, visible_count: usize, has_focus: bool) -> f32 {
+    if is_tag {
+        1.0
+    } else if has_focus {
+        1.45
+    } else if visible_count > 70 {
+        1.2
+    } else if visible_count > 45 {
+        1.3
+    } else {
+        1.45
+    }
+}
+
 fn estimated_label_width(label: &str, font_size: f32) -> f32 {
     label.chars().count() as f32 * font_size * 0.58 + 1.0
 }
 
 fn labels_overlap(a: LabelCandidate, b: LabelCandidate) -> bool {
-    let horizontal_gap = (a.width + b.width) * 0.5 + 1.2;
-    let vertical_gap = 3.2;
+    let horizontal_gap = (a.width + b.width) * 0.5 + 1.6;
+    let vertical_gap = 3.7;
     (a.x - b.x).abs() < horizontal_gap && (a.y - b.y).abs() < vertical_gap
 }
 
@@ -399,13 +431,16 @@ fn visible_label_ids(
             }
 
             let base_r = node_base_radius(is_tag, deg);
-            let label_size = if is_tag { 1.1 } else { 1.55 };
             let is_focus = focus == Some(n.id);
             let label = compact_label(&n.title, is_tag, is_focus);
+            let label_size = label_font_size(is_tag, visible_ids.len(), focus.is_some());
 
             let mut priority = (deg as i32) * 8;
             if !is_tag {
                 priority += 24;
+            }
+            if !is_tag && n.title.contains(':') {
+                priority -= 8;
             }
             if in_focus_neighbourhood {
                 priority += 60;
@@ -521,10 +556,10 @@ fn edge_style(kind: &EdgeKind, touches: bool) -> EdgeStyle {
     // as structural metadata, and the three semantically-loaded kinds
     // (ownership / evolution / geography) keep their dedicated weight and
     // hue so the legend remains useful.
-    let body_width = if touches { "0.46" } else { "0.26" };
-    let vip_width = if touches { "0.42" } else { "0.22" };
-    let other_width = if touches { "0.30" } else { "0.13" };
-    let tag_width = if touches { "0.34" } else { "0.16" };
+    let body_width = if touches { "0.44" } else { "0.22" };
+    let vip_width = if touches { "0.40" } else { "0.18" };
+    let other_width = if touches { "0.28" } else { "0.10" };
+    let tag_width = if touches { "0.32" } else { "0.12" };
     match kind {
         EdgeKind::Body => EdgeStyle {
             stroke: "#475569",
@@ -558,6 +593,24 @@ fn edge_style(kind: &EdgeKind, touches: bool) -> EdgeStyle {
                 dasharray: "none",
             },
         },
+    }
+}
+
+fn default_edge_groups(node_count: usize, edge_count: usize) -> HashSet<EdgeLegendGroup> {
+    let mut groups = HashSet::from(EdgeLegendGroup::ALL);
+    if node_count > 80 || edge_count > 120 {
+        groups.remove(&EdgeLegendGroup::Other);
+    }
+    groups
+}
+
+fn overview_edge_opacity(visible_count: usize) -> f32 {
+    if visible_count > 70 {
+        0.26
+    } else if visible_count > 45 {
+        0.34
+    } else {
+        0.48
     }
 }
 
@@ -596,7 +649,10 @@ pub fn GraphCanvas(
     let rendered_viewport = RwSignal::new(initial_viewport);
     let target_viewport = RwSignal::new(initial_viewport);
     let animation_epoch = RwSignal::new(0_u32);
-    let enabled_edge_groups = RwSignal::new(HashSet::from(EdgeLegendGroup::ALL));
+    let enabled_edge_groups = RwSignal::new(default_edge_groups(
+        nodes.with_value(Vec::len),
+        edges.with_value(Vec::len),
+    ));
     // Tag node visibility: virtual `#tag` nodes contribute ~25% of the node
     // count on tag-rich brains and produce star-shaped edge bundles that
     // cross the whole canvas. Hidden by default; the legend exposes a
@@ -814,7 +870,7 @@ pub fn GraphCanvas(
                                 None => false,
                             };
                             let opacity = if f.is_none() {
-                                0.50
+                                overview_edge_opacity(vis.len())
                             } else if touches {
                                 0.95
                             } else {
@@ -879,11 +935,20 @@ pub fn GraphCanvas(
                     let is_selected = Memo::new(move |_| selected.get() == Some(id));
                     let is_hovered = Memo::new(move |_| hovered.get() == Some(id));
 
-                    let label_size = if is_tag { 1.1 } else { 1.55 };
+                    let label_size = label_font_size(is_tag, vis.len(), label_focus.is_some());
                     let label_offset = base_r + 2.4;
                     let label_fill = if is_tag { "#cbd5e1" } else { "#e2e8f0" };
                     let is_label_visible = label_ids.contains(&id);
                     let label = compact_label(&title, is_tag, label_focus == Some(id));
+                    let node_fill_opacity = if is_tag {
+                        "0.50"
+                    } else if label_focus.is_none() && vis.len() > 70 {
+                        "0.78"
+                    } else if label_focus.is_none() && vis.len() > 45 {
+                        "0.84"
+                    } else {
+                        "0.92"
+                    };
 
                     view! {
                         <g
@@ -916,7 +981,7 @@ pub fn GraphCanvas(
                                     )
                                 }
                                 fill=accent.clone()
-                                fill-opacity=if is_tag { "0.55" } else { "0.92" }
+                                fill-opacity=node_fill_opacity
                                 stroke={
                                     let accent = accent.clone();
                                     move || {
@@ -1178,6 +1243,25 @@ mod tests {
 
         assert!(compact_label(title, false, false).len() < compact_label(title, false, true).len());
         assert!(compact_label(title, true, false).len() < compact_label(title, false, false).len());
+    }
+
+    #[test]
+    fn compact_labels_drop_demo_taxonomy_prefixes_in_overview() {
+        assert_eq!(compact_label("Mossa: Tuononda", false, false), "Tuononda");
+        assert_eq!(
+            compact_label("Mossa: Tuononda", false, true),
+            "Mossa: Tuononda"
+        );
+    }
+
+    #[test]
+    fn dense_graphs_start_without_catch_all_edges() {
+        let dense = default_edge_groups(102, 213);
+        assert!(!dense.contains(&EdgeLegendGroup::Other));
+        assert!(dense.contains(&EdgeLegendGroup::Body));
+
+        let sparse = default_edge_groups(29, 40);
+        assert!(sparse.contains(&EdgeLegendGroup::Other));
     }
 
     #[test]

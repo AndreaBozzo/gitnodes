@@ -47,19 +47,29 @@ pub fn parse_file(raw: &str, rel: &str, sha: &str, config: &BrainConfig) -> Opti
 
     let frontmatter = serde_yaml::from_str::<Value>(front).ok()?;
     let node_type = yaml_string(&frontmatter, "type")?;
-    let topic = yaml_string(&frontmatter, "topic").unwrap_or_default();
     let tags = yaml_string_sequence(&frontmatter, "tags");
 
-    let title = if !topic.is_empty() {
-        title_case(topic.as_str())
-    } else {
-        first_heading(body).unwrap_or_else(|| {
-            std::path::Path::new(rel)
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| rel.to_string())
+    let title = config
+        .lookup(&node_type)
+        .and_then(|spec| spec.title_key.as_deref())
+        .and_then(|key| {
+            yaml_string(&frontmatter, key).map(|value| {
+                if key == "topic" {
+                    title_case(value.as_str())
+                } else {
+                    value
+                }
+            })
         })
-    };
+        .or_else(|| yaml_string(&frontmatter, "topic").map(|topic| title_case(topic.as_str())))
+        .unwrap_or_else(|| {
+            first_heading(body).unwrap_or_else(|| {
+                std::path::Path::new(rel)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| rel.to_string())
+            })
+        });
 
     let summary = extract_summary(body);
     let mut links = extract_links(body);
@@ -334,6 +344,27 @@ mod tests {
         .unwrap();
         assert_eq!(p.title, "Alpha Beta");
         assert_eq!(p.node_type, "concept".to_string());
+    }
+
+    #[test]
+    fn parse_prefers_configured_title_key_over_heading() {
+        let mut config = BrainConfig::default();
+        let concept = config
+            .node_types
+            .iter_mut()
+            .find(|spec| spec.name == "concept")
+            .unwrap();
+        concept.title_key = Some("name".to_string());
+
+        let p = parse_file(
+            "---\ntype: concept\nname: Clean Label\n---\n# Concept: Noisy Heading\nbody",
+            "concepts/clean.md",
+            "sha1",
+            &config,
+        )
+        .unwrap();
+
+        assert_eq!(p.title, "Clean Label");
     }
 
     #[test]
