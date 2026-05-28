@@ -150,9 +150,17 @@ fn title_case(s: &str) -> String {
 
 fn extract_summary(body: &str) -> String {
     let mut in_summary = false;
+    let mut in_fence = false;
     let mut buf = String::new();
     for line in body.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
         if trimmed.starts_with("## ") {
             if in_summary {
                 break;
@@ -181,9 +189,14 @@ fn extract_summary(body: &str) -> String {
         }
     }
     if buf.is_empty() {
+        let mut in_fence = false;
         for line in body.lines() {
             let t = line.trim();
-            if !is_summary_text_line(t) {
+            if t.starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence || !is_summary_text_line(t) {
                 continue;
             }
             buf = t.to_string();
@@ -214,6 +227,22 @@ fn strip_md(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
+        if c == '!'
+            && s[i..].starts_with("![")
+            && let Some(close) = s[i..].find("](")
+        {
+            let text_end = i + close;
+            if let Some(paren) = s[text_end..].find(')') {
+                let skip_to = text_end + paren + 1;
+                while let Some(&(j, _)) = chars.peek() {
+                    if j >= skip_to {
+                        break;
+                    }
+                    chars.next();
+                }
+                continue;
+            }
+        }
         if c == '['
             && let Some(close) = s[i..].find("](")
         {
@@ -437,6 +466,25 @@ mod tests {
         let p = parse_file(raw, "pokemon/geodude.md", "s", &BrainConfig::default()).unwrap();
 
         assert_eq!(p.summary, "Roccia robusta e facile da riconoscere.");
+    }
+
+    #[test]
+    fn summary_fallback_skips_leading_mermaid_blocks() {
+        let raw = "---\ntype: trainer\nname: Misty\n---\n# Allenatore: Misty\n\n![Misty](../assets/misty.png)\n\n```mermaid\nflowchart LR\n    Misty --> Starmie\n```\n\n## Profilo dell'Allenatore\nMisty è la Capopalestra ufficiale di Celestopoli.\n";
+        let p = parse_file(raw, "allenatori/misty.md", "s", &BrainConfig::default()).unwrap();
+
+        assert_eq!(
+            p.summary,
+            "Misty è la Capopalestra ufficiale di Celestopoli."
+        );
+    }
+
+    #[test]
+    fn strip_md_removes_inline_images_from_summary_text() {
+        assert_eq!(
+            strip_md("Intro ![cover](../assets/cover.png) with [link](x.md)."),
+            "Intro  with link."
+        );
     }
 
     #[test]
