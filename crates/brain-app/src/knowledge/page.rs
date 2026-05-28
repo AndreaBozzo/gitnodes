@@ -21,8 +21,6 @@ use crate::app::{GraphVersion, SyncStatusSignal};
 use brain_domain::{TargetRef, encode_path_segment};
 
 const MIN_SEARCH_QUERY_CHARS: usize = 2;
-#[cfg(feature = "hydrate")]
-const SEARCH_DEBOUNCE_MS: u32 = 450;
 
 fn search_query_ready(query: &str) -> bool {
     query.trim().chars().count() >= MIN_SEARCH_QUERY_CHARS
@@ -195,14 +193,12 @@ pub(crate) fn KnowledgeView(
     let active_path_prefix = RwSignal::new(Option::<String>::None);
     let active_orphan_filter = RwSignal::new(false);
     let active_search_query = RwSignal::new(String::new());
-    // Debounced mirror of the search input. The text field writes to
-    // `active_search_query` on every keystroke (so the input feels instant
-    // and the clear-x toggles immediately); the URL sync and the server-side
-    // `Resource` both key off this debounced signal so we don't navigate /
-    // refetch per keystroke. Keying the URL Effect on the live value caused
-    // a navigation round-trip per character, which restarted the route's
-    // blocking graph Resource — the "graph reload while typing" complaint.
-    let debounced_search_query = RwSignal::new(String::new());
+    // Submitted query. Typing edits only `active_search_query`; Enter commits
+    // here, which drives URL sync, FTS, and graph filtering. This keeps search
+    // intentional instead of re-shaping the graph while the user is still
+    // composing text.
+    let submitted_search_query = RwSignal::new(String::new());
+    let search_panel_open = RwSignal::new(false);
     let hovered = RwSignal::new(None::<u32>);
     let selected = RwSignal::new(None::<u32>);
     let selected_path = RwSignal::new(None::<String>);
@@ -290,12 +286,30 @@ pub(crate) fn KnowledgeView(
         if next_search_query != active_search_query.get_untracked() {
             active_search_query.set(next_search_query.clone());
         }
-        // Inbound nav also seeds the debounced mirror so deep-linked `?q=`
-        // doesn't lag the search panel by 200 ms on first paint.
-        if next_search_query != debounced_search_query.get_untracked() {
-            debounced_search_query.set(next_search_query);
+        // Inbound nav also seeds the submitted query so deep-linked `?q=`
+        // opens a coherent result panel on first paint.
+        if next_search_query != submitted_search_query.get_untracked() {
+            submitted_search_query.set(next_search_query.clone());
         }
+        search_panel_open.set(search_query_ready(&next_search_query));
     });
+
+    let commit_search = move || {
+        let next = active_search_query.get_untracked().trim().to_string();
+        if search_query_ready(&next) {
+            submitted_search_query.set(next);
+            search_panel_open.set(true);
+        } else {
+            submitted_search_query.set(String::new());
+            search_panel_open.set(false);
+        }
+    };
+
+    let clear_search = move || {
+        active_search_query.set(String::new());
+        submitted_search_query.set(String::new());
+        search_panel_open.set(false);
+    };
 
     // Canonical base path for this view: `/knowledge` for the legacy route,
     // `/{org}/{repo}/knowledge` for the multi-tenant route.
@@ -329,7 +343,7 @@ pub(crate) fn KnowledgeView(
         let path = selected_path.get();
         let path_prefix = active_path_prefix.get();
         let orphan_filter = active_orphan_filter.get();
-        let search_query = debounced_search_query.get().trim().to_string();
+        let search_query = submitted_search_query.get().trim().to_string();
         let search_query = if search_query_ready(&search_query) {
             search_query
         } else {
@@ -414,48 +428,10 @@ pub(crate) fn KnowledgeView(
         }
     });
 
-    // Mirror `active_search_query` into `debounced_search_query` after
-    // the user stops typing. The Timeout handle lives in a StoredValue so
-    // each new keystroke drops the previous timer (cancellation by Drop).
-    // Empty and one-character queries flush immediately so the UI clears
-    // search state without firing server search or graph filtering.
-    #[cfg(feature = "hydrate")]
-    {
-        let debounce_handle: StoredValue<
-            Option<gloo_timers::callback::Timeout>,
-            leptos::prelude::LocalStorage,
-        > = StoredValue::new_local(None);
-        Effect::new(move |_| {
-            let next = active_search_query.get();
-            if !search_query_ready(&next) {
-                debounce_handle.set_value(None);
-                if debounced_search_query.get_untracked() != next {
-                    debounced_search_query.set(next);
-                }
-                return;
-            }
-            let handle = gloo_timers::callback::Timeout::new(SEARCH_DEBOUNCE_MS, move || {
-                if debounced_search_query.get_untracked() != next {
-                    debounced_search_query.set(next.clone());
-                }
-            });
-            debounce_handle.set_value(Some(handle));
-        });
-    }
-    #[cfg(not(feature = "hydrate"))]
-    {
-        Effect::new(move |_| {
-            let next = active_search_query.get();
-            if debounced_search_query.get_untracked() != next {
-                debounced_search_query.set(next);
-            }
-        });
-    }
-
     let target_for_search = target_ref.clone();
     let search_results = Resource::new(
         move || {
-            let q = debounced_search_query.get().trim().to_string();
+            let q = submitted_search_query.get().trim().to_string();
             let q = if search_query_ready(&q) {
                 q
             } else {
@@ -490,7 +466,7 @@ pub(crate) fn KnowledgeView(
     );
 
     let search_paths = Memo::new(move |_| {
-        if !debounced_search_query.with(|q| search_query_ready(q)) {
+        if !submitted_search_query.with(|q| search_query_ready(q)) {
             return None;
         }
         search_results
@@ -506,11 +482,16 @@ pub(crate) fn KnowledgeView(
     {
         use wasm_bindgen::JsCast;
         use wasm_bindgen::closure::Closure;
-        use web_sys::KeyboardEvent;
+        use web_sys::{KeyboardEvent, PointerEvent};
 
         if let Some(window) = web_sys::window() {
             let handler = Closure::<dyn FnMut(KeyboardEvent)>::new(move |ev: KeyboardEvent| {
                 if ev.key() != "Escape" {
+                    return;
+                }
+                if search_panel_open.get_untracked() {
+                    search_panel_open.set(false);
+                    ev.prevent_default();
                     return;
                 }
                 // Don't hijack Esc while the user is typing in a form control —
@@ -541,14 +522,46 @@ pub(crate) fn KnowledgeView(
             });
             let _ = window
                 .add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
+            let pointer_handler =
+                Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+                    if !search_panel_open.get_untracked() {
+                        return;
+                    }
+                    let inside_search = ev
+                        .target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                        .and_then(|element| {
+                            element
+                                .closest_with_selector("[data-search-surface]")
+                                .ok()
+                                .flatten()
+                        })
+                        .is_some();
+                    if !inside_search {
+                        search_panel_open.set(false);
+                    }
+                });
+            let _ = window.add_event_listener_with_callback(
+                "pointerdown",
+                pointer_handler.as_ref().unchecked_ref(),
+            );
             // Keep the closure alive for the lifetime of the component; drop
             // on route change so we don't leak a listener per remount.
             let stored = StoredValue::new_local(handler);
+            let stored_pointer = StoredValue::new_local(pointer_handler);
             on_cleanup(move || {
                 stored.with_value(|h| {
                     if let Some(w) = web_sys::window() {
                         let _ = w.remove_event_listener_with_callback(
                             "keydown",
+                            h.as_ref().unchecked_ref(),
+                        );
+                    }
+                });
+                stored_pointer.with_value(|h| {
+                    if let Some(w) = web_sys::window() {
+                        let _ = w.remove_event_listener_with_callback(
+                            "pointerdown",
                             h.as_ref().unchecked_ref(),
                         );
                     }
@@ -644,7 +657,7 @@ pub(crate) fn KnowledgeView(
                     "Status"
                 </a>
                 <div class="min-w-[240px] max-w-xl flex-1">
-                    <label class="relative block">
+                    <label class="relative block" data-search-surface="true">
                         <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">
                             "Search"
                         </span>
@@ -652,21 +665,48 @@ pub(crate) fn KnowledgeView(
                             type="text"
                             autocomplete="off"
                             placeholder="Find text in this Brain"
-                            class="w-full rounded-md border border-slate-800 bg-slate-900/70 py-2 pl-14 pr-9 text-sm text-slate-100 placeholder:text-slate-600 focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                            class="w-full rounded-md border border-slate-800 bg-slate-900/70 py-2 pl-14 pr-20 text-sm text-slate-100 placeholder:text-slate-600 focus:border-teal-400 focus:outline-none focus:ring-1 focus:ring-teal-500"
                             prop:value=move || active_search_query.get()
-                            on:input=move |ev| active_search_query.set(event_target_value(&ev))
+                            on:input=move |ev| {
+                                active_search_query.set(event_target_value(&ev));
+                                search_panel_open.set(false);
+                            }
+                            on:focus=move |_| {
+                                if active_search_query.with(|live| {
+                                    let live = live.trim();
+                                    search_query_ready(live)
+                                        && submitted_search_query.with(|submitted| submitted.trim() == live)
+                                }) {
+                                    search_panel_open.set(true);
+                                }
+                            }
+                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                if ev.key() == "Enter" {
+                                    ev.prevent_default();
+                                    commit_search();
+                                }
+                            }
                         />
                         <Show when=move || !active_search_query.with(|q| q.trim().is_empty())>
                             <button
                                 type="button"
-                                class="absolute right-2 top-1/2 -translate-y-1/2 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                                class="absolute right-10 top-1/2 -translate-y-1/2 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
                                 title="Clear search"
                                 aria-label="Clear search"
-                                on:click=move |_| active_search_query.set(String::new())
+                                on:click=move |_| clear_search()
                             >
                                 <span aria-hidden="true">"x"</span>
                             </button>
                         </Show>
+                        <button
+                            type="button"
+                            class="absolute right-2 top-1/2 -translate-y-1/2 rounded-md border border-slate-800 px-2 py-1 text-[10px] uppercase tracking-widest text-slate-500 hover:border-teal-400/50 hover:text-teal-200"
+                            title="Run search"
+                            aria-label="Run search"
+                            on:click=move |_| commit_search()
+                        >
+                            "↵"
+                        </button>
                     </label>
                 </div>
                 <div class="ml-auto flex items-center gap-2 flex-wrap justify-end">
@@ -791,7 +831,8 @@ pub(crate) fn KnowledgeView(
                     />
                     <SearchResultsPanel
                         query=active_search_query
-                        searched_query=debounced_search_query
+                        searched_query=submitted_search_query
+                        open=search_panel_open
                         results=search_results
                         selected_path=selected_path
                     />
@@ -822,6 +863,7 @@ pub(crate) fn KnowledgeView(
 fn SearchResultsPanel(
     query: RwSignal<String>,
     searched_query: RwSignal<String>,
+    open: RwSignal<bool>,
     results: Resource<Result<Vec<SearchHit>, crate::api::ApiError>>,
     selected_path: RwSignal<Option<String>>,
 ) -> impl IntoView {
@@ -829,9 +871,12 @@ fn SearchResultsPanel(
         <Show when=move || {
             let live = query.with(|q| q.trim().to_string());
             let searched = searched_query.with(|q| q.trim().to_string());
-            search_query_ready(&live) && live == searched
+            open.get() && search_query_ready(&live) && live == searched
         }>
-            <section class="absolute left-4 top-4 z-20 w-[min(520px,calc(100%-2rem))] rounded-md border border-slate-800 bg-slate-950/95 shadow-2xl shadow-black/30 backdrop-blur">
+            <section
+                class="absolute left-4 top-4 z-20 w-[min(520px,calc(100%-2rem))] rounded-md border border-slate-800 bg-slate-950/95 shadow-2xl shadow-black/30 backdrop-blur"
+                data-search-surface="true"
+            >
                 <div class="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-2">
                     <div class="min-w-0">
                         <h2 class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
@@ -839,6 +884,15 @@ fn SearchResultsPanel(
                         </h2>
                         <p class="mt-0.5 truncate text-xs text-slate-400">{move || searched_query.get()}</p>
                     </div>
+                    <button
+                        type="button"
+                        class="rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                        title="Close search results"
+                        aria-label="Close search results"
+                        on:click=move |_| open.set(false)
+                    >
+                        "x"
+                    </button>
                 </div>
                 <div class="max-h-[42vh] overflow-y-auto p-2">
                     {move || match results.get() {
@@ -859,7 +913,10 @@ fn SearchResultsPanel(
                                         <button
                                             type="button"
                                             class="block w-full rounded-md border border-transparent px-3 py-2 text-left hover:border-slate-700 hover:bg-slate-900/80 focus:border-teal-400 focus:outline-none"
-                                            on:click=move |_| selected_path.set(Some(path.clone()))
+                                            on:click=move |_| {
+                                                selected_path.set(Some(path.clone()));
+                                                open.set(false);
+                                            }
                                         >
                                             <div class="flex items-start justify-between gap-3">
                                                 <span class="min-w-0 truncate text-sm font-medium text-slate-100">{hit.title}</span>
