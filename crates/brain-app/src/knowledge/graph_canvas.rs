@@ -17,6 +17,7 @@ const MAX_SCALE: f32 = 4.0;
 const BASE_VIEW_SIZE: f32 = 100.0;
 const NODE_HOVER_BUMP: f32 = 0.5;
 const NODE_SELECTED_BUMP: f32 = 0.8;
+#[cfg(any(feature = "hydrate", test))]
 const NODE_HIT_TARGET_BUFFER: f32 = 0.35;
 #[cfg(any(feature = "hydrate", test))]
 const NODE_HOVER_HYSTERESIS: f32 = 0.9;
@@ -138,8 +139,20 @@ fn node_base_radius(is_tag: bool, degree: usize) -> f32 {
     }
 }
 
+#[cfg(any(feature = "hydrate", test))]
 fn node_hit_radius(base_r: f32) -> f32 {
     base_r + NODE_SELECTED_BUMP + NODE_HIT_TARGET_BUFFER
+}
+
+fn node_click_radius(base_r: f32, visible_count: usize) -> f32 {
+    let buffer = if visible_count > 70 {
+        0.18
+    } else if visible_count > 45 {
+        0.28
+    } else {
+        0.45
+    };
+    base_r + buffer
 }
 
 #[cfg(any(feature = "hydrate", test))]
@@ -195,8 +208,13 @@ fn hover_node_at(
 }
 
 #[cfg(feature = "hydrate")]
-fn pointer_graph_coords(ev: &web_sys::PointerEvent, viewport: Viewport) -> Option<(f32, f32)> {
-    let target = ev.current_target()?;
+fn graph_coords_from_client(
+    target: Option<web_sys::EventTarget>,
+    client_x: i32,
+    client_y: i32,
+    viewport: Viewport,
+) -> Option<(f32, f32)> {
+    let target = target?;
     let element = target.dyn_into::<web_sys::Element>().ok()?;
     let rect = element.get_bounding_client_rect();
     let width = rect.width();
@@ -208,14 +226,49 @@ fn pointer_graph_coords(ev: &web_sys::PointerEvent, viewport: Viewport) -> Optio
     let rendered_side = width.min(height);
     let offset_x = (width - rendered_side) * 0.5;
     let offset_y = (height - rendered_side) * 0.5;
-    let local_x = f64::from(ev.client_x()) - rect.left() - offset_x;
-    let local_y = f64::from(ev.client_y()) - rect.top() - offset_y;
+    let local_x = f64::from(client_x) - rect.left() - offset_x;
+    let local_y = f64::from(client_y) - rect.top() - offset_y;
     let (view_x, view_y, view_w, view_h) = viewport.rect();
 
     Some((
         view_x + (local_x / rendered_side) as f32 * view_w,
         view_y + (local_y / rendered_side) as f32 * view_h,
     ))
+}
+
+#[cfg(feature = "hydrate")]
+fn pointer_graph_coords(ev: &web_sys::PointerEvent, viewport: Viewport) -> Option<(f32, f32)> {
+    graph_coords_from_client(ev.current_target(), ev.client_x(), ev.client_y(), viewport)
+}
+
+#[cfg(feature = "hydrate")]
+fn mouse_graph_coords(ev: &web_sys::MouseEvent, viewport: Viewport) -> Option<(f32, f32)> {
+    graph_coords_from_client(ev.current_target(), ev.client_x(), ev.client_y(), viewport)
+}
+
+#[cfg(any(feature = "hydrate", test))]
+fn click_node_at(
+    nodes: &[Node],
+    visible_ids: &HashSet<u32>,
+    degrees: &HashMap<u32, usize>,
+    tag_type: Option<&str>,
+    x: f32,
+    y: f32,
+) -> Option<u32> {
+    nodes
+        .iter()
+        .filter(|node| visible_ids.contains(&node.id))
+        .filter_map(|node| {
+            let dx = node.x - x;
+            let dy = node.y - y;
+            let distance_sq = dx * dx + dy * dy;
+            let degree = *degrees.get(&node.id).unwrap_or(&0);
+            let base_r = node_base_radius(tag_type == Some(node.node_type.as_str()), degree);
+            let radius = node_click_radius(base_r, visible_ids.len());
+            (distance_sq <= radius * radius).then_some((node.id, distance_sq))
+        })
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(id, _)| id)
 }
 
 fn clamp_viewport(viewport: Viewport, bounds: GraphBounds) -> Viewport {
@@ -624,6 +677,9 @@ pub fn GraphCanvas(
     selected_path: RwSignal<Option<String>>,
     config: brain_domain::BrainConfig,
 ) -> impl IntoView {
+    #[cfg(not(feature = "hydrate"))]
+    let _ = selected_path;
+
     // Full adjacency built from every edge in the graph, including those
     // connecting to virtual tag nodes. When the user hides tag nodes (the
     // default), we derive a doc-only adjacency from this one — see
@@ -843,6 +899,43 @@ pub fn GraphCanvas(
         }
     };
 
+    #[cfg(feature = "hydrate")]
+    let select_from_pointer = {
+        let config_for_click = config.clone();
+        move |ev: web_sys::MouseEvent| {
+            let Some((x, y)) = mouse_graph_coords(&ev, rendered_viewport.get_untracked()) else {
+                return;
+            };
+            let visible = effective_visible.get_untracked();
+            let tag_type = config_for_click
+                .synthetic_tag_spec()
+                .map(|spec| spec.name.clone());
+            let clicked = nodes.with_value(|ns| {
+                effective_degrees
+                    .with(|d| click_node_at(ns, &visible, d, tag_type.as_deref(), x, y))
+            });
+            let Some(path) = clicked.and_then(|id| {
+                nodes.with_value(|ns| {
+                    ns.iter()
+                        .find(|node| node.id == id)
+                        .map(|node| node.path.clone())
+                })
+            }) else {
+                return;
+            };
+            if path.is_empty() {
+                return;
+            }
+            selected_path.update(|current| {
+                *current = if current.as_deref() == Some(path.as_str()) {
+                    None
+                } else {
+                    Some(path.clone())
+                };
+            });
+        }
+    };
+
     let edges_view = move || {
         let vis = effective_visible.get();
         let f = visual_focus.get();
@@ -954,21 +1047,6 @@ pub fn GraphCanvas(
                         <g
                             class="cursor-pointer"
                             style=move || format!("opacity:{}; transition: opacity 200ms ease;", if bright.get() { 1.0 } else { 0.15 })
-                            on:click={
-                                let path = n.path.clone();
-                                move |_| {
-                                    if path.is_empty() {
-                                        return;
-                                    }
-                                    selected_path.update(|current| {
-                                        *current = if current.as_deref() == Some(path.as_str()) {
-                                            None
-                                        } else {
-                                            Some(path.clone())
-                                        };
-                                    });
-                                }
-                            }
                         >
                             <title>{title.clone()}</title>
                             <circle
@@ -1014,9 +1092,9 @@ pub fn GraphCanvas(
                             <circle
                                 cx=format!("{:.3}", x)
                                 cy=format!("{:.3}", y)
-                                r=format!("{:.3}", node_hit_radius(base_r))
+                                r=format!("{:.3}", node_click_radius(base_r, vis.len()))
                                 fill="transparent"
-                                pointer-events="all"
+                                pointer-events="none"
                             />
                             {is_label_visible.then(|| view! {
                                 <text
@@ -1050,6 +1128,12 @@ pub fn GraphCanvas(
                     let _ = ev;
                 }
                 on:pointerleave=move |_| hovered.set(None)
+                on:click=move |ev: web_sys::MouseEvent| {
+                    #[cfg(feature = "hydrate")]
+                    select_from_pointer(ev);
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = ev;
+                }
                 on:wheel=move |ev: web_sys::WheelEvent| {
                     ev.prevent_default();
                     let factor = if ev.delta_y() < 0.0 { 1.12 } else { 1.0 / 1.12 };
@@ -1275,6 +1359,29 @@ mod tests {
         assert!(hit > idle);
         assert!(hit > hovered);
         assert!(hit > selected);
+    }
+
+    #[test]
+    fn dense_click_radius_is_tighter_than_hover_hit_radius() {
+        let base_r = node_base_radius(false, 4);
+
+        assert!(node_click_radius(base_r, 76) < node_hit_radius(base_r));
+        assert!(node_click_radius(base_r, 19) > node_click_radius(base_r, 76));
+    }
+
+    #[test]
+    fn click_node_at_prefers_nearest_node_in_overlapping_cluster() {
+        let nodes = vec![
+            node(1, "Dottrina Speedrun di Kanto", "strategy", 10.0, 10.0),
+            node(2, "Ash Ketchum", "trainer", 12.1, 10.0),
+        ];
+        let visible_ids = HashSet::from([1, 2]);
+        let degrees = HashMap::from([(1, 24), (2, 2)]);
+
+        assert_eq!(
+            click_node_at(&nodes, &visible_ids, &degrees, None, 12.0, 10.0),
+            Some(2)
+        );
     }
 
     #[test]
