@@ -171,7 +171,7 @@ fn extract_summary(body: &str) -> String {
                 }
                 continue;
             }
-            if trimmed.starts_with('>') || trimmed.starts_with('*') && trimmed.ends_with('*') {
+            if !is_summary_text_line(trimmed) {
                 continue;
             }
             if !buf.is_empty() {
@@ -183,7 +183,7 @@ fn extract_summary(body: &str) -> String {
     if buf.is_empty() {
         for line in body.lines() {
             let t = line.trim();
-            if t.is_empty() || t.starts_with('#') || t.starts_with('>') {
+            if !is_summary_text_line(t) {
                 continue;
             }
             buf = t.to_string();
@@ -192,6 +192,22 @@ fn extract_summary(body: &str) -> String {
     }
     let cleaned = strip_md(&buf);
     truncate(&cleaned, 180)
+}
+
+fn is_summary_text_line(line: &str) -> bool {
+    if line.is_empty()
+        || line.starts_with('#')
+        || line.starts_with('>')
+        || line.starts_with("![")
+        || line.starts_with("<img")
+        || line.starts_with('|')
+        || line.starts_with("```")
+        || line.starts_with("---")
+    {
+        return false;
+    }
+
+    !(line.starts_with('*') && line.ends_with('*'))
 }
 
 fn strip_md(s: &str) -> String {
@@ -413,6 +429,14 @@ mod tests {
         let raw = "---\ntype: concept\ntopic: X\n---\n# Head\n\n## Summary\nHello world.\n\n## Other\nignore\n";
         let p = parse_file(raw, "x.md", "s", &BrainConfig::default()).unwrap();
         assert_eq!(p.summary, "Hello world.");
+    }
+
+    #[test]
+    fn summary_fallback_skips_leading_markdown_images() {
+        let raw = "---\ntype: pokemon\nname: Geodude\n---\n# Pokémon: Geodude\n\n![Geodude](../assets/geodude.png)\n\n## Note del Pokédex\nRoccia robusta e facile da riconoscere.\n";
+        let p = parse_file(raw, "pokemon/geodude.md", "s", &BrainConfig::default()).unwrap();
+
+        assert_eq!(p.summary, "Roccia robusta e facile da riconoscere.");
     }
 
     #[test]
