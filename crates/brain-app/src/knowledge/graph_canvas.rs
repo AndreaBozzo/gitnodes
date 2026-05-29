@@ -19,6 +19,13 @@ const NODE_HOVER_BUMP: f32 = 0.5;
 const NODE_SELECTED_BUMP: f32 = 0.8;
 #[cfg(any(feature = "hydrate", test))]
 const NODE_HIT_TARGET_BUFFER: f32 = 0.35;
+// When several node click targets cover the cursor, candidates within this many
+// graph units of the nearest centre are treated as a genuine overlap and the
+// higher-degree node wins (so a crowded hub beats a leaf piled on top of it).
+// ~one node radius: wide enough to disambiguate a pile, narrow enough that a
+// node clearly closer to the cursor still wins on nearest-centre. Tune here.
+#[cfg(any(feature = "hydrate", test))]
+const NODE_CLICK_DEGREE_MARGIN: f32 = 1.5;
 #[cfg(any(feature = "hydrate", test))]
 const NODE_HOVER_HYSTERESIS: f32 = 0.9;
 #[cfg(feature = "hydrate")]
@@ -255,20 +262,41 @@ fn click_node_at(
     x: f32,
     y: f32,
 ) -> Option<u32> {
-    nodes
+    // Candidates whose click target covers the cursor, with distance and degree.
+    // On dense brains a hub and its piled-up neighbours all land inside the
+    // cursor's radius at once.
+    let candidates: Vec<(u32, f32, usize)> = nodes
         .iter()
         .filter(|node| visible_ids.contains(&node.id))
         .filter_map(|node| {
             let dx = node.x - x;
             let dy = node.y - y;
-            let distance_sq = dx * dx + dy * dy;
+            let distance = (dx * dx + dy * dy).sqrt();
             let degree = *degrees.get(&node.id).unwrap_or(&0);
             let base_r = node_base_radius(tag_type == Some(node.node_type.as_str()), degree);
             let radius = node_click_radius(base_r, visible_ids.len());
-            (distance_sq <= radius * radius).then_some((node.id, distance_sq))
+            (distance <= radius).then_some((node.id, distance, degree))
         })
-        .min_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(id, _)| id)
+        .collect();
+
+    let nearest = candidates
+        .iter()
+        .map(|(_, d, _)| *d)
+        .fold(f32::INFINITY, f32::min);
+    if !nearest.is_finite() {
+        return None;
+    }
+
+    // Nearest centre is the anchor; among candidates within a small margin of it
+    // (a genuinely ambiguous overlap) the higher-degree node wins, so aiming at a
+    // crowded hub selects the hub rather than a leaf sitting on top of it. Outside
+    // the margin nearest-centre still wins, leaving unambiguous clicks unchanged.
+    // Ties break to nearer, then lower id, for determinism.
+    candidates
+        .into_iter()
+        .filter(|(_, d, _)| *d <= nearest + NODE_CLICK_DEGREE_MARGIN)
+        .min_by(|a, b| b.2.cmp(&a.2).then(a.1.total_cmp(&b.1)).then(a.0.cmp(&b.0)))
+        .map(|(id, _, _)| id)
 }
 
 fn clamp_viewport(viewport: Viewport, bounds: GraphBounds) -> Viewport {
@@ -1381,6 +1409,26 @@ mod tests {
         assert_eq!(
             click_node_at(&nodes, &visible_ids, &degrees, None, 12.0, 10.0),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn click_node_at_prefers_hub_in_ambiguous_pile() {
+        // Cursor lands in a crowd where a hub and a leaf both cover it within
+        // the degree margin: the high-degree hub wins even though the leaf
+        // centre is marginally nearer.
+        let nodes = vec![
+            node(1, "Ash Ketchum", "trainer", 10.0, 10.0),
+            node(2, "Pikachu", "pokemon", 10.6, 10.0),
+        ];
+        let visible_ids = HashSet::from([1, 2]);
+        let degrees = HashMap::from([(1, 33), (2, 3)]);
+
+        // Cursor at 10.5: leaf (id 2) centre is nearer (0.1 vs 0.5) but both sit
+        // well inside the 1.5-unit margin, so the hub (id 1) takes the click.
+        assert_eq!(
+            click_node_at(&nodes, &visible_ids, &degrees, None, 10.5, 10.0),
+            Some(1)
         );
     }
 
