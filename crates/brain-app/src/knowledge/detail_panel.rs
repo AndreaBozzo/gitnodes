@@ -94,28 +94,7 @@ pub fn DetailPanel(
             return Vec::<BacklinkEntry>::new();
         };
         nodes.with_value(|ns| {
-            edges.with_value(|es| {
-                es.iter()
-                    .filter_map(|e| {
-                        let other = if e.from == id {
-                            e.to
-                        } else if e.to == id {
-                            e.from
-                        } else {
-                            return None;
-                        };
-                        ns.iter().find(|n| n.id == other)
-                    })
-                    .filter(|n| {
-                        let is_tag = config.with_value(|c| {
-                            c.synthetic_tag_spec().map(|s| s.name.as_str())
-                                == Some(n.node_type.as_str())
-                        });
-                        !is_tag && !n.path.is_empty()
-                    })
-                    .map(|n| (n.node_type.clone(), n.title.clone(), n.path.clone()))
-                    .collect()
-            })
+            edges.with_value(|es| config.with_value(|c| collect_backlinks(id, ns, es, c)))
         })
     });
 
@@ -721,6 +700,45 @@ pub fn DetailPanel(
             }}
         </Show>
     }
+}
+
+/// Docs linking to (or from) the node `id`, as `(node_type, title, path)`.
+///
+/// Edges are undirected here, so we match on either endpoint. Multiple edges
+/// can connect the same pair of docs — a body link plus one or more
+/// frontmatter fields each yield a distinct `EdgeKind`, which the graph's
+/// `EdgeKey` keeps separate. The backlink list only cares about *which* docs
+/// connect, not how many ways, so we collapse to one entry per node. Virtual
+/// tag nodes and pathless nodes are dropped.
+fn collect_backlinks(
+    id: u32,
+    nodes: &[Node],
+    edges: &[Edge],
+    config: &brain_domain::BrainConfig,
+) -> Vec<BacklinkEntry> {
+    let tag_type = config.synthetic_tag_spec().map(|s| s.name.clone());
+    let mut seen = std::collections::HashSet::<u32>::new();
+    edges
+        .iter()
+        .filter_map(|e| {
+            let other = if e.from == id {
+                e.to
+            } else if e.to == id {
+                e.from
+            } else {
+                return None;
+            };
+            if !seen.insert(other) {
+                return None;
+            }
+            nodes.iter().find(|n| n.id == other)
+        })
+        .filter(|n| {
+            let is_tag = tag_type.as_deref() == Some(n.node_type.as_str());
+            !is_tag && !n.path.is_empty()
+        })
+        .map(|n| (n.node_type.clone(), n.title.clone(), n.path.clone()))
+        .collect()
 }
 
 fn group_backlinks(
@@ -1665,6 +1683,95 @@ mod tests {
         assert_eq!(names, vec!["task", "mystery"]);
         assert_eq!(labels, vec!["Task", "Unknown (mystery)"]);
         assert_eq!(groups[1].1[0].0, "ghost");
+    }
+
+    fn node(id: u32, node_type: &str, title: &str, path: &str) -> Node {
+        Node {
+            id,
+            title: title.to_string(),
+            summary: String::new(),
+            node_type: node_type.to_string(),
+            tags: Vec::new(),
+            x: 0.0,
+            y: 0.0,
+            path: path.to_string(),
+            sha: String::new(),
+        }
+    }
+
+    #[test]
+    fn collect_backlinks_collapses_multi_edge_pairs_to_one_entry() {
+        use brain_domain::EdgeKind;
+
+        let nodes = vec![
+            node(1, "note", "Percorso 4", "percorsi/percorso-4.md"),
+            node(2, "task", "Celestopoli", "citta/celestopoli.md"),
+        ];
+        // Three distinct edges connect the same pair: a body link, plus two
+        // frontmatter fields — exactly the Pokémon-mock case that showed the
+        // target three times in the panel.
+        let edges = vec![
+            Edge {
+                from: 2,
+                to: 1,
+                kind: EdgeKind::Body,
+            },
+            Edge {
+                from: 2,
+                to: 1,
+                kind: EdgeKind::Frontmatter("adjacent_routes".to_string()),
+            },
+            Edge {
+                from: 1,
+                to: 2,
+                kind: EdgeKind::Frontmatter("connects".to_string()),
+            },
+        ];
+
+        let entries = collect_backlinks(1, &nodes, &edges, &test_config());
+
+        assert_eq!(
+            entries,
+            vec![(
+                "task".to_string(),
+                "Celestopoli".to_string(),
+                "citta/celestopoli.md".to_string(),
+            )],
+        );
+    }
+
+    #[test]
+    fn collect_backlinks_drops_tag_and_pathless_nodes() {
+        use brain_domain::EdgeKind;
+
+        let mut config = test_config();
+        // A non-creatable, directory-less spec is the synthetic tag type.
+        let mut tag_spec = spec("tag", "Tag");
+        tag_spec.creatable = false;
+        tag_spec.directory = String::new();
+        config.node_types.push(tag_spec);
+
+        let nodes = vec![
+            node(1, "note", "Percorso 4", "percorsi/percorso-4.md"),
+            node(2, "tag", "#kanto-east", ""),
+            node(3, "note", "Ghost", ""),
+        ];
+        let edges = vec![
+            Edge {
+                from: 1,
+                to: 2,
+                kind: EdgeKind::Tag,
+            },
+            Edge {
+                from: 1,
+                to: 3,
+                kind: EdgeKind::Body,
+            },
+        ];
+
+        let entries = collect_backlinks(1, &nodes, &edges, &config);
+
+        assert!(entries.is_empty());
     }
 
     #[test]
