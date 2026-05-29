@@ -394,15 +394,28 @@ async fn attempt_commit(
 }
 
 async fn sleep_with_backoff(policy: &BackoffPolicy, attempt: u32) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     if policy.base_delay.is_zero() {
         return;
     }
     let factor = 1u32 << (attempt - 1).min(16);
     let raw = policy.base_delay.saturating_mul(factor);
     let capped = raw.min(policy.max_delay);
-    // Deterministic jitter source: nanoseconds of `Instant::now`.
-    let jitter_ns = std::time::Instant::now().elapsed().subsec_nanos() as u64 % 41;
-    let jittered = capped + Duration::from_millis(jitter_ns);
+
+    // Add up to ~40ms of jitter so concurrent retriers don't reconverge on the
+    // same backoff schedule and hammer the ref-update endpoint in lockstep. A
+    // process-global counter feeds a splitmix64 finalizer, so each call gets a
+    // distinct, well-spread offset — unlike `Instant::now().elapsed()`, which on
+    // a freshly-taken instant is a few near-constant nanoseconds. No RNG
+    // dependency and no clock-entropy assumptions, so it stays wasm-safe.
+    static JITTER: AtomicU64 = AtomicU64::new(0);
+    let mut z = JITTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    let jittered = capped + Duration::from_millis(z % 41);
+
     #[cfg(not(target_arch = "wasm32"))]
     tokio::time::sleep(jittered).await;
     #[cfg(target_arch = "wasm32")]

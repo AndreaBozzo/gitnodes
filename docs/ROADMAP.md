@@ -28,6 +28,13 @@ Estratti da [INSIGHTS_OMNIGRAPH_COMPARISON.md](INSIGHTS_OMNIGRAPH_COMPARISON.md)
 - [x] **Content-hash signatures per drift detection** _(insight 3.1; DONE 2026-05-25)_ — aggiunti `blob_sha` a `files`/`nodes`, popolati in rebuild e loggato changed-set size (`added`/`changed`/`deleted`) per rebuild. Schema v2 aveva già `body_text`/`frontmatter_json` riservati: questa è la colonna mancante che rende il diff Git-tree ↔ projection un'operazione O(changed). Precondizione per qualunque incremental rebuild futuro (6.1).
 - [x] **Typed `ConflictKind` enum** _(insight 3.2 — prerequisito 4.4; DONE 2026-05-25)_ — `BrainError::Conflict` ora conserva enum tipato (`PathTaken`, `BlobShaMoved`, `RefNonFastForward`, `RemotePathDeletedUnderUs`) e `ApiError::Conflict` lo porta fino al boundary UI. `git_transaction.rs` tagga i casi che prima venivano flattenati.
 
+### Hardening lane: review full-stack 2026-05-29 (open)
+
+Findings da una review architetturale dell'intero workspace. Gli item ad alto impatto sono stati risolti nella stessa sessione — #1 CSP locked-down sulle risposte dell'asset proxy (SVG same-origin non esegue più inline script), #2 cleanup dell'error-handling morto in `installation_token`, #3 jitter di retry decorrelato in `git_transaction`, #4 fetch concorrente in `fetch_raw_files`. Questi due restano tracciati come follow-up minori, non bloccanti.
+
+- [ ] **Scope del MutationObserver Mermaid** _(review 2026-05-29, #5; XS, frontend perf)_ — `app.rs` osserva l'intero `document.body` con `subtree: true` e ri-esegue un `querySelectorAll` su tutto il documento (debounce 50ms) ad ogni mutazione DOM. Su pagine grandi/attive è più lavoro del necessario. Restringere l'observer ai container knowledge/detail-panel, oppure gate-are la ri-scansione su "esistono blocchi mermaid non processati". Nessun impatto di correttezza: i guard `data-processed` / `brainMermaidReady` già evitano i loop.
+- [ ] **Scope del token OAuth utente (`repo`)** _(review 2026-05-29, #6; security baseline)_ — il flow OAuth in `brain-auth` richiede `scope=repo+read:org`: `repo` concede R/W completo su *tutti* i repo privati dell'utente, non solo il target (limite intrinseco degli OAuth App, non risolvibile per-repo). Il token è cifrato a riposo (`with_private`) e usato solo server-side; la **GitHub App** (`installation_token.rs`, già in tree) è la remediation propriamente scoped. Tracciare il ritiro del path di scrittura OAuth una volta completato il rollout App. Allineato alla Security & Content Trust Baseline (§ Open-Sourcing del Core) e al boundary forge di Fase 4.
+
 ---
 
 ## 🚀 Open-Sourcing del Core (target Luglio 2026)

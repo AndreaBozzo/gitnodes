@@ -51,6 +51,18 @@ fn is_multi_tenant_protected(path: &str) -> bool {
     legacy_target_route || canonical_target_route
 }
 
+/// True for the two asset-proxy mounts: `/assets/...` and the multi-tenant
+/// `/{org}/{repo}/assets/...`. Used to serve proxied repo bytes under a
+/// locked-down CSP — they're untrusted content rendered same-origin, and an
+/// SVG opened as a top-level document would otherwise run inline scripts under
+/// the permissive page CSP. (A branch literally named `assets` is already
+/// shadowed by the asset mount in the router, so this shares that classification.)
+#[cfg(feature = "ssr")]
+fn is_asset_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    segments.first() == Some(&"assets") || segments.get(2) == Some(&"assets")
+}
+
 /// Decide whether a mutating request is same-origin and may proceed.
 ///
 /// `Origin`, when present, is authoritative: its host must match `Host`. We do
@@ -85,7 +97,21 @@ fn is_same_origin(host: Option<&str>, origin: Option<&str>, sec_fetch_site: Opti
 
 #[cfg(all(test, feature = "ssr"))]
 mod route_protection_tests {
-    use super::{is_protected_path, is_same_origin};
+    use super::{is_asset_path, is_protected_path, is_same_origin};
+
+    #[test]
+    fn asset_path_classification_covers_both_mounts() {
+        // Both asset-proxy mounts get the locked-down CSP…
+        assert!(is_asset_path("/assets/2026/04/a.png"));
+        assert!(is_asset_path("/Dritara-Digital/Brain/assets/2026/04/a.svg"));
+        // …while every page/api surface keeps the permissive page CSP.
+        assert!(!is_asset_path("/knowledge"));
+        assert!(!is_asset_path("/Dritara-Digital/Brain/knowledge"));
+        assert!(!is_asset_path("/Dritara-Digital/Brain/main/knowledge"));
+        assert!(!is_asset_path("/Dritara-Digital/Brain/main/admin"));
+        assert!(!is_asset_path("/api/save_brain_file"));
+        assert!(!is_asset_path("/"));
+    }
 
     #[test]
     fn csrf_same_origin_contract() {
@@ -467,7 +493,21 @@ base-uri 'none'; \
 frame-ancestors 'none'; \
 form-action 'self'";
 
+    // Locked-down CSP for proxied asset responses. Asset bytes are untrusted
+    // repo content served same-origin; an SVG opened as a top-level document
+    // would otherwise execute inline scripts under `CSP_POLICY` (which must keep
+    // `script-src 'unsafe-inline'` for Leptos hydration). `sandbox` (no
+    // `allow-scripts`) and `default-src 'none'` both block script execution
+    // while still letting <img>-embedded assets render — those never run SVG
+    // scripts regardless of CSP. Mirrors the upload allowlist, which already
+    // rejects SVG (see `file_ops::is_allowed_image_ext`).
+    const ASSET_CSP_POLICY: &str =
+        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
+
     async fn security_headers(cookie_secure: bool, request: Request<Body>, next: Next) -> Response {
+        // Captured before the request is consumed and dispatched into the asset
+        // nest; an outer layer still sees the full original path here.
+        let asset_response = is_asset_path(request.uri().path());
         let mut response = next.run(request).await;
         let headers = response.headers_mut();
         headers.insert(
@@ -488,7 +528,11 @@ form-action 'self'";
         // `connect-src` allows ws: in dev for AutoReload/live reload.
         headers.insert(
             "Content-Security-Policy",
-            HeaderValue::from_static(CSP_POLICY),
+            HeaderValue::from_static(if asset_response {
+                ASSET_CSP_POLICY
+            } else {
+                CSP_POLICY
+            }),
         );
         if cookie_secure {
             headers.insert(

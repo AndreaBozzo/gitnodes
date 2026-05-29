@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use brain_domain::{BrainError, Edge, GithubClient, Node, TargetConfig, TargetKey};
 use brain_graph::{RawFile, build_graph, is_included_md};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -406,39 +407,52 @@ impl GithubStorage {
             .filter(|entry| is_included_md(&entry.path))
             .map(|entry| entry.path)
             .collect();
+        // `buffered` below preserves submission order, so sorting the candidates
+        // up front gives a deterministic, path-sorted result with no post-sort.
         candidates.sort();
 
-        let mut files: Vec<RawFile> = Vec::with_capacity(candidates.len());
-        for path in &candidates {
-            // Propagate fetch errors so the caller never commits a partial
-            // snapshot as "ready" when a transient GitHub error is the cause.
-            let body: ContentResponse =
-                GithubHttp::send_json(self.get_contents(token, path), "content").await?;
-            let cleaned: String = body
-                .content
-                .chars()
-                .filter(|ch| !ch.is_whitespace())
-                .collect();
-            let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    tracing::warn!(path, error = %error, "base64 decode failed; skipping");
-                    continue;
-                }
-            };
-            let text = match String::from_utf8(bytes) {
-                Ok(text) => text,
-                Err(_) => {
-                    tracing::warn!(path, "non-utf8 content; skipping");
-                    continue;
-                }
-            };
-            files.push(RawFile {
-                path: path.clone(),
-                sha: body.sha,
-                content: text,
-            });
-        }
+        // Fetch file contents with bounded concurrency. The old serial loop paid
+        // one round-trip per file; `buffered` keeps up to `FETCH_CONCURRENCY`
+        // requests in flight — the dominant cost on a graph cache miss — while
+        // staying well under GitHub's secondary rate-limit threshold. A fetch
+        // error short-circuits the whole load (via `try_collect`) so the caller
+        // never builds a graph from a partial snapshot; per-file decode failures
+        // are logged and skipped (yield `None`).
+        const FETCH_CONCURRENCY: usize = 8;
+
+        let fetched: Vec<Option<RawFile>> = stream::iter(candidates)
+            .map(|path| async move {
+                let body: ContentResponse =
+                    GithubHttp::send_json(self.get_contents(token, &path), "content").await?;
+                let cleaned: String =
+                    body.content.chars().filter(|ch| !ch.is_whitespace()).collect();
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(cleaned) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::warn!(path = %path, error = %error, "base64 decode failed; skipping");
+                        return Ok(None);
+                    }
+                };
+                let text = match String::from_utf8(bytes) {
+                    Ok(text) => text,
+                    Err(_) => {
+                        tracing::warn!(path = %path, "non-utf8 content; skipping");
+                        return Ok(None);
+                    }
+                };
+                Ok::<Option<RawFile>, BrainError>(Some(RawFile {
+                    path,
+                    sha: body.sha,
+                    content: text,
+                }))
+            })
+            .buffered(FETCH_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+        // `buffered` preserves the sorted submission order; just drop the
+        // skipped (`None`) entries.
+        let files: Vec<RawFile> = fetched.into_iter().flatten().collect();
 
         Ok(files)
     }
@@ -1138,6 +1152,113 @@ mod cache_tests {
 
         assert_eq!(body, "hello");
         assert_eq!(sha, "abc123");
+    }
+
+    #[tokio::test]
+    async fn fetch_raw_files_loads_all_md_and_returns_sorted() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/refs/heads/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": { "sha": "HEAD0" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/trees/HEAD0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "HEAD0",
+                "tree": [
+                    { "path": "concepts/b.md", "type": "blob", "sha": "1" },
+                    { "path": "concepts/a.md", "type": "blob", "sha": "2" },
+                    { "path": "img.png", "type": "blob", "sha": "3" },
+                    { "path": "concepts", "type": "tree", "sha": "4" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let enc = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/contents/concepts/a.md"))
+            .and(query_param("ref", "main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": enc("AAA"), "sha": "sa"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/contents/concepts/b.md"))
+            .and(query_param("ref", "main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": enc("BBB"), "sha": "sb"
+            })))
+            .mount(&server)
+            .await;
+
+        let http = GithubHttp::new().unwrap();
+        let storage = GithubStorage {
+            http,
+            gh: GithubClient::new(target("acme", "kb", "main")).with_api_base(server.uri()),
+        };
+        let files = storage.fetch_raw_files("tok").await.expect("fetch");
+
+        // Non-md / tree entries filtered out; output is path-sorted regardless of
+        // the order entries appear in the tree response.
+        assert_eq!(
+            files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["concepts/a.md", "concepts/b.md"]
+        );
+        assert_eq!(files[0].content, "AAA");
+        assert_eq!(files[0].sha, "sa");
+    }
+
+    #[tokio::test]
+    async fn fetch_raw_files_skips_undecodable_file_but_keeps_rest() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/refs/heads/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": { "sha": "HEAD0" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/git/trees/HEAD0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sha": "HEAD0",
+                "tree": [
+                    { "path": "good.md", "type": "blob", "sha": "1" },
+                    { "path": "bad.md", "type": "blob", "sha": "2" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/contents/good.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": base64::engine::general_purpose::STANDARD.encode("OK"), "sha": "sg"
+            })))
+            .mount(&server)
+            .await;
+        // Not valid base64 → decode fails → file skipped, NOT a hard error.
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/kb/contents/bad.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": "!!!not base64!!!", "sha": "sb"
+            })))
+            .mount(&server)
+            .await;
+
+        let http = GithubHttp::new().unwrap();
+        let storage = GithubStorage {
+            http,
+            gh: GithubClient::new(target("acme", "kb", "main")).with_api_base(server.uri()),
+        };
+        let files = storage.fetch_raw_files("tok").await.expect("fetch");
+        assert_eq!(
+            files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["good.md"]
+        );
     }
 
     #[test]

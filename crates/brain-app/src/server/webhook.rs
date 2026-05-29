@@ -205,23 +205,15 @@ async fn handle_push(state: WebhookState, target: TargetRef) {
     // a server-side PAT. If neither is configured we skip the rebuild — the
     // client's next manual refresh or page load will reconcile.
     let token = match crate::server::installation_token::get(&state.http).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
+        Some(t) => t,
+        None => {
             tracing::warn!(
                 "webhook push: no GitHub App or PAT credentials — skipping projection rebuild"
             );
             state.bus.send(BrainEvent::SyncFailed {
-                    target,
-                    message: "Background sync skipped: no GitHub credentials configured on the server. Showing the last known snapshot until a manual refresh succeeds.".to_string(),
-                });
-            return;
-        }
-        Err(error) => {
-            tracing::warn!(%error, "webhook push: token resolution failed — skipping projection rebuild");
-            state.bus.send(BrainEvent::SyncFailed {
-                    target,
-                    message: format!("Background sync skipped: failed to obtain a GitHub token ({error}). Showing the last known snapshot until a manual refresh succeeds."),
-                });
+                target,
+                message: "Background sync skipped: no GitHub credentials configured on the server. Showing the last known snapshot until a manual refresh succeeds.".to_string(),
+            });
             return;
         }
     };
@@ -391,20 +383,11 @@ async fn handle_item_event(state: WebhookState, payload: ItemEventPayload, targe
     };
 
     let token = match crate::server::installation_token::get(&state.http).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
+        Some(t) => t,
+        None => {
             tracing::warn!(
                 "webhook item event: no GitHub credentials — emitting cache-bump event without rebuild"
             );
-            state.bus.send(BrainEvent::WorkItemUpdated {
-                target,
-                brain_id: bound.0,
-                content_path: bound.1,
-            });
-            return;
-        }
-        Err(error) => {
-            tracing::warn!(%error, "webhook item event: token resolution failed — emitting cache-bump only");
             state.bus.send(BrainEvent::WorkItemUpdated {
                 target,
                 brain_id: bound.0,

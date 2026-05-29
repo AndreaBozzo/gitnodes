@@ -350,6 +350,7 @@ dependencies = [
  "base64",
  "brain-domain",
  "brain-graph",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",

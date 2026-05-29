@@ -75,16 +75,12 @@ async fn run_once(pool: &SqlitePool, http: &GithubHttp) -> Result<(), brain_doma
 
     // One token for the whole batch; webhooks use the same App-first resolution.
     let token = match crate::server::installation_token::get(http).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
+        Some(t) => t,
+        None => {
             tracing::warn!(
                 pending = batch.len(),
                 "pending-sync retry: no GitHub App or PAT credentials — leaving rows for later"
             );
-            return Ok(());
-        }
-        Err(error) => {
-            tracing::warn!(%error, "pending-sync retry: token resolution failed — leaving rows");
             return Ok(());
         }
     };

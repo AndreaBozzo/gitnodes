@@ -24,29 +24,22 @@ use tokio::sync::Mutex;
 /// 5 min of headroom is generous.
 const SAFETY_WINDOW: Duration = Duration::from_secs(5 * 60);
 
-/// Typed failure modes for token resolution. Replaces the previous
-/// `Result<_, String>`: callers (and, transitively, the webhook sync path) can
-/// distinguish "App not configured" from "mint failed at GitHub" instead of
-/// matching on message substrings.
+/// Failure detail for the App installation-token mint step. The App path falls
+/// back to a PAT on failure, so this never escapes [`get`] — it's the internal
+/// error type for [`mint`], surfaced only in logs.
 #[derive(Debug)]
 pub enum TokenMintError {
-    /// No GitHub App configured (and the caller has no other credential path).
-    NoApp,
-    /// App is configured but minting the installation token failed. Carries the
-    /// underlying detail (JWT sign, HTTP status + snippet, parse, …).
+    /// Minting the installation token failed. Carries the underlying detail
+    /// (JWT sign, HTTP status + snippet, parse, …).
     MintFailed(String),
-    /// Neither App nor PAT credentials are configured anywhere.
-    NoCreds,
 }
 
 impl std::fmt::Display for TokenMintError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TokenMintError::NoApp => write!(f, "github app not configured"),
             TokenMintError::MintFailed(detail) => {
                 write!(f, "installation token mint failed: {detail}")
             }
-            TokenMintError::NoCreds => write!(f, "no github credentials configured"),
         }
     }
 }
@@ -127,9 +120,11 @@ fn load_config_from_env() -> Option<AppConfig> {
 ///   2. Mint a new App installation token.
 ///   3. Fall back to `GITHUB_TOKEN` / `TARGET_GITHUB_TOKEN` env var (PAT mode).
 ///
-/// Returns `Ok(None)` only when **no** credential is configured at all — the
-/// caller should treat that the same as the previous "no GITHUB_TOKEN" branch.
-pub async fn get(http: &GithubHttp) -> Result<Option<String>, String> {
+/// Returns `None` only when no usable credential resolves — either nothing is
+/// configured, or the App mint failed *and* no PAT fallback exists. Mint
+/// failures are logged and fall through to the PAT path rather than surfacing as
+/// an error, so callers only ever see "a token" or "no usable credential".
+pub async fn get(http: &GithubHttp) -> Option<String> {
     {
         let mut guard = cache().lock().await;
         if guard.config.is_some() {
@@ -140,7 +135,7 @@ pub async fn get(http: &GithubHttp) -> Result<Option<String>, String> {
                     .map(|left| left > SAFETY_WINDOW)
                     .unwrap_or(false)
             {
-                return Ok(Some(cached.token.clone()));
+                return Some(cached.token.clone());
             }
             // Drop the stale entry before we await on the network so a
             // concurrent caller can also see we need to refresh. The mint call
@@ -164,7 +159,7 @@ pub async fn get(http: &GithubHttp) -> Result<Option<String>, String> {
                 );
                 let mut guard = cache().lock().await;
                 guard.cached = Some(fresh.clone());
-                return Ok(Some(fresh.token));
+                return Some(fresh.token);
             }
             Err(error) => {
                 tracing::warn!(%error, "github app token mint failed — falling back to PAT");
@@ -181,12 +176,12 @@ pub async fn get(http: &GithubHttp) -> Result<Option<String>, String> {
         let trimmed = pat.trim();
         if !trimmed.is_empty() {
             tracing::info!(auth_tier = "pat", "github auth: using PAT fallback");
-            return Ok(Some(trimmed.to_string()));
+            return Some(trimmed.to_string());
         }
     }
 
     tracing::info!(auth_tier = "none", "github auth: no credentials configured");
-    Ok(None)
+    None
 }
 
 #[derive(Serialize)]
