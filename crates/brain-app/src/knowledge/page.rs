@@ -550,9 +550,12 @@ pub(crate) fn KnowledgeView(
                         search_panel_open.set(false);
                     }
                 });
-            let _ = window.add_event_listener_with_callback(
+            // Capture phase keeps click-outside reliable even if a lower
+            // layer later stops propagation in bubbling phase.
+            let _ = window.add_event_listener_with_callback_and_bool(
                 "pointerdown",
                 pointer_handler.as_ref().unchecked_ref(),
+                true,
             );
             // Keep the closure alive for the lifetime of the component; drop
             // on route change so we don't leak a listener per remount.
@@ -569,9 +572,10 @@ pub(crate) fn KnowledgeView(
                 });
                 stored_pointer.with_value(|h| {
                     if let Some(w) = web_sys::window() {
-                        let _ = w.remove_event_listener_with_callback(
+                        let _ = w.remove_event_listener_with_callback_and_bool(
                             "pointerdown",
                             h.as_ref().unchecked_ref(),
+                            true,
                         );
                     }
                 });
