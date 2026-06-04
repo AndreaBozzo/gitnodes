@@ -1,4 +1,4 @@
-use brain_domain::{BrainError, TargetConfig};
+use brain_domain::{BrainError, TargetConfig, WriteIntent};
 use brain_storage::Storage;
 
 use super::{WriteResult, slugify};
@@ -14,9 +14,13 @@ pub(super) async fn save_file_permission_aware(
     user: &str,
     author_email: &str,
     target: &TargetConfig,
+    intent: WriteIntent,
 ) -> Result<WriteResult, BrainError> {
     let permissions = storage.repository_permissions(token).await?;
-    if permissions.push {
+    // `ProposeViaPr` skips the direct attempt even when the user could push,
+    // routing through the same PR orchestrator used by the capability fallback.
+    let force_pr = intent == WriteIntent::ProposeViaPr;
+    if permissions.push && !force_pr {
         match storage
             .save_file(token, path, content, sha, message, user, author_email)
             .await

@@ -334,6 +334,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, A
         &user,
         &author_email,
         &target,
+        payload.write_intent,
     )
     .await
     {
@@ -369,11 +370,19 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, A
                     .await;
                 }
                 WriteMode::PullRequest => {
+                    // Record the posture so the 4.0-C success metric (direct vs
+                    // proposed ratio for push-capable users) is derivable from
+                    // the audit log: `explicit` = user chose PR, `fallback` =
+                    // routed to PR because direct write was not permitted.
+                    let posture = match payload.write_intent {
+                        brain_domain::WriteIntent::ProposeViaPr => "explicit",
+                        brain_domain::WriteIntent::Direct => "fallback",
+                    };
                     crate::server::audit::log(
                         "propose_write",
                         Some(&user),
                         &format!(
-                            "{} via PR #{}",
+                            "{} via PR #{} ({posture})",
                             file_path,
                             result
                                 .pr_number
@@ -625,6 +634,7 @@ mod merge_frontmatter_tests {
             commit_message: None,
             preserved_frontmatter: None,
             frontmatter_malformed: false,
+            write_intent: brain_domain::WriteIntent::Direct,
         }
     }
 

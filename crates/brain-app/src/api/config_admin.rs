@@ -173,6 +173,7 @@ pub async fn save_views(target: TargetRef, views: Vec<ViewSpec>) -> Result<Write
         &user,
         &author_email,
         &target,
+        brain_domain::WriteIntent::Direct,
     )
     .await
     {

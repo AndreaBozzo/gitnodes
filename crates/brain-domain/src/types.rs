@@ -183,6 +183,21 @@ impl EditPrefill {
     }
 }
 
+/// How the author wants a write committed. Decouples *posture* (do I want
+/// review?) from *capability* (am I allowed to push?). The default preserves
+/// the legacy behaviour: commit directly when the user can push, fall back to a
+/// PR otherwise.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteIntent {
+    /// Direct commit if the user can push, PR fallback otherwise.
+    #[default]
+    Direct,
+    /// Open a pull request even when the user could commit directly (opt-in
+    /// review flow). Routes through the existing PR orchestrator.
+    ProposeViaPr,
+}
+
 /// Payload sent from the editor form to create/update a Brain file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BrainFilePayload {
@@ -217,6 +232,10 @@ pub struct BrainFilePayload {
     /// server-side so we don't silently rewrite the file from defaults.
     #[serde(default)]
     pub frontmatter_malformed: bool,
+    /// Author-chosen write posture. `#[serde(default)]` → `Direct` for old
+    /// clients, preserving current behaviour.
+    #[serde(default)]
+    pub write_intent: WriteIntent,
 }
 
 #[cfg(test)]
@@ -294,6 +313,7 @@ mod tests {
                 Some(p.frontmatter.clone())
             },
             frontmatter_malformed: p.frontmatter_malformed,
+            write_intent: WriteIntent::Direct,
         };
         assert!(payload.frontmatter_malformed);
     }

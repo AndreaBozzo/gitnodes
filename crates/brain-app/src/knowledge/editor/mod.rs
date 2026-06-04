@@ -5,8 +5,8 @@ use super::draft::{self, Draft};
 use super::types::EditMode;
 #[cfg(not(feature = "ssr"))]
 use crate::api::WriteMode;
-use crate::api::{AppConfig, get_current_user, load_brain_template};
-use brain_domain::TargetRef;
+use crate::api::{AppConfig, get_current_user, get_write_capabilities, load_brain_template};
+use brain_domain::{TargetRef, WriteIntent};
 
 mod frontmatter;
 mod location;
@@ -58,6 +58,17 @@ pub fn EditorPanel(
             }
         },
     );
+    // Write capabilities for this target, used only to decide whether to offer
+    // the "Propose via PR" posture toggle (4.0-C). Users who can't push already
+    // get the PR path unconditionally, so the toggle is hidden for them.
+    let capabilities = Resource::new(
+        || (),
+        move |_| {
+            let target = active_target.get_value();
+            async move { get_write_capabilities(target).await.ok() }
+        },
+    );
+    let propose_via_pr = RwSignal::new(false);
     let status_msg = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
     let edit_path = RwSignal::new(Option::<String>::None);
@@ -445,6 +456,11 @@ pub fn EditorPanel(
             },
             preserved_frontmatter: merged_frontmatter,
             frontmatter_malformed: frontmatter_malformed.get_untracked(),
+            write_intent: if propose_via_pr.get_untracked() {
+                WriteIntent::ProposeViaPr
+            } else {
+                WriteIntent::Direct
+            },
         };
 
         saving.set(true);
@@ -748,16 +764,38 @@ pub fn EditorPanel(
                         </p>
                     </Show>
                 </div>
+                <Show when=move || {
+                    capabilities
+                        .get()
+                        .flatten()
+                        .map(|c| c.can_write_default_branch)
+                        .unwrap_or(false)
+                }>
+                    <label class="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            class="accent-teal-500"
+                            prop:checked=move || propose_via_pr.get()
+                            on:change=move |ev| propose_via_pr.set(event_target_checked(&ev))
+                        />
+                        "Propose via PR instead of committing directly"
+                    </label>
+                </Show>
                 <button
                     class="w-full px-4 py-2 rounded-md bg-teal-500 hover:bg-teal-400 text-slate-950 text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-teal-500"
                     disabled=move || saving.get() || title.with(|t| t.is_empty()) || frontmatter_malformed.get()
                     on:click=on_submit
                 >
-                    {move || match (saving.get(), is_edit.get()) {
-                        (true, true) => "Updating…",
-                        (true, false) => "Saving…",
-                        (false, true) => "Update & Commit",
-                        (false, false) => "Create & Commit",
+                    {move || {
+                        if saving.get() {
+                            if is_edit.get() { "Updating…" } else { "Saving…" }
+                        } else if propose_via_pr.get() {
+                            "Propose via PR"
+                        } else if is_edit.get() {
+                            "Update & Commit"
+                        } else {
+                            "Create & Commit"
+                        }
                     }}
                 </button>
                 <p class="text-[11px] text-slate-400 mt-2 text-center">
