@@ -13,6 +13,7 @@ pub mod live_sync;
 pub(crate) mod mermaid;
 mod orphan_banner;
 pub mod page;
+pub mod pull_requests;
 mod repo_structure;
 #[cfg(feature = "ssr")]
 pub mod runtime;

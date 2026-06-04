@@ -10,6 +10,7 @@ use crate::api::get_app_config;
 use crate::knowledge::KnowledgePage;
 use crate::knowledge::brain_switcher::KnowledgePageForTarget;
 use crate::knowledge::live_sync::{LiveSync, SyncStatus, SyncStatusBanner};
+use crate::knowledge::pull_requests::PullRequestsPage;
 use crate::landing::Landing;
 
 /// Wrapper around `RwSignal<u64>` so context lookup is unambiguous — without
@@ -176,6 +177,10 @@ pub fn App() -> impl IntoView {
                     view=AdminPage
                 />
                 <Route
+                    path=(ParamSegment("org"), ParamSegment("repo"), StaticSegment("pulls"))
+                    view=PullRequestsPage
+                />
+                <Route
                     path=(
                         ParamSegment("org"),
                         ParamSegment("repo"),
@@ -205,6 +210,15 @@ pub fn App() -> impl IntoView {
                         StaticSegment("admin"),
                     )
                     view=AdminPage
+                />
+                <Route
+                    path=(
+                        ParamSegment("org"),
+                        ParamSegment("repo"),
+                        ParamSegment("branch"),
+                        StaticSegment("pulls"),
+                    )
+                    view=PullRequestsPage
                 />
                 <Route
                     path=(

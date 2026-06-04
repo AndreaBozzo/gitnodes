@@ -635,6 +635,12 @@ pub(crate) fn KnowledgeView(
         target_ref.repo,
         encode_path_segment(&target_ref.branch)
     );
+    let pulls_href = format!(
+        "/{}/{}/{}/pulls",
+        target_ref.org,
+        target_ref.repo,
+        encode_path_segment(&target_ref.branch)
+    );
     let target_label = format!(
         "{}/{}/{}",
         target_ref.org, target_ref.repo, target_ref.branch
@@ -661,6 +667,14 @@ pub(crate) fn KnowledgeView(
                         })}
                     </div>
                 </div>
+                <a
+                    href=pulls_href
+                    rel="external"
+                    class="rounded-md border border-slate-800 px-2.5 py-1 text-xs text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                    title="View open pull requests for this target"
+                >
+                    "Pulls"
+                </a>
                 <a
                     href=admin_href
                     rel="external"

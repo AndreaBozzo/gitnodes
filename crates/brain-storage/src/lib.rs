@@ -212,6 +212,21 @@ pub struct PullRequestOutcome {
     pub html_url: String,
 }
 
+/// Read-only summary of an open pull request for the PR list surface. Fields
+/// available from the list endpoint (no per-PR fetch): `mergeable` and check
+/// status are deliberately absent — they require a follow-up call per PR.
+#[derive(Clone, Debug)]
+pub struct PullRequestSummary {
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+    pub draft: bool,
+    pub author: String,
+    pub created_at: String,
+    pub head_ref: String,
+    pub base_ref: String,
+}
+
 /// Combination of target-agnostic HTTP transport + target-bound URL builder.
 /// Built per-call from whatever target the caller actually wants to talk to.
 /// Use [`GithubStorage::new`] in production; its inputs make the target
@@ -385,6 +400,60 @@ impl GithubStorage {
             number: pr.number,
             html_url: pr.html_url,
         })
+    }
+
+    /// List open pull requests that target this target's branch (newest first,
+    /// capped at 50). Filtered by `base` so a per-target view never shows PRs
+    /// aimed at other branches. Read-only; gated by the caller against
+    /// `can_read`.
+    pub async fn list_open_pull_requests(
+        &self,
+        token: &str,
+    ) -> Result<Vec<PullRequestSummary>, BrainError> {
+        #[derive(Deserialize)]
+        struct PullUser {
+            login: String,
+        }
+        #[derive(Deserialize)]
+        struct PullRef {
+            #[serde(rename = "ref")]
+            ref_name: String,
+        }
+        #[derive(Deserialize)]
+        struct PullListItem {
+            number: u64,
+            title: String,
+            html_url: String,
+            #[serde(default)]
+            draft: bool,
+            created_at: String,
+            user: Option<PullUser>,
+            head: PullRef,
+            base: PullRef,
+        }
+
+        let url = self.gh.pulls_url();
+        let request = self.http.get(&url, token).query(&[
+            ("state", "open"),
+            ("base", self.target().branch.as_str()),
+            ("sort", "created"),
+            ("direction", "desc"),
+            ("per_page", "50"),
+        ]);
+        let items: Vec<PullListItem> = GithubHttp::send_json(request, "pulls_list").await?;
+        Ok(items
+            .into_iter()
+            .map(|p| PullRequestSummary {
+                number: p.number,
+                title: p.title,
+                html_url: p.html_url,
+                draft: p.draft,
+                author: p.user.map(|u| u.login).unwrap_or_default(),
+                created_at: p.created_at,
+                head_ref: p.head.ref_name,
+                base_ref: p.base.ref_name,
+            })
+            .collect())
     }
 
     /// Fetch every markdown file that participates in the Brain graph from the
