@@ -1296,6 +1296,22 @@ fn WorkItemControls(
         .next()
     };
 
+    // Same "first result" as `any_notice`, surfacing a clickable PR link when
+    // that result was proposed via PR so the user can reach it from the card.
+    let any_pr_link = move || {
+        [
+            state_action.value().get(),
+            assign_action.value().get(),
+            bind_action.value().get(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .next()
+        .filter(|result| result.write.mode == WriteMode::PullRequest)
+        .and_then(|result| result.write.pr_number.zip(result.write.pr_url.clone()))
+    };
+
     view! {
         <details class="mt-4 border-t border-slate-800 pt-3">
             <summary class="cursor-pointer text-xs uppercase tracking-widest text-slate-400 hover:text-slate-200">
@@ -1482,6 +1498,16 @@ fn WorkItemControls(
                     <div class="rounded-md border border-teal-400/30 bg-teal-500/10 px-3 py-2 text-[11px] text-teal-200">
                         {notice}
                     </div>
+                })}
+                {move || any_pr_link().map(|(number, url)| view! {
+                    <a
+                        href=url
+                        target="_blank"
+                        rel="external noopener noreferrer"
+                        class="block rounded-md border border-teal-400/30 bg-teal-500/10 px-3 py-2 text-[11px] text-teal-200 underline hover:text-teal-100"
+                    >
+                        {format!("View pull request #{number} →")}
+                    </a>
                 })}
             </div>
         </details>

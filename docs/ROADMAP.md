@@ -301,8 +301,8 @@ Grounding (audit codice 2026-06-04): il write path è unificato su `GitTransacti
 - **Keystone della Fase 4 = unificare il write path su `BranchTransaction`.** Non è "costruire 5 primitive nuove": è promuovere la sequenza PR che *già esiste* in `write_orchestrator.rs` (`prepare_pr_write` → write → `open_pull_request`) a un tipo `BranchTransaction` ri-backato su `GitTransaction`. Refactoring di codice esistente, basso rischio di design. In un colpo: elimina il retry duplicato, dà al path PR il commit multi-file atomico (**sblocca 4.0-B**), e produce la 2ª/3ª forma d'uso reale richiesta prima di estrarre `ForgeAdapter` (4.1). Le altre primitive di 4.0 (`expect_tree_sha`, `plan()`, `TransactionObserver`, idempotency) **non si costruiscono a vuoto**: si raccolgono quando un consumer reale le tira (vedi tiering in 4.0).
 
 - **Sequenza di ingresso consigliata:**
-    1. **4.0-C PR-as-Choice** — indipendente da 4.0, prerequisiti già chiusi (3.3, `ApiError` typed), ships da solo. Apre il dispatch `WriteIntent` dentro cui il keystone si infila pulito; smallest spike piccolo perché `save_file_permission_aware` già si dirama su `permissions.push`.
-    2. **4.0 keystone** — unify write path su `BranchTransaction`, appoggiato al `WriteIntent` appena introdotto.
+    1. **4.0-C PR-as-Choice** _(✅ DONE 2026-06-04, #22)_ — smallest spike shippato: il dispatch `WriteIntent` è in tree, l'editor lo usa. Punto di ingresso live ora = il keystone 4.0.
+    2. **4.0 keystone** _(← next)_ — unify write path su `BranchTransaction`, appoggiato al `WriteIntent` già introdotto.
     3. **Fork (non in conflitto, code path diversi):** Track 1 collab depth (4.0-B → 4.4) **oppure** 4.2 Temporal Graph (indipendente, read-only, host già pronto).
 
 - **Risoluzione del fork → Track 1 prima.** Legame con l'open-sourcing (target Luglio 2026): aprire il repo carica esattamente il write/PR/conflict path coi PR dei contributor esterni. Track 1 indirizza quel carico; 4.2 è alta visibilità ma non regge nessuno stress reale introdotto dall'open-sourcing. Tenere 4.2 come ricompensa visibile dopo che 4.0-B/4.4 hanno irrobustito il path.
@@ -346,7 +346,11 @@ Grounding (audit codice 2026-06-04): il write path è unificato su `GitTransacti
     - **Vincoli:** draft TTL esplicita (sessione browser o max 24h) — non può diventare un second source of truth persistente. Non introduce advisory lock o presenza real-time.
     - **Prerequisito bloccante:** 4.0 (`BranchTransaction` + `plan()`). Non anticipabile prima. Non blocca 4.1.
 
-- [ ] **4.0-C PR-as-Choice (Opt-in Review Flow)** _(NEW 2026-05-25 — independent of 4.0, can ship in parallel)_
+- [x] **4.0-C PR-as-Choice (Opt-in Review Flow)** _(DONE 2026-06-04 via #22 — smallest spike; estensioni deferred)_
+
+    **Shipped (smallest spike, #22):** `WriteIntent { Direct, ProposeViaPr }` su `BrainFilePayload` (serde-default → backward compat); `save_file_permission_aware` instrada sul PR orchestrator anche con push rights quando `ProposeViaPr` (branch su upstream, no fork); toggle "Propose via PR" nell'editor gated su `can_write_default_branch`, label Save coerente con la postura; audit `propose_write` tagga `(explicit)`/`(fallback)` così la metrica del success criterion è ricavabile dal log. UX validata in dogfooding.
+
+    **Deferred (follow-up, riaprire con segnale reale):** estensione `ProposeViaPr { reviewers?, draft?, title_override? }` con reviewer picker + draft toggle inline; per-target default in user-prefs ("preferisco sempre proporre via PR su questo repo"); routing del path work-item-card (`work_items.rs`) attraverso `WriteIntent` (oggi solo editor). Il body sotto resta come spec di questi follow-up.
 
     Razionale: oggi il PR fallback è raggiungibile solo *perdendo* write access. Questo conflate *posture* con *capability*: gli utenti reali di Git aprono PR anche quando potrebbero committare direttamente, per invitare review, draftare lavoro, o aderire a norme di team. Promuovere "Propose via PR" a scelta esplicita su ogni mutating surface allinea Brain UI a come i team usano Git davvero, e sblocca affordance impossibili oggi (draft PR intenzionale, reviewer picker, "commit session as PR" da 4.0-B).
 

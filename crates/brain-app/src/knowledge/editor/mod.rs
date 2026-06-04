@@ -69,6 +69,9 @@ pub fn EditorPanel(
         },
     );
     let propose_via_pr = RwSignal::new(false);
+    // Set when a save lands as a PR so the editor can render a clickable link to
+    // it (number, url); cleared on direct writes so a stale link never lingers.
+    let pr_link = RwSignal::new(Option::<(u64, String)>::None);
     let status_msg = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
     let edit_path = RwSignal::new(Option::<String>::None);
@@ -463,6 +466,9 @@ pub fn EditorPanel(
             },
         };
 
+        // Clear any prior PR link up front so a failed or in-flight save never
+        // shows a stale "View pull request" link from a previous proposal.
+        pr_link.set(None);
         saving.set(true);
         status_msg.set(if updating {
             "Updating…".to_string()
@@ -491,6 +497,7 @@ pub fn EditorPanel(
                                 }
                             }
                             WriteMode::PullRequest => {
+                                pr_link.set(result.pr_number.zip(result.pr_url.clone()));
                                 format!(
                                     "Proposed via PR #{}: {}",
                                     result
@@ -801,6 +808,24 @@ pub fn EditorPanel(
                 <p class="text-[11px] text-slate-400 mt-2 text-center">
                     {move || status_msg.get()}
                 </p>
+                <Show when=move || pr_link.with(|p| p.is_some())>
+                    {move || {
+                        pr_link
+                            .get()
+                            .map(|(number, url)| {
+                                view! {
+                                    <a
+                                        href=url
+                                        target="_blank"
+                                        rel="external noopener noreferrer"
+                                        class="block text-[11px] text-teal-300 hover:text-teal-200 underline mt-1 text-center"
+                                    >
+                                        {format!("View pull request #{number} →")}
+                                    </a>
+                                }
+                            })
+                    }}
+                </Show>
                 <p class="text-[10px] text-slate-600 mt-1 text-center">
                     "Frontmatter is auto-generated from the Brain templates."
                 </p>
