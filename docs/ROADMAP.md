@@ -394,6 +394,19 @@ Grounding (audit codice 2026-06-04): il write path è unificato su `GitTransacti
 
 ### Track 3 — User-facing surfaces (independent)
 
+- [ ] **PR Management surface (propose → link → view → merge)** _(organic Track 3 thread, emerso dal lavoro 4.0-C, 2026-06-04)_
+
+    Razionale: una volta che Brain UI può *proporre* via PR (4.0-C), il passo naturale è chiudere il ciclo nella stessa UI invece di mandare l'utente su GitHub — vedere le PR aperte del target e mergiarle. Traiettoria a gradini, ognuno autonomo e shippabile.
+
+    - **propose** _(✅ #22, via 4.0-C)_ — `WriteIntent::ProposeViaPr` opt-in nell'editor.
+    - **link** _(✅ #23)_ — link cliccabile "View pull request #N" dopo una scrittura via PR (editor + work-item card); `pr_link` azzerato a inizio submit per non mostrare link stale.
+    - **view** _(✅ #24)_ — route dedicata `/{org}/{repo}[/{branch}]/pulls`, lista read-only delle PR aperte scoped sul base branch del target, link "Pulls" nell'header. `list_open_prs` gated su `can_read`.
+    - **merge** _(#25, in review)_ — bottone "Merge" per riga gated su `can_write_default_branch`, conferma a due click, refetch al successo, banner che surfaccia il motivo d'errore di GitHub. Squash-only. `merge_pull_request` gated server-side; la branch protection resta enforced da GitHub (noi facciamo solo il gate d'ingresso e surfacciamo i 405/409).
+
+    Deferred (non bloccanti): scelta del merge method (merge/squash/rebase), close/decline di una PR, preview per-PR di `mergeable` + check status (serve un fetch per-PR), bump immediato di `graph_version` al merge (oggi la freshness passa per webhook/SSE), unit test mock-server sul path di merge (sul modello di `git_transaction`).
+
+    Anti-goal: Brain UI non diventa un client forge completo — niente review/commenti/diff inline sulle PR, niente gestione branch. Resta un control plane editoriale che chiude il ciclo propose→merge sulle proprie scritture.
+
 - [ ] **4.2 Temporal Graph View (Git Time Jump)**
     - La feature non deve limitarsi a mostrare vecchi file. L'obiettivo è una modalità storica completa con slider/timeline che ricostruisce una projection temporanea del repository a una data/SHA e la rende navigabile nella stessa UI a grafo.
     - Reuse intenzionale della pipeline esistente: fetch tree storico → build in-memory/ephemeral SQLite projection → render di graph canvas, detail panel e knowledge base in modalità read-only storica.

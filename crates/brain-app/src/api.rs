@@ -52,8 +52,8 @@ pub use search::{SearchBrainQuery, SearchHit, search_brain};
 
 mod pull_requests;
 #[cfg(feature = "ssr")]
-pub use pull_requests::ListOpenPrs;
-pub use pull_requests::{PrSummary, list_open_prs};
+pub use pull_requests::{ListOpenPrs, MergePullRequest};
+pub use pull_requests::{MergePrResult, PrSummary, list_open_prs, merge_pull_request};
 
 mod work_items;
 #[cfg(feature = "ssr")]
@@ -191,6 +191,7 @@ const SERVER_FNS: &[&str] = &[
     "SaveViews",
     "SearchBrain",
     "ListOpenPrs",
+    "MergePullRequest",
 ];
 
 #[cfg(feature = "ssr")]
@@ -237,6 +238,7 @@ pub fn register_server_functions() {
     register_explicit::<SaveViews>();
     register_explicit::<SearchBrain>();
     register_explicit::<ListOpenPrs>();
+    register_explicit::<MergePullRequest>();
 }
 
 /// Regression guard for caveat #9: `lto = true` strips Leptos's

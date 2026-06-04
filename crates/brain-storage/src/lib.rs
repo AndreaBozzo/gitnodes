@@ -456,6 +456,39 @@ impl GithubStorage {
             .collect())
     }
 
+    /// Merge an open pull request with the given method (`merge` | `squash` |
+    /// `rebase`), returning the resulting merge commit SHA. GitHub's failure
+    /// modes (not mergeable, blocked by branch protection, failing required
+    /// checks) surface as a `BrainError` carrying GitHub's error message
+    /// (truncated to a snippet by `send_json`). Caller gates on write
+    /// permission.
+    pub async fn merge_pull_request(
+        &self,
+        token: &str,
+        number: u64,
+        method: &str,
+    ) -> Result<String, BrainError> {
+        #[derive(Deserialize)]
+        struct MergeResponse {
+            merged: bool,
+            sha: Option<String>,
+        }
+        let url = format!("{}/{}/merge", self.gh.pulls_url(), number);
+        let payload = serde_json::json!({ "merge_method": method });
+        let resp: MergeResponse =
+            GithubHttp::send_json(self.http.put(&url, token).json(&payload), "pull_merge").await?;
+        // A 2xx without `merged: true` + a commit SHA is not a real merge; fail
+        // loudly rather than report success with an empty SHA.
+        if !resp.merged {
+            return Err(BrainError::github(format!(
+                "pull #{number} merge returned merged=false"
+            )));
+        }
+        resp.sha.ok_or_else(|| {
+            BrainError::github(format!("pull #{number} merged without a commit SHA"))
+        })
+    }
+
     /// Fetch every markdown file that participates in the Brain graph from the
     /// current target repository.
     pub async fn fetch_raw_files(&self, token: &str) -> Result<Vec<RawFile>, BrainError> {

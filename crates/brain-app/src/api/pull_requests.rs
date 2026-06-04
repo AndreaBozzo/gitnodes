@@ -56,3 +56,33 @@ pub async fn list_open_prs(target: TargetRef) -> Result<Vec<PrSummary>, ApiError
         })
         .map_err(sfe)
 }
+
+/// Result of a successful merge — the resulting merge commit SHA.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MergePrResult {
+    pub sha: String,
+}
+
+#[server(MergePullRequest, "/api", endpoint = "merge_pull_request")]
+pub async fn merge_pull_request(target: TargetRef, number: u64) -> Result<MergePrResult, ApiError> {
+    use crate::server::session;
+
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let storage = session::storage_for(target.clone()).map_err(sfe)?;
+    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
+    if !permissions.push {
+        return Err(ApiError::PermissionDenied(format!(
+            "missing write permission to merge into {}/{}",
+            target.org, target.repo
+        )));
+    }
+
+    let sha = storage
+        .merge_pull_request(&token, number, "squash")
+        .await
+        .map_err(sfe)?;
+    crate::server::audit::log("pr_merged", Some(&user), &format!("#{number} -> {sha}")).await;
+    Ok(MergePrResult { sha })
+}
