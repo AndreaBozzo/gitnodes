@@ -120,6 +120,19 @@ impl TargetRef {
         }
         Ok(())
     }
+
+    /// Parse and validate an `org/repo/branch` key string. Branch names may
+    /// contain `/`, so only the first two separators delimit owner and repo.
+    pub fn try_from_key_string(key: &str) -> Result<Self, TargetRefError> {
+        let mut parts = key.splitn(3, '/');
+        let target = Self::new(
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+        );
+        target.validate()?;
+        Ok(target)
+    }
 }
 
 impl std::fmt::Display for TargetRef {
@@ -190,13 +203,7 @@ impl TargetKey {
     /// into a cache/broadcast key. Branch names may contain `/`, so the parser
     /// splits only the first two separators and treats the rest as the branch.
     pub fn try_from_key_string(key: &str) -> Result<Self, TargetRefError> {
-        let mut parts = key.splitn(3, '/');
-        let target = TargetRef::new(
-            parts.next().unwrap_or_default(),
-            parts.next().unwrap_or_default(),
-            parts.next().unwrap_or_default(),
-        );
-        target.validate()?;
+        let target = TargetRef::try_from_key_string(key)?;
         Ok(Self::from(&target))
     }
 }
@@ -1945,6 +1952,15 @@ node_types:
         ));
         let e = TargetKey::try_from_key_string("acme/kb").unwrap_err();
         assert!(matches!(e, TargetRefError::Empty { field: "branch" }));
+    }
+
+    #[test]
+    fn target_ref_parses_validated_key_string() {
+        let target = TargetRef::try_from_key_string("acme/kb/feature/foo").unwrap();
+        assert_eq!(target, TargetRef::new("acme", "kb", "feature/foo"));
+
+        let e = TargetRef::try_from_key_string("acme/kb/../escape").unwrap_err();
+        assert!(matches!(e, TargetRefError::PathTraversal { .. }));
     }
 
     #[test]

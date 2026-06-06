@@ -26,16 +26,9 @@ pub struct PrSummary {
 pub async fn list_open_prs(target: TargetRef) -> Result<Vec<PrSummary>, ApiError> {
     use crate::server::session;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
-    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
-    if !permissions.pull {
-        return Err(ApiError::PermissionDenied(format!(
-            "missing read permission for {}/{}",
-            target.org, target.repo
-        )));
-    }
 
     storage
         .list_open_pull_requests(&token)
@@ -67,17 +60,11 @@ pub struct MergePrResult {
 pub async fn merge_pull_request(target: TargetRef, number: u64) -> Result<MergePrResult, ApiError> {
     use crate::server::session;
 
-    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let user = session::session_user_or_fallback(&s).await;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (s, token, permissions) = session::require_target_read(&target).await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
-    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
-    if !permissions.push {
-        return Err(ApiError::PermissionDenied(format!(
-            "missing write permission to merge into {}/{}",
-            target.org, target.repo
-        )));
-    }
+    crate::server::access::ensure_write(&target, &permissions).map_err(sfe)?;
 
     let sha = storage
         .merge_pull_request(&token, number, "squash")

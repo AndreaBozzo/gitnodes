@@ -519,6 +519,8 @@ mod server_fn_registration_tests {
         [
             "session::require_session_and_token",
             "session::require_authenticated",
+            "session::require_target_read",
+            "session::require_current_target_read",
             "session::require_target_admin_session",
             "session::__assert_gated",
         ]
@@ -594,6 +596,9 @@ mod server_fn_registration_tests {
     fn body_has_auth_gate_accepts_direct_gate_or_marker() {
         assert!(body_has_auth_gate(
             "let _ = session::require_authenticated().await?;"
+        ));
+        assert!(body_has_auth_gate(
+            "let _ = session::require_target_read(&target).await?;"
         ));
         assert!(body_has_auth_gate("session::__assert_gated();"));
         assert!(!body_has_auth_gate("let target = session::target_cfg()?;"));

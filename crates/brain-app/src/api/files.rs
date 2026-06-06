@@ -102,7 +102,9 @@ pub async fn get_write_capabilities(target: TargetRef) -> Result<WriteCapabiliti
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
     let storage = session::storage_for(target).map_err(sfe)?;
-    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
+    let permissions = crate::server::access::repository_permissions(&storage, &token)
+        .await
+        .map_err(sfe)?;
     Ok(WriteCapabilities {
         can_read: permissions.pull,
         can_write_default_branch: permissions.push,
@@ -146,8 +148,8 @@ pub async fn read_brain_file(target: TargetRef, path: String) -> Result<BrainFil
     use crate::server::session;
     use brain_storage::Storage;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let cfg = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&cfg).await.map_err(sfe)?;
     let storage = session::storage_for(cfg.clone()).map_err(sfe)?;
     let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
 
@@ -213,7 +215,6 @@ fn extract_cover(
 pub async fn list_brain_files(filters: FileQueryFilters) -> Result<Vec<RepoFile>, ApiError> {
     use crate::server::session;
 
-    let _ = session::require_authenticated().await.map_err(sfe)?;
     let fallback = session::target_cfg().map_err(sfe)?;
     let target = match (filters.org.clone(), filters.repo.clone()) {
         (Some(org), Some(repo)) if !org.is_empty() && !repo.is_empty() => {
@@ -225,6 +226,7 @@ pub async fn list_brain_files(filters: FileQueryFilters) -> Result<Vec<RepoFile>
         }
         _ => fallback,
     };
+    let _ = session::require_target_read(&target).await.map_err(sfe)?;
     crate::server::projection::list_files(
         &target,
         &crate::server::projection::FileFilters {
@@ -265,13 +267,12 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, A
     // Path length is enforced by `validate_markdown_path` below (covers the
     // derived path too); body/frontmatter caps guard against pulldown-cmark DoS.
 
-    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let user = session::session_user_or_fallback(&s).await;
-
     let target = match payload.target.clone() {
         Some(target) => super::target_from_ref(target).map_err(sfe)?,
         None => session::target_cfg().map_err(sfe)?,
     };
+    let (s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
 
     let file_path = match &payload.path {
@@ -412,9 +413,9 @@ pub async fn delete_brain_file(
 ) -> Result<WriteResult, ApiError> {
     use crate::server::session;
 
-    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let user = session::session_user_or_fallback(&s).await;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
     validate_markdown_path(&path).map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = sanitize_commit_message(commit_message.as_deref())

@@ -32,6 +32,9 @@ pub enum BrainError {
     #[error("not authenticated")]
     Unauthenticated,
 
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -62,6 +65,9 @@ impl BrainError {
     }
     pub fn parse(msg: impl Into<String>) -> Self {
         BrainError::Parse(msg.into())
+    }
+    pub fn permission_denied(msg: impl Into<String>) -> Self {
+        BrainError::PermissionDenied(msg.into())
     }
     pub fn conflict(kind: ConflictKind, msg: impl Into<String>) -> Self {
         BrainError::Conflict {

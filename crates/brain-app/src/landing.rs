@@ -44,12 +44,15 @@ pub fn Landing() -> impl IntoView {
         })
     };
 
+    let login_org =
+        move || resolved_config.with(|config| config.as_ref().and_then(|c| c.login_org.clone()));
+
     let error_msg = move || {
         let params = query.get();
         match params.get_str("error") {
-            Some("not_org_member") => Some(format!(
+            Some("not_login_org_member") | Some("not_org_member") => Some(format!(
                 "Access denied — you must be a member of the {} GitHub organisation.",
-                brand_org()
+                login_org().unwrap_or_else(brand_org)
             )),
             Some("state_mismatch") => {
                 Some("Login failed (state mismatch). Please try again.".to_string())
@@ -144,11 +147,19 @@ pub fn Landing() -> impl IntoView {
                                             "OAuth status"
                                         </p>
                                         <p class="mt-2 text-sm leading-relaxed text-amber-100/80">
-                                            "The OAuth flow works today, but it is still raw: it verifies membership and opens the app without much user-facing session or permission detail. That surface needs evaluation before it becomes a polished access model."
+                                            {move || match login_org() {
+                                                Some(org) => format!(
+                                                    "Login is limited to members of {org}. Repository access is checked separately against your live GitHub permissions."
+                                                ),
+                                                None => "Any GitHub user may sign in. Each workspace is still protected by live repository permissions.".to_string(),
+                                            }}
                                         </p>
                                     </div>
                                     <p class="mt-3 text-xs text-slate-600">
-                                        {move || format!("Access is restricted to {} organisation members.", brand_org())}
+                                        {move || match login_org() {
+                                            Some(org) => format!("Login is restricted to {org} organisation members."),
+                                            None => "This deployment uses org-less login.".to_string(),
+                                        }}
                                     </p>
                                 </div>
                             </div>

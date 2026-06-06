@@ -12,7 +12,10 @@ use std::sync::{Mutex, OnceLock};
 use tokio::sync::broadcast;
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
+use brain_domain::TargetConfig;
 use brain_domain::{TargetKey, TargetRef};
+use brain_storage::{GithubHttp, GithubStorage};
+use tower_sessions::Session;
 
 /// Per-target channel capacity. Each target now gets its own broadcast channel
 /// (slice δ), so a single noisy target can no longer evict another target's
@@ -172,24 +175,17 @@ impl EventBus {
     pub fn subscribe(&self, key: TargetKey) -> Option<broadcast::Receiver<BrainEvent>> {
         self.sender_for(key).map(|sender| sender.subscribe())
     }
-
-    #[cfg(test)]
-    fn channel_count(&self) -> usize {
-        self.channels
-            .lock()
-            .expect("sse channel map poisoned")
-            .len()
-    }
 }
 
-/// SSE handler state: the bus plus the env-default target key, used when a
+/// SSE handler state: the bus plus the env-default target, used when a
 /// client connects without an explicit `?target=` (the legacy single-target
 /// deploy, where the client can't derive org/repo/branch from a bare
 /// `/knowledge` path).
 #[derive(Clone)]
 pub struct SseState {
     pub bus: EventBus,
-    pub default_target: TargetKey,
+    pub default_target: TargetConfig,
+    pub http: GithubHttp,
 }
 
 #[derive(serde::Deserialize)]
@@ -205,20 +201,35 @@ pub struct SseParams {
 /// the active target; the server subscribes only to that target's channel, so
 /// events from other targets never reach this connection. Falls back to the
 /// env-default target when no param is given.
-pub async fn handle(State(state): State<SseState>, Query(params): Query<SseParams>) -> Response {
-    let key = match params.target.filter(|t| !t.is_empty()) {
-        Some(target) => match TargetKey::try_from_key_string(&target) {
-            Ok(key) => key,
-            Err(error) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("invalid SSE target: {error}"),
-                )
-                    .into_response();
-            }
-        },
-        None => state.default_target.clone(),
+pub async fn handle(
+    State(state): State<SseState>,
+    session: Session,
+    Query(params): Query<SseParams>,
+) -> Response {
+    let Some(token) = super::auth::get_session_token(&session).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
     };
+    let target = match target_from_param(params.target.as_deref(), &state.default_target) {
+        Ok(target) => target,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid SSE target: {error}"),
+            )
+                .into_response();
+        }
+    };
+    let storage = GithubStorage::new(state.http, target.clone());
+    if let Err(error) = super::access::require_read(&storage, &token).await {
+        tracing::warn!(
+            org = %target.org,
+            repo = %target.repo,
+            %error,
+            "SSE repository access denied"
+        );
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let key = TargetKey::from(&target);
 
     let Some(rx) = state.bus.subscribe(key) else {
         return (
@@ -244,6 +255,16 @@ pub async fn handle(State(state): State<SseState>, Query(params): Query<SseParam
         Sse::new(stream).keep_alive(KeepAlive::default()),
     )
         .into_response()
+}
+
+fn target_from_param(
+    target: Option<&str>,
+    default_target: &TargetConfig,
+) -> Result<TargetConfig, brain_domain::TargetRefError> {
+    let Some(raw) = target.filter(|target| !target.is_empty()) else {
+        return Ok(default_target.clone());
+    };
+    TargetRef::try_from_key_string(raw).map(Into::into)
 }
 
 #[cfg(test)]
@@ -302,43 +323,30 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn handler_rejects_invalid_target_param_without_creating_channel() {
-        let bus = EventBus::new();
-        let state = SseState {
-            bus: bus.clone(),
-            default_target: TargetKey::from(&target("Org", "Repo", "main")),
-        };
-
-        let response = handle(
-            State(state),
-            Query(SseParams {
-                target: Some("Org/Repo/../escape".to_string()),
-            }),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(bus.channel_count(), 0);
+    fn default_target() -> TargetConfig {
+        TargetConfig {
+            org: "Org".into(),
+            repo: "Repo".into(),
+            branch: "main".into(),
+        }
     }
 
-    #[tokio::test]
-    async fn handler_accepts_branch_names_with_slashes() {
-        let bus = EventBus::new();
-        let state = SseState {
-            bus: bus.clone(),
-            default_target: TargetKey::from(&target("Org", "Repo", "main")),
-        };
+    #[test]
+    fn target_param_rejects_path_traversal() {
+        assert!(target_from_param(Some("Org/Repo/../escape"), &default_target()).is_err());
+    }
 
-        let response = handle(
-            State(state),
-            Query(SseParams {
-                target: Some("Org/Repo/feature/foo".to_string()),
-            }),
-        )
-        .await;
+    #[test]
+    fn target_param_accepts_branch_names_with_slashes() {
+        let parsed = target_from_param(Some("Org/Repo/feature/foo"), &default_target()).unwrap();
+        assert_eq!(parsed.branch, "feature/foo");
+    }
 
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(bus.channel_count(), 1);
+    #[test]
+    fn missing_target_param_uses_default() {
+        assert_eq!(
+            target_from_param(None, &default_target()).unwrap(),
+            default_target()
+        );
     }
 }

@@ -67,8 +67,9 @@ pub async fn serve_asset(
     let gh = GithubClient::new(target.clone());
     // Use Contents API with `Accept: application/vnd.github.raw` rather than
     // raw.githubusercontent.com. For private repos, raw.* silently 404s on
-    // bearer auth (only the legacy `?token=` query param works there), while
-    // the Contents API authenticates the same way as every other call we make.
+    // bearer auth. This authenticated fetch is also the authorization gate:
+    // GitHub returns 401/403/404 when the session token cannot read the repo,
+    // avoiding a second permissions API request for every image on the page.
     let url = gh.contents_url(&repo_path);
     fetch_and_serve(
         &state.http,

@@ -62,6 +62,32 @@ pub async fn require_session_and_token() -> Result<(Session, String), BrainError
     Ok((s, token))
 }
 
+/// Require live read access on an explicit target before serving either forge
+/// data or target-scoped data from the local projection.
+pub async fn require_target_read(
+    target: &TargetConfig,
+) -> Result<(Session, String, brain_storage::RepositoryPermissions), BrainError> {
+    let (session, token) = require_session_and_token().await?;
+    let storage = storage_for(target.clone())?;
+    let permissions = super::access::require_read(&storage, &token).await?;
+    Ok((session, token, permissions))
+}
+
+/// Require live read access on the request-context target.
+pub async fn require_current_target_read() -> Result<
+    (
+        Session,
+        String,
+        TargetConfig,
+        brain_storage::RepositoryPermissions,
+    ),
+    BrainError,
+> {
+    let target = target_cfg()?;
+    let (session, token, permissions) = require_target_read(&target).await?;
+    Ok((session, token, target, permissions))
+}
+
 /// Pull the GitHub login recorded in the session, or a fallback for commit
 /// attribution when the session predates the user field.
 pub async fn session_user_or_fallback(s: &Session) -> String {
@@ -80,29 +106,17 @@ pub async fn require_authenticated() -> Result<Session, BrainError> {
     }
 }
 
-/// Gate privileged admin surfaces on a live session that still belongs to the
-/// current target org and has admin or maintain access on the target repo.
+/// Gate privileged admin surfaces on live admin or maintain access to the
+/// current target repository.
+///
+/// Deployment-wide operator data still uses this target-admin gate for
+/// backward compatibility. Splitting deployment administration from target
+/// administration is tracked as the next open-source security slice.
 pub async fn require_target_admin_session() -> Result<Session, BrainError> {
     let (session, token) = require_session_and_token().await?;
     let target = target_cfg()?;
-    let storage = storage_for(target.clone())?;
-    let permissions = storage.repository_permissions(&token).await?;
-    if !(permissions.admin || permissions.maintain) {
-        return Err(BrainError::other(
-            "admin or maintain access on the target repository is required",
-        ));
-    }
-
-    let client = reqwest::Client::new();
-    let login = match auth::get_session_user(&session).await {
-        Some(login) => login,
-        None => brain_auth::fetch_user_login(&client, &token).await?,
-    };
-
-    if !brain_auth::is_org_member(&client, &token, &target.org, &login).await {
-        let _ = session.flush().await;
-        return Err(BrainError::Unauthenticated);
-    }
+    let storage = storage_for(target)?;
+    super::access::require_admin(&storage, &token).await?;
 
     Ok(session)
 }

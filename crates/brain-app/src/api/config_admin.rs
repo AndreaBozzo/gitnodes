@@ -18,6 +18,9 @@ use brain_domain::BrainError;
 pub struct AppConfig {
     pub target: TargetConfig,
     pub brand: BrandConfig,
+    /// Organization required at login. `None` means org-less login; target
+    /// repository permissions remain authoritative after authentication.
+    pub login_org: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,15 +59,20 @@ pub async fn get_app_config() -> Result<AppConfig, ApiError> {
     let target = session::target_cfg().map_err(sfe)?;
     let brand = use_context::<BrandConfig>()
         .ok_or_else(|| sfe(BrainError::other("No brand config available")))?;
-    Ok(AppConfig { target, brand })
+    let login_org = crate::server::auth::login_org();
+    Ok(AppConfig {
+        target,
+        brand,
+        login_org,
+    })
 }
 
 #[server(LoadBrainConfig, "/api", endpoint = "load_brain_config")]
 pub async fn load_brain_config() -> Result<BrainConfig, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let (_s, token, target, _permissions) =
+        session::require_current_target_read().await.map_err(sfe)?;
     let cfg = config_loader::load(&target, &token).await;
     Ok((*cfg).clone())
 }
@@ -74,8 +82,8 @@ pub async fn load_brain_config_status() -> Result<ConfigLoadStatus, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let (_s, token, target, _permissions) =
+        session::require_current_target_read().await.map_err(sfe)?;
     let snapshot = config_loader::load_with_diagnostic(&target, &token).await;
     Ok(config_load_status(snapshot))
 }
@@ -91,8 +99,8 @@ pub async fn load_brain_config_status_for_target(
     use crate::knowledge::config_loader;
     use crate::server::session;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let snapshot = config_loader::load_with_diagnostic(&target, &token).await;
     Ok(config_load_status(snapshot))
 }
@@ -104,8 +112,8 @@ pub async fn load_brain_config_status_for_target(
 pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let cfg = config_loader::load(&target, &token).await;
     Ok(cfg.views.clone())
 }
@@ -124,17 +132,13 @@ pub async fn save_views(target: TargetRef, views: Vec<ViewSpec>) -> Result<Write
     use crate::server::session;
     use brain_storage::Storage;
 
+    let target = super::target_from_ref(target).map_err(sfe)?;
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
-    let target = super::target_from_ref(target).map_err(sfe)?;
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
-
-    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
-    if !(permissions.admin || permissions.maintain) {
-        return Err(sfe(BrainError::other(
-            "Editing views requires admin or maintain access on the repository.",
-        )));
-    }
+    crate::server::access::require_admin(&storage, &token)
+        .await
+        .map_err(sfe)?;
 
     const CONFIG_PATH: &str = ".brain-config.yml";
     let (existing_raw, existing_sha) = match storage.read_file(&token, CONFIG_PATH).await {
@@ -401,7 +405,7 @@ pub async fn load_brain_template(target: TargetRef, node_type: String) -> Result
     use crate::server::session;
     use brain_storage::Storage;
     let target = super::target_from_ref(target).map_err(sfe)?;
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     let Some(filename) = config
         .lookup(&node_type)

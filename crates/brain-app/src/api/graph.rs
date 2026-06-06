@@ -51,8 +51,8 @@ pub async fn list_nodes(
 ) -> Result<Vec<Node>, ApiError> {
     use crate::server::session;
 
-    let _ = session::require_authenticated().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let _ = session::require_target_read(&target).await.map_err(sfe)?;
     crate::server::projection::list_nodes(
         &target,
         &crate::server::projection::NodeFilters {
@@ -73,8 +73,8 @@ pub async fn list_nodes(
 pub async fn read_node(target: TargetRef, path: String) -> Result<Option<Node>, ApiError> {
     use crate::server::session;
 
-    let _ = session::require_authenticated().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let _ = session::require_target_read(&target).await.map_err(sfe)?;
     crate::server::projection::read_node(&target, &path)
         .await
         .map_err(sfe)
@@ -83,8 +83,8 @@ pub async fn read_node(target: TargetRef, path: String) -> Result<Option<Node>, 
 #[server(LoadBrainGraph, "/api", endpoint = "load_brain_graph")]
 pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ApiError> {
     use crate::server::session;
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let target = session::target_cfg().map_err(sfe)?;
+    let (_s, token, target, _permissions) =
+        session::require_current_target_read().await.map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     let storage = session::storage().map_err(sfe)?;
     crate::server::projection::load_graph(&storage, &token, &config)
@@ -99,9 +99,9 @@ pub async fn load_brain_graph() -> Result<(Vec<Node>, Vec<Edge>), ApiError> {
 pub async fn refresh_brain_graph(target: TargetRef) -> Result<(), ApiError> {
     use crate::server::session;
     use brain_domain::TargetKey;
-    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let user = session::session_user_or_fallback(&s).await;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
     let key = TargetKey::from(&target);
     brain_storage::invalidate(&key);
     brain_storage::invalidate_template(&key);
@@ -375,6 +375,10 @@ pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRe
     target
         .validate()
         .map_err(|e| ApiError::BadInput(format!("invalid target: {e}")))?;
+    let target_cfg = TargetConfig::from(target.clone());
+    let _ = session::require_target_read(&target_cfg)
+        .await
+        .map_err(sfe)?;
     Ok(target)
 }
 
@@ -389,8 +393,8 @@ pub async fn load_brain_graph_for_target(
 ) -> Result<(Vec<Node>, Vec<Edge>), ApiError> {
     use crate::server::session;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
     let config = crate::knowledge::config_loader::load(&target, &token).await;
     crate::server::projection::load_graph(&storage, &token, &config)
@@ -407,8 +411,8 @@ pub async fn load_brain_graph_for_target(
 pub async fn load_brain_config_for_target(target: TargetRef) -> Result<BrainConfig, ApiError> {
     use crate::server::session;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let cfg = crate::knowledge::config_loader::load(&target, &token).await;
     Ok((*cfg).clone())
 }

@@ -16,7 +16,7 @@ pub(super) async fn save_file_permission_aware(
     target: &TargetConfig,
     intent: WriteIntent,
 ) -> Result<WriteResult, BrainError> {
-    let permissions = storage.repository_permissions(token).await?;
+    let permissions = crate::server::access::repository_permissions(storage, token).await?;
     // `ProposeViaPr` skips the direct attempt even when the user could push,
     // routing through the same PR orchestrator used by the capability fallback.
     let force_pr = intent == WriteIntent::ProposeViaPr;
@@ -64,7 +64,7 @@ pub(super) async fn delete_file_permission_aware(
     author_email: &str,
     target: &TargetConfig,
 ) -> Result<WriteResult, BrainError> {
-    let permissions = storage.repository_permissions(token).await?;
+    let permissions = crate::server::access::repository_permissions(storage, token).await?;
     if permissions.push {
         match storage
             .delete_file(token, path, sha, message, user, author_email)
@@ -107,6 +107,7 @@ pub(super) async fn delete_file_permission_aware(
 
 pub(super) fn should_fallback_to_pr(error: &BrainError) -> bool {
     match error {
+        BrainError::PermissionDenied(_) => true,
         BrainError::GitHub(message) => {
             message.contains("403")
                 || message.to_lowercase().contains("protected")

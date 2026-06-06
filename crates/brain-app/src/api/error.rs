@@ -61,11 +61,10 @@ impl ApiError {
             ApiError::Unauthenticated => {
                 "Your session expired. Please sign in again to continue.".into()
             }
-            ApiError::PermissionDenied(_) => {
-                "You don't have write access on this branch — your change can go in as a pull \
-                 request instead."
-                    .into()
+            ApiError::PermissionDenied(message) if message.contains("read access") => {
+                "You don't have permission to read this repository.".into()
             }
+            ApiError::PermissionDenied(_) => "GitHub denied this operation. Check your repository permissions or propose the change through a pull request.".into(),
             ApiError::NotFound(_) => {
                 "That file or item could not be found — it may have moved. Try reloading.".into()
             }
@@ -124,6 +123,7 @@ impl From<brain_domain::BrainError> for ApiError {
         use brain_domain::BrainError as B;
         match e {
             B::Unauthenticated => ApiError::Unauthenticated,
+            B::PermissionDenied(m) => ApiError::PermissionDenied(m),
             B::NotFound(m) => ApiError::NotFound(m),
             B::Conflict { kind, message } => ApiError::Conflict { kind, message },
             B::Parse(m) => ApiError::BadInput(m),
@@ -213,6 +213,23 @@ mod tests {
             ApiError::from(BrainError::NotFound("x".into())),
             ApiError::NotFound(_)
         ));
+        assert!(matches!(
+            ApiError::from(BrainError::permission_denied("read access required")),
+            ApiError::PermissionDenied(_)
+        ));
+    }
+
+    #[test]
+    fn permission_messages_distinguish_read_from_write_operations() {
+        assert_eq!(
+            ApiError::PermissionDenied("read access required".into()).actionable_message(),
+            "You don't have permission to read this repository."
+        );
+        assert!(
+            ApiError::PermissionDenied("write access required".into())
+                .actionable_message()
+                .contains("GitHub denied this operation")
+        );
     }
 
     #[test]

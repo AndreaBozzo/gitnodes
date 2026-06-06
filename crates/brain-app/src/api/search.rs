@@ -40,16 +40,8 @@ pub async fn search_brain(
 ) -> Result<Vec<SearchHit>, ApiError> {
     use crate::server::session;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
-    let storage = session::storage_for(target.clone()).map_err(sfe)?;
-    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
-    if !permissions.pull {
-        return Err(ApiError::PermissionDenied(format!(
-            "missing read permission for {}/{}",
-            target.org, target.repo
-        )));
-    }
+    let _ = session::require_target_read(&target).await.map_err(sfe)?;
 
     crate::server::projection::search_nodes(
         &target,

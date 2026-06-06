@@ -631,7 +631,8 @@ form-action 'self'";
             axum::routing::get(brain_app::server::sse::handle).with_state(
                 brain_app::server::sse::SseState {
                     bus: event_bus.clone(),
-                    default_target: brain_domain::TargetKey::from(&target_cfg),
+                    default_target: target_cfg.clone(),
+                    http: gh_http.clone(),
                 },
             ),
         )

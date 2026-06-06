@@ -45,6 +45,36 @@ fn required_org() -> String {
     required_env_with_legacy("TARGET_GITHUB_ORG", "GITHUB_ORG")
 }
 
+fn resolve_login_org(explicit: Option<&str>, target_org: &str) -> Option<String> {
+    explicit
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|org| !org.is_empty())
+        .or_else(|| {
+            if explicit.is_none() {
+                Some(target_org.to_string())
+            } else {
+                None
+            }
+        })
+}
+
+/// Optional organization allowlist for login.
+///
+/// An unset `GITHUB_LOGIN_ORG` preserves the historical behavior by falling
+/// back to `TARGET_GITHUB_ORG`. Setting it to an empty value enables org-less
+/// login; target access is still checked live against repository permissions.
+pub fn login_org() -> Option<String> {
+    match std::env::var("GITHUB_LOGIN_ORG") {
+        Ok(value) => resolve_login_org(Some(&value), &required_org()),
+        Err(std::env::VarError::NotPresent) => resolve_login_org(None, &required_org()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            tracing::error!("GITHUB_LOGIN_ORG contains non-Unicode data");
+            std::process::exit(1)
+        }
+    }
+}
+
 /// Handler for `GET /auth/login`.
 pub async fn login(session: Session) -> impl IntoResponse {
     let state = generate_state();
@@ -116,9 +146,11 @@ pub async fn oauth_callback(
         }
     };
 
-    if !is_org_member(&client, &token, &required_org(), &login).await {
-        crate::server::audit::log("login_fail", Some(&login), "not_org_member").await;
-        return Redirect::to("/?error=not_org_member").into_response();
+    if let Some(org) = login_org()
+        && !is_org_member(&client, &token, &org, &login).await
+    {
+        crate::server::audit::log("login_fail", Some(&login), "not_login_org_member").await;
+        return Redirect::to("/?error=not_login_org_member").into_response();
     }
 
     // Cycle the session ID to prevent session fixation and to guarantee
@@ -138,4 +170,28 @@ pub async fn oauth_callback(
 
     crate::server::audit::log("login_ok", Some(&login), "").await;
     Redirect::to("/knowledge").into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_login_org;
+
+    #[test]
+    fn unset_login_org_preserves_target_org_gate() {
+        assert_eq!(resolve_login_org(None, "acme"), Some("acme".to_string()));
+    }
+
+    #[test]
+    fn explicit_login_org_overrides_target_owner() {
+        assert_eq!(
+            resolve_login_org(Some("contributors"), "octocat"),
+            Some("contributors".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_login_org_enables_org_less_mode() {
+        assert_eq!(resolve_login_org(Some(""), "octocat"), None);
+        assert_eq!(resolve_login_org(Some("  "), "octocat"), None);
+    }
 }

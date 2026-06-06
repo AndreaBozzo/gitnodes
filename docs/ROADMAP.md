@@ -46,14 +46,15 @@ Razionale: rilasciare il core dell'app come repository pubblica pulita, mantenen
     - `.brain-config.yml` nella repo pubblica deve essere un blueprint agnostico (es. una tassonomia di prova generica sul modello della sandbox Pokemon), senza la mappatura operativa o i flussi interni Dritara.
     - Confermare che nessun crate (`brain-app`, `brain-domain`, `brain-storage`, `brain-graph`, `brain-auth`) contenga costanti/segreti accoppiati all'infrastruttura. Mantenere l'invariante del test di auto-registrazione delle server fn (guard contro lo strip LTO in release).
 
-- [ ] **Modalità org-less (account personale)** _(abilitatore di adozione OSS, 2026-06-04)_
+- [x] **Modalità org-less (account personale)** _(abilitatore di adozione OSS; DONE 2026-06-06)_
 
     Razionale: una Brain UI open-source che *richiede* una GitHub org è poco adottabile — chi la valuta la punta su un repo personale. Oggi il blocco è il login gate (`is_org_member(required_org(), login)` in `server/auth.rs`): per un owner personale `GET /orgs/{utente}/members/...` ritorna 404 → login negato. Quasi tutto il resto **già** funziona per repo personali: il campo `org` di `TargetConfig` è in realtà l'owner (API GitHub owner-agnostica), la discovery usa già `affiliation=owner`, e l'autorizzazione reale passa ovunque da `repository_permissions` (pull/push/admin), che GitHub calcola correttamente sui repo personali.
 
-    - **Login gate**: quando `TARGET_GITHUB_ORG` è vuoto → modalità org-less, salta il check di membership e lascia loggare qualsiasi utente GitHub autenticato; l'accesso ai target resta gated per-repo.
-    - **Admin gate** (`require_target_admin_session`): applica `is_org_member` solo quando l'owner del target è davvero una org (`owner.type == "Organization"`); per un repo personale basta `permissions.admin || maintain`, che il proprietario ha già — l'org-check è ridondante.
+    - **Login gate**: `GITHUB_LOGIN_ORG` separa la policy di login dall'owner del target. Unset preserva il comportamento storico (`TARGET_GITHUB_ORG`); vuoto abilita org-less; un valore esplicito sceglie un'altra org allowlist.
+    - **Target gate**: i read path target-scoped su projection SQLite, config cache e SSE verificano `permissions.pull` con cache breve (15s). L'asset proxy usa direttamente il Contents API autenticato come gate equivalente, evitando un preflight per immagine. Le write mantengono direct-vs-PR permission-aware; gli upload diretti richiedono esplicitamente `push`.
+    - **Admin gate** (`require_target_admin_session`): richiede solo `permissions.admin || maintain` sul target, senza membership org ridondante. Le superfici operator globali restano temporaneamente dietro questo gate per backward compatibility; lo split deployment-admin è la slice OSS successiva.
     - **Caveat GitHub App**: il path installation-token (sync inbound via webhook) va verificato per account personali (le App si installano anche su utenti; resta il fallback PAT/OAuth). Non bloccante, da confermare a parte.
-    - Success criterion: con `TARGET_GITHUB_ORG` non settato, un utente senza alcuna org logga, punta Brain UI a un proprio repo personale e legge/scrive secondo i `repository_permissions` del repo — **e** un audit conferma che ogni data path di lettura/scrittura è gated su `repository_permissions`, non sul (ora opzionale) login org gate. Quest'ultimo audit è il vero lavoro di sicurezza della slice.
+    - Success criterion raggiunto: con `GITHUB_LOGIN_ORG=` un utente senza org può loggare e usare un repo personale secondo `repository_permissions`; un utente autenticato senza `pull` non può leggere dati live o proiettati del target.
 
 - [ ] **Bonifica della roadmap pubblica**
     - Espungere i riferimenti a repo sandbox privati (es. `Dritara-Digital/Brain-Pokemon-Mock`) e i tag agli account dei tester chiusi (es. `@JacoTube`).

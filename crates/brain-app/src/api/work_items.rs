@@ -37,8 +37,8 @@ pub async fn list_work_items(
 ) -> Result<Vec<WorkItem>, ApiError> {
     use crate::server::session;
 
-    let _ = session::require_authenticated().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let _ = session::require_target_read(&target).await.map_err(sfe)?;
     crate::server::projection::list_work_items(
         &target,
         &crate::server::projection::WorkItemFilters {
@@ -61,8 +61,8 @@ pub async fn load_work_item_by_path(
 ) -> Result<Option<WorkItem>, ApiError> {
     use crate::server::session;
 
-    let _ = session::require_authenticated().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let _ = session::require_target_read(&target).await.map_err(sfe)?;
     crate::server::projection::load_work_item_by_path(&target, &path)
         .await
         .map_err(sfe)
@@ -103,8 +103,8 @@ async fn load_work_item_comments_inner(
     use crate::server::session;
     use brain_domain::ExternalWorkItemSystem;
 
-    let (_s, token) = session::require_session_and_token().await?;
     let target = super::target_from_ref(target)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await?;
     let storage = session::storage_for(target.clone())?;
     let Some(item) =
         crate::server::projection::load_work_item_by_brain_id(&target, &brain_id).await?
@@ -253,12 +253,11 @@ async fn apply_work_item_mutation(
         }
     }
 
-    let (s, token) = session::require_session_and_token().await?;
-    let user = session::session_user_or_fallback(&s).await;
     let target = super::target_from_ref(target)?;
+    let (s, token, permissions) = session::require_target_read(&target).await?;
+    let user = session::session_user_or_fallback(&s).await;
     let storage = session::storage_for(target.clone())?;
 
-    let permissions = storage.repository_permissions(&token).await?;
     if permissions.push {
         match apply_work_item_mutation_inner(
             &token,

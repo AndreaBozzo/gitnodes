@@ -49,15 +49,13 @@ pub async fn rename_brain_file(
     validate_markdown_path(&old_path).map_err(sfe)?;
     validate_markdown_path(&new_path).map_err(sfe)?;
 
-    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let (s, token, permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let author_email = format!("{}@users.noreply.github.com", user);
-    let target = super::target_from_ref(target).map_err(sfe)?;
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
 
     let user_msg = sanitize_commit_message(commit_message.as_deref());
-    let permissions = storage.repository_permissions(&token).await.map_err(sfe)?;
-
     if permissions.push {
         match perform_rename_on_storage(
             &storage,
@@ -412,7 +410,9 @@ pub async fn upload_asset(
         ))));
     }
 
-    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let (s, token, permissions) = session::require_target_read(&target).await.map_err(sfe)?;
+    crate::server::access::ensure_write(&target, &permissions).map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let author_email = format!("{}@users.noreply.github.com", user);
 
@@ -429,7 +429,6 @@ pub async fn upload_asset(
     );
 
     let commit_msg = format!("Upload {asset_path} via Brain UI");
-    let target = super::target_from_ref(target).map_err(sfe)?;
     let storage = session::storage_for(target).map_err(sfe)?;
     match storage
         .upload_binary(
@@ -556,8 +555,8 @@ pub async fn list_brain_folders(target: TargetRef) -> Result<Vec<String>, ApiErr
     use crate::server::session;
     use brain_storage::Storage;
 
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let storage = session::storage_for(target).map_err(sfe)?;
     storage.list_folders(&token).await.map_err(sfe)
 }

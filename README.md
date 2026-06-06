@@ -34,7 +34,7 @@ crates/
   brain-domain/    # Pure domain types: BrainConfig, NodeTypeSpec, WorkItem, GithubClient
   brain-graph/     # Graph building + force-directed layout (no I/O)
   brain-storage/   # GitHub API calls: tree walk, file CRUD, asset upload, atomic Git Data commits
-  brain-auth/      # GitHub OAuth token exchange + org membership check
+  brain-auth/      # GitHub OAuth token exchange + optional org membership check
   brain-app/       # Leptos app + Axum entrypoint (SSR binary + WASM bundle)
     src/
       main.rs                   # Axum entrypoint, session store, auth routes
@@ -117,7 +117,7 @@ Required at runtime:
 | ----------------------- | ------------------------------------ |
 | `GITHUB_CLIENT_ID`      | GitHub OAuth app client ID           |
 | `GITHUB_CLIENT_SECRET`  | GitHub OAuth app client secret       |
-| `TARGET_GITHUB_ORG`     | Target org for login gating and repo access |
+| `TARGET_GITHUB_ORG`     | Default repository owner (organization or personal account) |
 | `TARGET_GITHUB_REPO`    | Target repo (e.g. `Brain`)           |
 | `TARGET_GITHUB_BRANCH`  | Branch to read/write (e.g. `main`)   |
 
@@ -125,6 +125,7 @@ Optional:
 
 | Var                       | Default                | Purpose                                          |
 | ------------------------- | ---------------------- | ------------------------------------------------ |
+| `GITHUB_LOGIN_ORG`        | `TARGET_GITHUB_ORG`     | Organization required at login. Set to an empty value for org-less login; target access remains gated by live repository permissions. |
 | `SESSION_DB_URL`          | `sqlite://data/sessions.db` | SQLite database URL for sessions, audit log, and local projection |
 | `LEPTOS_SITE_ADDR`        | `127.0.0.1:3000`       | Bind address                                     |
 | `LEPTOS_SITE_ROOT`        | `target/site`          | Static asset root (prod)                         |
@@ -153,6 +154,12 @@ Branding is also required at runtime:
 The OAuth app's callback URL must be `{host}/auth/callback`.
 
 Legacy aliases `GITHUB_ORG`, `GITHUB_REPO`, and `GITHUB_BRANCH` are still accepted at runtime for backward compatibility, but new deploys should use the explicit `TARGET_GITHUB_*` names.
+
+For a personal-account repository, set `TARGET_GITHUB_ORG` to the GitHub
+username and set `GITHUB_LOGIN_ORG=`. Any GitHub user can then complete OAuth,
+but Brain UI serves a target only when GitHub reports live `pull` permission;
+write and administration capabilities continue to follow `push`,
+`maintain`, and `admin`.
 
 ## Local development
 
