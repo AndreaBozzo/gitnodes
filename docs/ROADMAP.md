@@ -50,11 +50,18 @@ Razionale: rilasciare il core dell'app come repository pubblica pulita, mantenen
 
     Razionale: una Brain UI open-source che *richiede* una GitHub org è poco adottabile — chi la valuta la punta su un repo personale. Oggi il blocco è il login gate (`is_org_member(required_org(), login)` in `server/auth.rs`): per un owner personale `GET /orgs/{utente}/members/...` ritorna 404 → login negato. Quasi tutto il resto **già** funziona per repo personali: il campo `org` di `TargetConfig` è in realtà l'owner (API GitHub owner-agnostica), la discovery usa già `affiliation=owner`, e l'autorizzazione reale passa ovunque da `repository_permissions` (pull/push/admin), che GitHub calcola correttamente sui repo personali.
 
-    - **Login gate**: `GITHUB_LOGIN_ORG` separa la policy di login dall'owner del target. Unset preserva il comportamento storico (`TARGET_GITHUB_ORG`); vuoto abilita org-less; un valore esplicito sceglie un'altra org allowlist.
+    - **Login gate**: `GITHUB_LOGIN_ORG` separa la policy di login dall'owner del target. Le env split storiche mantengono il fallback a `TARGET_GITHUB_ORG`; il nuovo `TARGET_GITHUB_REPOSITORY` parte org-less; un valore esplicito sceglie un'org allowlist.
     - **Target gate**: i read path target-scoped su projection SQLite, config cache e SSE verificano `permissions.pull` con cache breve (15s). L'asset proxy usa direttamente il Contents API autenticato come gate equivalente, evitando un preflight per immagine. Le write mantengono direct-vs-PR permission-aware; gli upload diretti richiedono esplicitamente `push`.
     - **Admin gate** (`require_target_admin_session`): richiede solo `permissions.admin || maintain` sul target, senza membership org ridondante. Le superfici operator globali restano temporaneamente dietro questo gate per backward compatibility; lo split deployment-admin è la slice OSS successiva.
     - **Caveat GitHub App**: il path installation-token (sync inbound via webhook) va verificato per account personali (le App si installano anche su utenti; resta il fallback PAT/OAuth). Non bloccante, da confermare a parte.
     - Success criterion raggiunto: con `GITHUB_LOGIN_ORG=` un utente senza org può loggare e usare un repo personale secondo `repository_permissions`; un utente autenticato senza `pull` non può leggere dati live o proiettati del target.
+
+- [x] **Bootstrap runtime minimo** _(adozione OSS; DONE 2026-06-06)_
+
+    - Il percorso raccomandato richiede solo credenziali OAuth e `TARGET_GITHUB_REPOSITORY=owner/repo`; branch (`main`) e branding hanno default generici.
+    - La chiave di cifratura sessione viene generata con permessi privati in `data/session.key` e persiste sullo stesso volume SQLite; `SESSION_ENCRYPTION_KEY` resta disponibile per secret management esterno.
+    - Il webhook non blocca più il boot quando non configurato: in release resta disabilitato finché non viene fornito `WEBHOOK_SECRET`.
+    - Le env split storiche restano compatibili e mantengono il precedente fallback di membership org; il nuovo locator compatto parte org-less.
 
 - [ ] **Bonifica della roadmap pubblica**
     - Espungere i riferimenti a repo sandbox privati (es. `Dritara-Digital/Brain-Pokemon-Mock`) e i tag agli account dei tester chiusi (es. `@JacoTube`).

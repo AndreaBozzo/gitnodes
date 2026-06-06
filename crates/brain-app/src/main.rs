@@ -2,26 +2,6 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used))]
 
 #[cfg(feature = "ssr")]
-fn required_env_with_legacy(primary: &str, legacy: &str) -> String {
-    std::env::var(primary)
-        .or_else(|_| std::env::var(legacy))
-        .unwrap_or_else(|_| {
-            tracing::error!(
-                "missing required environment variable: set {primary} (or legacy {legacy})"
-            );
-            std::process::exit(1)
-        })
-}
-
-#[cfg(feature = "ssr")]
-fn required_env(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| {
-        tracing::error!("missing required environment variable: {name}");
-        std::process::exit(1)
-    })
-}
-
-#[cfg(feature = "ssr")]
 fn is_protected_path(path: &str) -> bool {
     path == "/knowledge"
         || path.starts_with("/knowledge/")
@@ -211,7 +191,6 @@ async fn main() {
     };
     use brain_app::app::*;
     use brain_app::server::auth;
-    use brain_domain::{BrandConfig, TargetConfig};
     use leptos::prelude::*;
     use leptos_axum::{LeptosRoutes, generate_route_list};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -242,17 +221,17 @@ async fn main() {
         )
         .init();
 
-    // Runtime config from env — fail fast if any are missing so a misconfigured
-    // deploy can't silently write to the wrong repo.
-    let target_cfg = TargetConfig {
-        org: required_env_with_legacy("TARGET_GITHUB_ORG", "GITHUB_ORG"),
-        repo: required_env_with_legacy("TARGET_GITHUB_REPO", "GITHUB_REPO"),
-        branch: required_env_with_legacy("TARGET_GITHUB_BRANCH", "GITHUB_BRANCH"),
-    };
-    let brand_cfg = BrandConfig {
-        name: required_env("BRAND_NAME"),
-        org_label: required_env("BRAND_ORG_LABEL"),
-    };
+    let target_bootstrap = brain_app::server::runtime_config::target_from_env_or_exit();
+    auth::init_login_org(
+        &target_bootstrap.target.org,
+        target_bootstrap.compact_locator,
+    )
+    .unwrap_or_else(|error| {
+        tracing::error!(%error, "failed to initialize login organization policy");
+        std::process::exit(1)
+    });
+    let target_cfg = target_bootstrap.target;
+    let brand_cfg = brain_app::server::runtime_config::brand_from_env(&target_cfg);
 
     // Single pooled, **target-agnostic** HTTP client for the whole process.
     // Threaded through Leptos context so server fns and the asset proxy share
@@ -332,23 +311,23 @@ async fn main() {
     let allow_insecure_webhooks = std::env::var("ALLOW_INSECURE_WEBHOOKS")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(cfg!(debug_assertions));
-    let webhook_secret = std::env::var("WEBHOOK_SECRET").ok();
-    if webhook_secret.is_none() {
-        if allow_insecure_webhooks {
+    let webhook_auth = match std::env::var("WEBHOOK_SECRET") {
+        Ok(secret) if !secret.is_empty() => brain_app::server::webhook::WebhookAuth::Secret(secret),
+        _ if allow_insecure_webhooks => {
             tracing::warn!(
-                "WEBHOOK_SECRET not set — webhook endpoint will accept unsigned payloads because ALLOW_INSECURE_WEBHOOKS is enabled"
+                "webhook endpoint accepts unsigned payloads because ALLOW_INSECURE_WEBHOOKS is enabled"
             );
-        } else {
-            tracing::error!(
-                "WEBHOOK_SECRET must be set in non-dev environments unless ALLOW_INSECURE_WEBHOOKS=1"
-            );
-            std::process::exit(1);
+            brain_app::server::webhook::WebhookAuth::Insecure
         }
-    }
+        _ => {
+            tracing::info!("webhook endpoint disabled; set WEBHOOK_SECRET to enable it");
+            brain_app::server::webhook::WebhookAuth::Disabled
+        }
+    };
     let webhook_state = brain_app::server::webhook::WebhookState {
         bus: event_bus.clone(),
         http: gh_http.clone(),
-        secret: webhook_secret,
+        auth: webhook_auth,
     };
     // OAuth callback is a cross-site redirect back from github.com, so the session
     // cookie must be SameSite=Lax (Strict would drop it and kill CSRF state check).
@@ -357,45 +336,12 @@ async fn main() {
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(!cfg!(debug_assertions));
 
-    // Encrypt the session store at rest. The SQLite session record holds the
-    // user's `gho_*` OAuth token; `with_private` keeps it ciphertext on disk.
-    // Key is a base64-encoded >=64-byte secret in `SESSION_ENCRYPTION_KEY`.
-    // In prod (cookie_secure) the key is mandatory — mirror the WEBHOOK_SECRET
-    // fail-fast. In dev a missing key generates an ephemeral one (sessions don't
-    // survive a restart, which is fine locally).
-    let session_key = match std::env::var("SESSION_ENCRYPTION_KEY") {
-        Ok(b64) => {
-            use base64::Engine as _;
-            // Strip ALL whitespace, not just the ends: `openssl rand -base64 64`
-            // wraps its output at 64 cols, so a pasted value often carries an
-            // internal newline that `trim()` alone would leave in place.
-            let cleaned: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
-            let raw = base64::engine::general_purpose::STANDARD
-                .decode(&cleaned)
-                .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "SESSION_ENCRYPTION_KEY is not valid base64");
-                    std::process::exit(1);
-                });
-            tower_sessions::cookie::Key::try_from(raw.as_slice()).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "SESSION_ENCRYPTION_KEY must decode to >= 64 bytes");
-                std::process::exit(1);
-            })
-        }
-        Err(_) => {
-            if cookie_secure {
-                tracing::error!(
-                    "SESSION_ENCRYPTION_KEY must be set in production (base64, >= 64 bytes). \
-                     Generate one with: openssl rand -base64 64 | tr -d '\\n'"
-                );
-                std::process::exit(1);
-            }
-            tracing::warn!(
-                "SESSION_ENCRYPTION_KEY not set — generating an ephemeral dev key; \
-                 sessions will not survive a restart"
-            );
-            tower_sessions::cookie::Key::generate()
-        }
-    };
+    // Encrypt OAuth tokens in the session store. An explicit env key wins;
+    // otherwise a private key is generated once under data/ and reused.
+    let session_key = brain_app::server::session_key::load().unwrap_or_else(|error| {
+        tracing::error!(%error, "failed to load session encryption key");
+        std::process::exit(1)
+    });
     let session_layer = SessionManagerLayer::new(session_store)
         .with_same_site(SameSite::Lax)
         .with_secure(cookie_secure)

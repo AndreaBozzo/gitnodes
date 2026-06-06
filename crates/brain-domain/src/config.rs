@@ -1,8 +1,7 @@
 //! Runtime configuration loaded from the process environment.
 //!
-//! These values are read once at server startup (see `brain-app/src/main.rs`),
-//! then passed explicitly through constructors or provided via Leptos context.
-//! No code outside of `main.rs` should call `std::env::var` for these keys.
+//! These values are loaded at server startup, then passed explicitly through
+//! constructors or provided through the application context.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

@@ -10,10 +10,13 @@ use brain_auth::{
     fetch_user_login, generate_state, is_org_member,
 };
 use serde::Deserialize;
+use std::sync::OnceLock;
 use tower_sessions::Session;
 
 // Re-exported session helpers so existing callers keep working.
 pub use brain_auth::{get_session_token, get_session_user, is_authenticated};
+
+static LOGIN_ORG: OnceLock<Option<String>> = OnceLock::new();
 
 fn required_env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
@@ -30,28 +33,17 @@ fn client_secret() -> String {
     required_env("GITHUB_CLIENT_SECRET")
 }
 
-fn required_env_with_legacy(primary: &str, legacy: &str) -> String {
-    std::env::var(primary)
-        .or_else(|_| std::env::var(legacy))
-        .unwrap_or_else(|_| {
-            tracing::error!(
-                "missing required environment variable: set {primary} (or legacy {legacy})"
-            );
-            std::process::exit(1)
-        })
-}
-
-fn required_org() -> String {
-    required_env_with_legacy("TARGET_GITHUB_ORG", "GITHUB_ORG")
-}
-
-fn resolve_login_org(explicit: Option<&str>, target_org: &str) -> Option<String> {
+fn resolve_login_org(
+    explicit: Option<&str>,
+    target_org: &str,
+    compact_locator: bool,
+) -> Option<String> {
     explicit
         .map(str::trim)
         .map(str::to_string)
         .filter(|org| !org.is_empty())
         .or_else(|| {
-            if explicit.is_none() {
+            if explicit.is_none() && !compact_locator {
                 Some(target_org.to_string())
             } else {
                 None
@@ -61,18 +53,26 @@ fn resolve_login_org(explicit: Option<&str>, target_org: &str) -> Option<String>
 
 /// Optional organization allowlist for login.
 ///
-/// An unset `GITHUB_LOGIN_ORG` preserves the historical behavior by falling
-/// back to `TARGET_GITHUB_ORG`. Setting it to an empty value enables org-less
-/// login; target access is still checked live against repository permissions.
-pub fn login_org() -> Option<String> {
-    match std::env::var("GITHUB_LOGIN_ORG") {
-        Ok(value) => resolve_login_org(Some(&value), &required_org()),
-        Err(std::env::VarError::NotPresent) => resolve_login_org(None, &required_org()),
+/// Load the login organization policy once during server startup.
+pub fn init_login_org(target_org: &str, compact_locator: bool) -> Result<(), String> {
+    let explicit = match std::env::var("GITHUB_LOGIN_ORG") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
         Err(std::env::VarError::NotUnicode(_)) => {
-            tracing::error!("GITHUB_LOGIN_ORG contains non-Unicode data");
-            std::process::exit(1)
+            return Err("GITHUB_LOGIN_ORG contains non-Unicode data".into());
         }
-    }
+    };
+    let login_org = resolve_login_org(explicit.as_deref(), target_org, compact_locator);
+    LOGIN_ORG
+        .set(login_org)
+        .map_err(|_| "login organization policy was initialized more than once".into())
+}
+
+pub fn login_org() -> Option<String> {
+    LOGIN_ORG
+        .get()
+        .expect("login organization policy initialized at startup")
+        .clone()
 }
 
 /// Handler for `GET /auth/login`.
@@ -178,20 +178,28 @@ mod tests {
 
     #[test]
     fn unset_login_org_preserves_target_org_gate() {
-        assert_eq!(resolve_login_org(None, "acme"), Some("acme".to_string()));
+        assert_eq!(
+            resolve_login_org(None, "acme", false),
+            Some("acme".to_string())
+        );
     }
 
     #[test]
     fn explicit_login_org_overrides_target_owner() {
         assert_eq!(
-            resolve_login_org(Some("contributors"), "octocat"),
+            resolve_login_org(Some("contributors"), "octocat", false),
             Some("contributors".to_string())
         );
     }
 
     #[test]
     fn empty_login_org_enables_org_less_mode() {
-        assert_eq!(resolve_login_org(Some(""), "octocat"), None);
-        assert_eq!(resolve_login_org(Some("  "), "octocat"), None);
+        assert_eq!(resolve_login_org(Some(""), "octocat", false), None);
+        assert_eq!(resolve_login_org(Some("  "), "octocat", false), None);
+    }
+
+    #[test]
+    fn compact_locator_defaults_to_org_less_mode() {
+        assert_eq!(resolve_login_org(None, "octocat", true), None);
     }
 }

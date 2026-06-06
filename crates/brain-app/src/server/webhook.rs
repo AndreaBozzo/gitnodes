@@ -17,9 +17,25 @@ use brain_domain::{
 pub struct WebhookState {
     pub bus: EventBus,
     pub http: brain_storage::GithubHttp,
-    /// Shared secret configured in the GitHub webhook settings.
-    /// When `None` the endpoint is open — suitable for local dev, dangerous in prod.
-    pub secret: Option<String>,
+    pub auth: WebhookAuth,
+}
+
+#[derive(Clone)]
+pub enum WebhookAuth {
+    Disabled,
+    Insecure,
+    Secret(String),
+}
+
+impl WebhookAuth {
+    fn authorize(&self, headers: &HeaderMap, body: &[u8]) -> Result<(), StatusCode> {
+        match self {
+            Self::Disabled => Err(StatusCode::NOT_FOUND),
+            Self::Insecure => Ok(()),
+            Self::Secret(secret) if verify_signature(secret.as_bytes(), headers, body) => Ok(()),
+            Self::Secret(_) => Err(StatusCode::UNAUTHORIZED),
+        }
+    }
 }
 
 /// POST /webhook/github
@@ -34,11 +50,11 @@ pub async fn handle(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    if let Some(ref secret) = state.secret
-        && !verify_signature(secret.as_bytes(), &headers, &body)
-    {
-        tracing::warn!("webhook: HMAC validation failed");
-        return StatusCode::UNAUTHORIZED;
+    if let Err(status) = state.auth.authorize(&headers, &body) {
+        if status == StatusCode::UNAUTHORIZED {
+            tracing::warn!("webhook: HMAC validation failed");
+        }
+        return status;
     }
 
     let event_type = headers
@@ -557,6 +573,22 @@ mod tests {
     fn missing_signature_header_is_rejected() {
         let headers = HeaderMap::new();
         assert!(!verify_signature(b"secret", &headers, b"body"));
+    }
+
+    #[test]
+    fn disabled_webhook_is_not_exposed() {
+        assert_eq!(
+            WebhookAuth::Disabled.authorize(&HeaderMap::new(), b"body"),
+            Err(StatusCode::NOT_FOUND)
+        );
+    }
+
+    #[test]
+    fn insecure_webhook_is_explicitly_allowed() {
+        assert_eq!(
+            WebhookAuth::Insecure.authorize(&HeaderMap::new(), b"body"),
+            Ok(())
+        );
     }
 
     #[test]

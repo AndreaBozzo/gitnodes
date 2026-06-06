@@ -113,26 +113,28 @@ for a worked example.
 
 Required at runtime:
 
-| Var                     | Purpose                              |
-| ----------------------- | ------------------------------------ |
-| `GITHUB_CLIENT_ID`      | GitHub OAuth app client ID           |
-| `GITHUB_CLIENT_SECRET`  | GitHub OAuth app client secret       |
-| `TARGET_GITHUB_ORG`     | Default repository owner (organization or personal account) |
-| `TARGET_GITHUB_REPO`    | Target repo (e.g. `Brain`)           |
-| `TARGET_GITHUB_BRANCH`  | Branch to read/write (e.g. `main`)   |
+| Var                        | Purpose                                    |
+| -------------------------- | ------------------------------------------ |
+| `GITHUB_CLIENT_ID`         | GitHub OAuth app client ID                 |
+| `GITHUB_CLIENT_SECRET`     | GitHub OAuth app client secret             |
+| `TARGET_GITHUB_REPOSITORY` | Default repository in `owner/repo` format  |
 
 Optional:
 
 | Var                       | Default                | Purpose                                          |
 | ------------------------- | ---------------------- | ------------------------------------------------ |
-| `GITHUB_LOGIN_ORG`        | `TARGET_GITHUB_ORG`     | Organization required at login. Set to an empty value for org-less login; target access remains gated by live repository permissions. |
+| `TARGET_GITHUB_BRANCH`    | `main`                 | Branch to read/write. |
+| `GITHUB_LOGIN_ORG`        | _(org-less)_           | Optional organization required at login. Target access remains gated by live repository permissions. |
+| `BRAND_NAME`              | `Brain UI`             | UI brand shown in the header and page title. |
+| `BRAND_ORG_LABEL`         | repository owner       | Owner label used in access-denied copy. |
 | `SESSION_DB_URL`          | `sqlite://data/sessions.db` | SQLite database URL for sessions, audit log, and local projection |
 | `LEPTOS_SITE_ADDR`        | `127.0.0.1:3000`       | Bind address                                     |
 | `LEPTOS_SITE_ROOT`        | `target/site`          | Static asset root (prod)                         |
 | `SESSION_COOKIE_SECURE`   | `1` in release, `0` in debug | Marks the session cookie Secure. Override to `0` only for local HTTP dev. |
-| `SESSION_ENCRYPTION_KEY`  | _(required when secure cookies are enabled)_ | Base64 key (>=64 bytes decoded) for encrypted session storage. Generate with `openssl rand -base64 64 | tr -d '\n'`. |
+| `SESSION_ENCRYPTION_KEY_FILE` | `data/session.key` | Persistent generated key file used when `SESSION_ENCRYPTION_KEY` is unset. |
+| `SESSION_ENCRYPTION_KEY`  | _(generated in key file)_ | Explicit base64 key (>=64 bytes decoded), useful for external secret management. |
 | `RUST_LOG`                | `brain_ui=info,warn`   | tracing-subscriber env filter                    |
-| `WEBHOOK_SECRET`          | _(required in release)_ | HMAC-SHA256 secret matching the GitHub webhook config. Required unless `ALLOW_INSECURE_WEBHOOKS=1`. |
+| `WEBHOOK_SECRET`          | _(webhook disabled)_   | HMAC-SHA256 secret matching the GitHub webhook config. Setting it enables the endpoint. |
 | `ALLOW_INSECURE_WEBHOOKS` | `1` in debug, `0` in release | Explicitly allows unsigned `/webhook/github` requests. Dev-only escape hatch. |
 | `RATE_LIMIT_PER_SECOND`   | `2`                    | Per-IP request rate for the baseline governor.   |
 | `RATE_LIMIT_BURST`        | `60`                   | Per-IP burst capacity for the baseline governor. |
@@ -144,22 +146,16 @@ Optional:
 | `GITHUB_TOKEN`            | _(unset)_              | Fine-grained PAT used as a fallback when `GITHUB_APP_*` is unset or the App-token mint fails. Without any credential, inbound pushes are signalled as stale and reconciled on next manual refresh. |
 | `PENDING_SYNC_INTERVAL_SECS` | `60`                | Poll interval for the provider-sync outbox retry job. |
 
-Branding is also required at runtime:
-
-| Var                       | Purpose                                          |
-| ------------------------- | ------------------------------------------------ |
-| `BRAND_NAME`              | UI brand shown in the header and page title      |
-| `BRAND_ORG_LABEL`         | Org label used in access-denied copy             |
-
 The OAuth app's callback URL must be `{host}/auth/callback`.
 
-Legacy aliases `GITHUB_ORG`, `GITHUB_REPO`, and `GITHUB_BRANCH` are still accepted at runtime for backward compatibility, but new deploys should use the explicit `TARGET_GITHUB_*` names.
+Existing deployments may keep `TARGET_GITHUB_ORG`, `TARGET_GITHUB_REPO`, and
+their legacy `GITHUB_*` aliases. Those split variables retain the historical
+login organization fallback. New deployments using
+`TARGET_GITHUB_REPOSITORY` default to org-less login.
 
-For a personal-account repository, set `TARGET_GITHUB_ORG` to the GitHub
-username and set `GITHUB_LOGIN_ORG=`. Any GitHub user can then complete OAuth,
-but Brain UI serves a target only when GitHub reports live `pull` permission;
-write and administration capabilities continue to follow `push`,
-`maintain`, and `admin`.
+Any GitHub user can complete OAuth in the default setup, but Brain UI serves a
+target only when GitHub reports live `pull` permission. Write and administration
+capabilities continue to follow `push`, `maintain`, and `admin`.
 
 ## Local development
 
@@ -174,7 +170,7 @@ just dev          # cargo leptos watch
 
 Or without `just`: `npm install`, `npm run watch:css &`, `cargo leptos watch`.
 
-Put OAuth secrets and target repo vars in `.env` (gitignored).
+Put the three required values in `.env` (gitignored).
 
 ## Production build
 
@@ -183,16 +179,13 @@ docker build -t brain_ui .
 docker run -p 3000:3000 \
   -e GITHUB_CLIENT_ID=... \
   -e GITHUB_CLIENT_SECRET=... \
-  -e TARGET_GITHUB_ORG=Dritara-Digital \
-  -e TARGET_GITHUB_REPO=Brain \
-  -e TARGET_GITHUB_BRANCH=main \
-  -e BRAND_NAME="Dritara Brain" \
-  -e BRAND_ORG_LABEL=Dritara-Digital \
+  -e TARGET_GITHUB_REPOSITORY=your-owner/your-repository \
   -v brain_ui_data:/app/data \
   brain_ui
 ```
 
-Mount `/app/data` on a persistent volume so sessions survive restarts.
+Mount `/app/data` on a persistent volume so sessions and the generated
+encryption key survive restarts.
 
 Webhook-driven projection rebuilds need a server-side credential — set either the `GITHUB_APP_*` trio (preferred, auto-rotating) or `GITHUB_TOKEN` (PAT fallback). On hosts that store env vars as raw strings (Railway, Fly, k8s Secrets), paste the PEM with real newlines; the `\n` escape is only needed for `.env` files.
 
