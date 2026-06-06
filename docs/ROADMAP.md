@@ -46,6 +46,15 @@ Razionale: rilasciare il core dell'app come repository pubblica pulita, mantenen
     - `.brain-config.yml` nella repo pubblica deve essere un blueprint agnostico (es. una tassonomia di prova generica sul modello della sandbox Pokemon), senza la mappatura operativa o i flussi interni Dritara.
     - Confermare che nessun crate (`brain-app`, `brain-domain`, `brain-storage`, `brain-graph`, `brain-auth`) contenga costanti/segreti accoppiati all'infrastruttura. Mantenere l'invariante del test di auto-registrazione delle server fn (guard contro lo strip LTO in release).
 
+- [ ] **Modalità org-less (account personale)** _(abilitatore di adozione OSS, 2026-06-04)_
+
+    Razionale: una Brain UI open-source che *richiede* una GitHub org è poco adottabile — chi la valuta la punta su un repo personale. Oggi il blocco è il login gate (`is_org_member(required_org(), login)` in `server/auth.rs`): per un owner personale `GET /orgs/{utente}/members/...` ritorna 404 → login negato. Quasi tutto il resto **già** funziona per repo personali: il campo `org` di `TargetConfig` è in realtà l'owner (API GitHub owner-agnostica), la discovery usa già `affiliation=owner`, e l'autorizzazione reale passa ovunque da `repository_permissions` (pull/push/admin), che GitHub calcola correttamente sui repo personali.
+
+    - **Login gate**: quando `TARGET_GITHUB_ORG` è vuoto → modalità org-less, salta il check di membership e lascia loggare qualsiasi utente GitHub autenticato; l'accesso ai target resta gated per-repo.
+    - **Admin gate** (`require_target_admin_session`): applica `is_org_member` solo quando l'owner del target è davvero una org (`owner.type == "Organization"`); per un repo personale basta `permissions.admin || maintain`, che il proprietario ha già — l'org-check è ridondante.
+    - **Caveat GitHub App**: il path installation-token (sync inbound via webhook) va verificato per account personali (le App si installano anche su utenti; resta il fallback PAT/OAuth). Non bloccante, da confermare a parte.
+    - Success criterion: con `TARGET_GITHUB_ORG` non settato, un utente senza alcuna org logga, punta Brain UI a un proprio repo personale e legge/scrive secondo i `repository_permissions` del repo — **e** un audit conferma che ogni data path di lettura/scrittura è gated su `repository_permissions`, non sul (ora opzionale) login org gate. Quest'ultimo audit è il vero lavoro di sicurezza della slice.
+
 - [ ] **Bonifica della roadmap pubblica**
     - Espungere i riferimenti a repo sandbox privati (es. `Dritara-Digital/Brain-Pokemon-Mock`) e i tag agli account dei tester chiusi (es. `@JacoTube`).
     - Riformulare il closeout di Fase 3 come "Validation Matrix su sandbox isolata + configurazioni multi-tenant standard", preservando il valore architetturale senza esporre i vincoli autorizzativi temporanei dell'org.
@@ -401,7 +410,7 @@ Grounding (audit codice 2026-06-04): il write path è unificato su `GitTransacti
     - **propose** _(✅ #22, via 4.0-C)_ — `WriteIntent::ProposeViaPr` opt-in nell'editor.
     - **link** _(✅ #23)_ — link cliccabile "View pull request #N" dopo una scrittura via PR (editor + work-item card); `pr_link` azzerato a inizio submit per non mostrare link stale.
     - **view** _(✅ #24)_ — route dedicata `/{org}/{repo}[/{branch}]/pulls`, lista read-only delle PR aperte scoped sul base branch del target, link "Pulls" nell'header. `list_open_prs` gated su `can_read`.
-    - **merge** _(#25, in review)_ — bottone "Merge" per riga gated su `can_write_default_branch`, conferma a due click, refetch al successo, banner che surfaccia il motivo d'errore di GitHub. Squash-only. `merge_pull_request` gated server-side; la branch protection resta enforced da GitHub (noi facciamo solo il gate d'ingresso e surfacciamo i 405/409).
+    - **merge** _(✅ #25)_ — bottone "Merge" per riga gated su `can_write_default_branch`, conferma a due click, refetch al successo, banner che surfaccia il motivo d'errore di GitHub. Squash-only. `merge_pull_request` gated server-side; la branch protection resta enforced da GitHub (noi facciamo solo il gate d'ingresso e surfacciamo i 405/409).
 
     Deferred (non bloccanti): scelta del merge method (merge/squash/rebase), close/decline di una PR, preview per-PR di `mergeable` + check status (serve un fetch per-PR), bump immediato di `graph_version` al merge (oggi la freshness passa per webhook/SSE), unit test mock-server sul path di merge (sul modello di `git_transaction`).
 
