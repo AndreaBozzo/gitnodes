@@ -2,6 +2,7 @@
 name = "brain-graph"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "Pure graph building + force-directed layout for brain_ui. No I/O."
 

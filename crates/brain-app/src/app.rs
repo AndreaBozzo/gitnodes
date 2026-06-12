@@ -33,12 +33,37 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
-                <script src="/vendor/mermaid-10.9.3.min.js"></script>
                 <script>
                     {r#"
                         window.brainMermaidReady = false;
                         window.brainMermaidObserver = null;
                         window.brainMermaidTimer = null;
+                        window.brainMermaidLoading = false;
+                        // Mermaid (3.2 MB) is lazy-loaded: the script tag is injected
+                        // only once a page actually contains a diagram block, so
+                        // diagram-free pages never download it.
+                        window.loadBrainMermaid = function(onReady) {
+                            if (window.mermaid) {
+                                if (onReady) { onReady(); }
+                                return;
+                            }
+                            if (window.brainMermaidLoading) {
+                                return;
+                            }
+                            window.brainMermaidLoading = true;
+                            const script = document.createElement('script');
+                            script.src = '/vendor/mermaid-10.9.3.min.js';
+                            script.async = true;
+                            script.onload = () => {
+                                window.brainMermaidLoading = false;
+                                if (onReady) { onReady(); }
+                            };
+                            script.onerror = () => {
+                                window.brainMermaidLoading = false;
+                                console.error('Unable to load Mermaid script');
+                            };
+                            document.head.appendChild(script);
+                        };
                         window.initializeBrainMermaid = function() {
                             if (!window.mermaid || window.brainMermaidReady) {
                                 return;
@@ -62,10 +87,17 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                         window.renderBrainMermaid = function() {
                             clearTimeout(window.brainMermaidTimer);
                             window.brainMermaidTimer = setTimeout(() => {
-                                window.initializeBrainMermaid();
-                                if (!window.mermaid) {
+                                // Cheap gate before any work: a single selector probe
+                                // instead of the full transform pipeline on every DOM
+                                // mutation (full-stack review 2026-05-29, finding #5).
+                                if (!document.querySelector('pre code.language-mermaid, pre code.mermaid, .mermaid:not([data-processed="true"])')) {
                                     return;
                                 }
+                                if (!window.mermaid) {
+                                    window.loadBrainMermaid(() => window.renderBrainMermaid());
+                                    return;
+                                }
+                                window.initializeBrainMermaid();
                                 document.querySelectorAll('pre code.language-mermaid, pre code.mermaid').forEach((el) => {
                                     const pre = el.parentElement;
                                     if (!pre || !pre.parentElement) {
@@ -116,7 +148,6 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                                 document.addEventListener('DOMContentLoaded', start, { once: true });
                             }
                         };
-                        window.initializeBrainMermaid();
                         window.startBrainMermaidObserver();
                     "#}
                 </script>

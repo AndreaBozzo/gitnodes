@@ -17,8 +17,8 @@ Questo documento delinea l'evoluzione di **Brain UI** da un visualizzatore di gr
 
 ### Carryover dai phase chiusi (open)
 
-- [ ] **Pokemon Brain mock con contributor limitato** _(assegnato a `@JacoTube` nel repo Brain, 2026-04-28)_ — sandbox `Dritara-Digital/Brain-Pokemon-Mock` operativo. Prima iterazione **Git/GitHub-first** (limiti permessi org); contributor lavora sul branch `jacotube-pokemon-mock-qa`, PR review su main. Secondo passaggio Brain UI-first quando i permessi org non falsano più il test.
-- [ ] **Release note / operator checklist Fase 3** — documentare cosa è shippato, caveat accettati, env/config da verificare. Success criterion: un maintainer può spiegare in 10 minuti cosa Brain UI fa oggi, cosa non promette, come recuperare dai failure mode noti senza scavare nel codice.
+- [ ] **Brain mock con contributor limitato** _(assegnato a un tester esterno, 2026-04-28)_ — sandbox isolata operativa. Prima iterazione **Git/GitHub-first** (vincoli autorizzativi temporanei della configurazione multi-tenant); il contributor lavora su un branch QA dedicato, PR review su main. Secondo passaggio Brain UI-first quando i permessi non falsano più il test.
+- [x] **Release note / operator checklist Fase 3** _(DONE 2026-06-12)_ — shippato come [docs/OPERATOR_NOTES.md](OPERATOR_NOTES.md): cosa è shippato, caveat accettati (con rimando ai numeri), checklist env/config di deploy e tabella sintomo→azione condensata dalla failure-mode matrix. Success criterion coperto: leggibile in 10 minuti, nessun riferimento al codice necessario per il recovery.
 - [x] **BrainSwitcher revalidate cache** _(follow-up Presentation Polish 2026-05-23; DONE 2026-05-25)_ — cache client-side della lista target con refresh esplicito; `ListAccessibleTargets` non riparte ad ogni semplice riapertura del menu.
 
 ### Hardening lane insight da Omnigraph (open, S-sized)
@@ -32,7 +32,7 @@ Estratti da [INSIGHTS_OMNIGRAPH_COMPARISON.md](INSIGHTS_OMNIGRAPH_COMPARISON.md)
 
 Findings da una review architetturale dell'intero workspace. Gli item ad alto impatto sono stati risolti nella stessa sessione — #1 CSP locked-down sulle risposte dell'asset proxy (SVG same-origin non esegue più inline script), #2 cleanup dell'error-handling morto in `installation_token`, #3 jitter di retry decorrelato in `git_transaction`, #4 fetch concorrente in `fetch_raw_files`. Questi due restano tracciati come follow-up minori, non bloccanti.
 
-- [ ] **Scope del MutationObserver Mermaid** _(review 2026-05-29, #5; XS, frontend perf)_ — `app.rs` osserva l'intero `document.body` con `subtree: true` e ri-esegue un `querySelectorAll` su tutto il documento (debounce 50ms) ad ogni mutazione DOM. Su pagine grandi/attive è più lavoro del necessario. Restringere l'observer ai container knowledge/detail-panel, oppure gate-are la ri-scansione su "esistono blocchi mermaid non processati". Nessun impatto di correttezza: i guard `data-processed` / `brainMermaidReady` già evitano i loop.
+- [x] **Scope del MutationObserver Mermaid** _(review 2026-05-29, #5; XS, frontend perf; DONE 2026-06-12)_ — implementata la seconda opzione: `renderBrainMermaid` ora apre con un singolo probe `querySelector` ("esistono blocchi mermaid non processati?") e ritorna subito se vuoto, invece di eseguire l'intera pipeline di transform su ogni mutazione DOM. Shippato insieme al lazy-load α del Mermaid load strategy (stesso blocco di codice in `app.rs`).
 - [ ] **Scope del token OAuth utente (`repo`)** _(review 2026-05-29, #6; security baseline)_ — il flow OAuth in `brain-auth` richiede `scope=repo+read:org`: `repo` concede R/W completo su *tutti* i repo privati dell'utente, non solo il target (limite intrinseco degli OAuth App, non risolvibile per-repo). Il token è cifrato a riposo (`with_private`) e usato solo server-side; la **GitHub App** (`installation_token.rs`, già in tree) è la remediation propriamente scoped. Tracciare il ritiro del path di scrittura OAuth una volta completato il rollout App. Allineato alla Security & Content Trust Baseline (§ Open-Sourcing del Core) e al boundary forge di Fase 4.
 
 ---
@@ -63,14 +63,14 @@ Razionale: rilasciare il core dell'app come repository pubblica pulita, mantenen
     - Il webhook non blocca più il boot quando non configurato: in release resta disabilitato finché non viene fornito `WEBHOOK_SECRET`.
     - Le env split storiche restano compatibili e mantengono il precedente fallback di membership org; il nuovo locator compatto parte org-less.
 
-- [ ] **Bonifica della roadmap pubblica**
-    - Espungere i riferimenti a repo sandbox privati (es. `Dritara-Digital/Brain-Pokemon-Mock`) e i tag agli account dei tester chiusi (es. `@JacoTube`).
-    - Riformulare il closeout di Fase 3 come "Validation Matrix su sandbox isolata + configurazioni multi-tenant standard", preservando il valore architetturale senza esporre i vincoli autorizzativi temporanei dell'org.
-    - Decidere se sdoppiare il file (ROADMAP pubblico vs interno) o mantenerne uno solo già anonimizzato.
+- [x] **Bonifica della roadmap pubblica** _(DONE 2026-06-12)_
+    - Espunti da ROADMAP, archive e README i riferimenti a repo sandbox privati, ai tag degli account dei tester chiusi e i link a runbook rimossi; il carryover dogfooding parla ora di "sandbox isolata" e "branch QA dedicato".
+    - Decisione: **un solo file, già anonimizzato** — nessun ROADMAP interno separato da mantenere in sync.
+    - Residuo tracciato sotto "Disaccoppiamento": i fixture dei test usano ancora l'org reale come dummy (`markdown.rs`, `assets.rs`, `main.rs`, `draft.rs`); rename meccanico da fare con quell'item.
 
-- [ ] **Supply chain & licenza per il rilascio pubblico**
+- [x] **Supply chain & licenza per il rilascio pubblico** _(licenza DONE 2026-06-12; CONTRIBUTING/security policy rimandati a ridosso del rilascio)_
     - Mantenere `.cargo/audit.toml` + il workflow `rustsec/audit-check` in CI così com'è: gli ignore `RUSTSEC-2023-0071` (rsa via sqlx-mysql, assente dal binario sqlite) e `RUSTSEC-2024-0436` (paste via Leptos) sono documentati e circoscritti — buon biglietto da visita per utenti esterni.
-    - Scegliere e applicare una licenza OSS; aggiungere `LICENSE`, eventuale `CONTRIBUTING.md` e security policy.
+    - Licenza scelta e applicata: **Apache-2.0** (coerente con gli altri tool Rust pubblicati). `LICENSE` al root, `license.workspace` in tutti e cinque i crate, sezione License del README allineata. `CONTRIBUTING.md` e security policy restano da scrivere al momento del rilascio, quando il flusso contributor è definito.
 
 - [ ] **Strategia di sdoppiamento repo (upstream pubblico / downstream Dritara)**
 
@@ -233,7 +233,7 @@ Queste sono direzioni valide, ma tornano in gioco solo dopo il closeout di Fase 
 
 - [ ] **Mermaid load strategy: lazy / SSR / CDN** _(spin-out 2026-05-26 dalla valutazione asset non-Rust)_
     - Razionale: `public/vendor/mermaid-10.9.3.min.js` pesa 3.2 MB ed è bundle-time del binario Brain (servito da Axum), caricato in `<head>` di ogni pagina via `app.rs:35`. È l'asset non-Rust più pesante del progetto — ~30x daisyUI prima della rimozione, ~10x il bundle WASM. Sulla maggior parte delle pagine (landing, list view senza diagrammi) il costo è puro overhead di TTI.
-    - **α Lazy-load on demand** _(scope minimo, zero rischio)_ — Mermaid esce da `<head>` statico in `app.rs`. Caricamento via `<script async>` dinamico solo quando `document.querySelector('code.language-mermaid, .mermaid')` ritorna match, con observer leggero o trigger all'apertura del detail panel. La pipeline `window.renderBrainMermaid` esistente resta intatta, cambia solo *quando* lo script entra in DOM. Success criterion: una pagina knowledge senza diagrammi non scarica i 3.2 MB; TTI misurabile sul landing scende di >2s su connessione throttled.
+    - [x] **α Lazy-load on demand** _(scope minimo, zero rischio; SHIPPED 2026-06-12)_ — Mermaid è uscito dal `<head>` statico di `app.rs`. `window.loadBrainMermaid` inietta lo `<script async>` solo quando il probe trova blocchi mermaid non processati; la pipeline `window.renderBrainMermaid` resta intatta (il check di presenza fa anche da gate per la ri-scansione dell'observer — chiude review 2026-05-29 #5 nello stesso blocco). Una pagina senza diagrammi non scarica più i 3.2 MB; CSP invariata (`script-src 'self'` copre l'inject same-origin).
     - **β Server-side render (opzionale, decisione di prodotto)** — pre-render dei diagrammi in SVG lato server via `mermaid-cli` o equivalente Rust. Zero JS client per pagine read-only. Trade-off: perdi interattività (zoom/pan/click sui nodi) — accettabile solo se confermato che gli utenti non interagiscono coi diagrammi. Da valutare dopo α in produzione.
     - **γ CDN federation con SRI** _(probabilmente da rigettare)_ — Mermaid via jsdelivr/unpkg con `integrity` hash. Vince ~3.2 MB nel binario Brain e in Dockerfile. Confligge con il content trust boundary del caveat 19 (PARTIAL): introdurre una dipendenza CDN esterna nella stessa fase in cui stiamo chiudendo trust boundary su `inner_html` è incoerente. Listata come anti-goal probabile, non come slice da aprire.
     - Vincolo trasversale: nessuna delle tre opzioni deve toccare la CSP corrente né rimuovere Mermaid dalle feature shippate (work item, concepts visualization).

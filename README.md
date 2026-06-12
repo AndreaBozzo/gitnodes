@@ -68,8 +68,8 @@ The binary ships a built-in default equivalent to the seven pre-Phase-1 types
 (concept, adr, meeting, post-mortem, preventivo, runbook, tag), so repos without
 the file keep working unchanged.
 
-See the [Brain repo config](https://github.com/Dritara-Digital/Brain/blob/main/.brain-config.yml)
-for a real-world example.
+The built-in default doubles as a worked example: any repo of markdown files
+with YAML frontmatter works as a target, with or without a config file.
 
 Work items are configured the same way: node types can declare `work_item_kind`, and
 the label taxonomy in `.brain-config.yml` drives provider-facing labels without hardcoding
@@ -104,10 +104,8 @@ geography, evolution, or tag relations from narrative body citations. Slugs that
 don't resolve to an existing file are silently ignored — useful for documenting
 future entities without breaking the graph. The field is optional and
 backward-compatible (empty = no typed edges, behavior identical to pre-PR-19
-installs). The Pokémon mock declares 40 `link_fields` across 11 types and
-materializes ~213 typed edges; see
-[`Brain-Pokemon-Mock/.brain-config.yml`](https://github.com/Dritara-Digital/Brain-Pokemon-Mock/blob/main/.brain-config.yml)
-for a worked example.
+installs). The richest dogfooding sandbox declares 40 `link_fields` across 11
+node types and materializes ~213 typed edges from frontmatter alone.
 
 ## Environment variables
 
@@ -201,9 +199,9 @@ Webhook-driven projection rebuilds need a server-side credential — set either 
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed roadmap and caveats. As of 2026-05-23, the next tracked work is explicitly framed around:
 
-- Open-sourcing prep: removing proprietary config/data assumptions, choosing license/policy docs, and keeping the downstream/private mirror strategy simple.
-- Presentation validation on the Pokemon mock using [`docs/PRESENTATION_DEMO.md`](docs/PRESENTATION_DEMO.md) as the repeatable rehearsal path.
-- Feature slices such as FTS, advisory locks, activity stream, BYOB/blob, forge abstraction, temporal graph, local/offline mode, and conflict resolution only when their trigger is real.
+- Open-sourcing prep: removing proprietary config/data assumptions, license/policy docs, and keeping the downstream/private mirror strategy simple.
+- Phase 4 transaction maturation: unifying every write path on the atomic `BranchTransaction` layer.
+- Feature slices such as advisory locks, activity stream, BYOB/blob, forge abstraction, temporal graph, local/offline mode, and conflict resolution only when their trigger is real.
 
 Embedded analytics, BYOB/blob storage, FTS, advisory locks, activity streams,
 forge abstraction, temporal graph views, local/offline execution, and richer
@@ -211,4 +209,4 @@ conflict resolution remain tracked, but they are not automatic Phase 3 growth.
 
 ## License
 
-2026@AndreaBozzo -- All rights reserved
+Licensed under the [Apache License, Version 2.0](LICENSE).
