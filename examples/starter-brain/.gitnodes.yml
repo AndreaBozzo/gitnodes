@@ -1,0 +1,46 @@
+# GitNodes configuration. Drop this at the root of a repo of markdown files to
+# turn it into a knowledge graph. Everything here is optional — a repo with no
+# .gitnodes.yml uses a sensible built-in default.
+#
+# Each node_type maps a `type:` value in a note's YAML frontmatter to a folder,
+# a colour, and an editing template.
+
+default_type: concept
+
+node_types:
+  - name: concept
+    label: Concept
+    directory: concepts
+    accent: "#2dd4bf"
+    title_key: topic          # which frontmatter key holds the human title
+    date_create_field: date_created
+    body_label: Summary
+
+  - name: adr                  # Architecture Decision Record
+    label: ADR
+    directory: adrs
+    accent: "#f59e0b"
+    date_create_field: date
+    body_label: Context
+    frontmatter_seed:
+      status: draft
+    # Typed edges: an ADR's `decides_on:` frontmatter field links to a concept.
+    # The graph draws and colours these edges separately from body links.
+    link_fields:
+      decides_on: concept
+
+  - name: project
+    label: Project
+    directory: projects
+    accent: "#38bdf8"
+    title_key: name
+    date_create_field: date_created
+    body_label: Overview
+    frontmatter_seed:
+      status: active
+
+# Saved views are named, pre-filtered slices of the graph shown in the sidebar.
+views:
+  - name: Decisions
+    slug: decisions
+    types: [adr]

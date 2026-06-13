@@ -33,6 +33,12 @@ The core is mature and in daily use:
 
 ## In progress
 
+- **Frictionless onboarding** — the priority before new features. A prebuilt,
+  single-file binary with reviewed download installers, single-user PAT mode
+  (no OAuth App), a `gitnodes init` starter scaffold, and a generated
+  `AGENTS.md` so humans and coding agents are productive from minute one.
+  Homebrew and WinGet publishing are the next distribution step, followed by
+  local/offline mode (run with zero GitHub).
 - **Write-path unification** — converging every mutation (save, delete, rename,
   config, assets, work items) onto the single atomic transaction layer, so all
   write paths share the same precondition and rollback guarantees.

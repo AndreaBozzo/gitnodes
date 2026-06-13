@@ -14,6 +14,41 @@ WASM hydration — supporting multi-repository routing, bidirectional work-item
 sync, permission-aware direct-write vs pull-request flows, saved views, and
 repo-structure navigation.
 
+## Quickstart
+
+Install the prebuilt binary — no Rust toolchain or compiling:
+
+```bash
+# macOS / Linux
+curl -fSLo install-gitnodes.sh https://raw.githubusercontent.com/AndreaBozzo/gitnodes/master/install.sh
+less install-gitnodes.sh
+sh install-gitnodes.sh
+```
+
+```powershell
+# Windows (PowerShell)
+Invoke-WebRequest https://raw.githubusercontent.com/AndreaBozzo/gitnodes/master/install.ps1 -OutFile install-gitnodes.ps1
+Get-Content .\install-gitnodes.ps1
+& .\install-gitnodes.ps1
+```
+
+Then scaffold a knowledge base and run it:
+
+```bash
+gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md, git-initialised
+# push my-brain to a GitHub repo, e.g.:
+#   gh repo create my-brain --private --source=my-brain --remote=origin --push
+# create a .env file (same on every OS) with:
+#   GITHUB_PAT=...                  # github.com/settings/tokens (repo scope)
+#   TARGET_GITHUB_REPOSITORY=<owner>/my-brain
+gitnodes serve              # starts the server and opens your browser
+```
+
+`GITHUB_PAT` runs GitNodes in single-user mode — no GitHub OAuth App to register.
+The scaffolded `AGENTS.md` teaches coding agents (Claude Code, Codex, Cursor, …)
+the conventions of your brain so they can add and link notes correctly. GitNodes
+is built for humans and agents alike.
+
 ## Stack
 
 - **Rust / Leptos 0.8** — SSR + WASM hydration (`cargo leptos`)
@@ -62,7 +97,7 @@ docs/
 
 Node types are declared in `.gitnodes.yml` at the root of the target repo.
 The binary ships a built-in default equivalent to seven starter types
-(concept, adr, meeting, post-mortem, preventivo, runbook, tag), so repos without
+(concept, adr, meeting, post-mortem, project, runbook, tag), so repos without
 the file keep working unchanged. Repos created before the rename are still read
 from a legacy `.brain-config.yml` if `.gitnodes.yml` is absent.
 
@@ -107,17 +142,24 @@ backward-compatible (empty = no typed edges).
 
 Required at runtime:
 
-| Var                        | Purpose                                    |
-| -------------------------- | ------------------------------------------ |
-| `GITHUB_CLIENT_ID`         | GitHub OAuth app client ID                 |
-| `GITHUB_CLIENT_SECRET`     | GitHub OAuth app client secret             |
-| `TARGET_GITHUB_REPOSITORY` | Default repository in `owner/repo` format  |
+| Var                        | Purpose                                   |
+| -------------------------- | ----------------------------------------- |
+| `TARGET_GITHUB_REPOSITORY` | Default repository in `owner/repo` format |
+
+Choose one authentication mode:
+
+| Var                    | Purpose |
+| ---------------------- | ------- |
+| `GITHUB_PAT`           | Single-user mode: use this PAT for every GitHub request; no OAuth App required. |
+| `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` | Multi-user mode: GitHub OAuth App credentials. |
 
 Optional:
 
 | Var                       | Default                | Purpose                                          |
 | ------------------------- | ---------------------- | ------------------------------------------------ |
 | `TARGET_GITHUB_BRANCH`    | `main`                 | Branch to read/write. |
+| `GITNODES_ALLOW_REMOTE_PAT` | _(unset)_            | Set to `1` only when deliberately exposing PAT mode beyond loopback behind your own access control. |
+| `GITNODES_NO_OPEN`        | _(unset)_              | Disable automatically opening the browser on a loopback bind. |
 | `GITHUB_LOGIN_ORG`        | _(org-less)_           | Optional organization required at login. Target access remains gated by live repository permissions. |
 | `BRAND_NAME`              | `GitNodes`             | UI brand shown in the header and page title. |
 | `BRAND_ORG_LABEL`         | repository owner       | Owner label used in access-denied copy. |

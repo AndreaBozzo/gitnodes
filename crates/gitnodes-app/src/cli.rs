@@ -1,0 +1,414 @@
+//! `gitnodes` subcommands for first-run setup.
+//!
+//! The default action is to run the server (`serve`). `init` scaffolds a starter
+//! brain so a new user has a repo of markdown to point GitNodes at — the empty
+//! repo is otherwise the first wall they hit.
+
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
+/// Starter brain payload, embedded from `examples/starter-brain/` so the
+/// scaffold and the published example stay one source of truth (and the config
+/// is covered by `gitnodes-domain`'s parse-validity test).
+const STARTER_FILES: &[(&str, &str)] = &[
+    (
+        ".gitnodes.yml",
+        include_str!("../../../examples/starter-brain/.gitnodes.yml"),
+    ),
+    (
+        "concepts/knowledge-graph.md",
+        include_str!("../../../examples/starter-brain/concepts/knowledge-graph.md"),
+    ),
+    (
+        "concepts/markdown-frontmatter.md",
+        include_str!("../../../examples/starter-brain/concepts/markdown-frontmatter.md"),
+    ),
+    (
+        "adrs/0001-git-as-source-of-truth.md",
+        include_str!("../../../examples/starter-brain/adrs/0001-git-as-source-of-truth.md"),
+    ),
+    (
+        "projects/trial-run.md",
+        include_str!("../../../examples/starter-brain/projects/trial-run.md"),
+    ),
+];
+
+const GITIGNORE_HEADER: &str =
+    "# GitNodes runtime artifacts - never commit secrets or the local DB";
+const GITIGNORE_ENTRIES: &[&str] = &[".env", "/data/"];
+
+/// One-line usage for `gitnodes help` and unknown commands.
+pub fn print_usage() {
+    eprintln!(
+        "gitnodes — a knowledge graph over a Git repo of markdown\n\
+\n\
+USAGE:\n    \
+gitnodes <command>\n\
+\n\
+COMMANDS:\n    \
+serve         Run the server (default if no command is given).\n    \
+init [dir]    Scaffold a starter brain (.gitnodes.yml + sample notes + AGENTS.md).\n    \
+agents [dir]  (Re)generate AGENTS.md from .gitnodes.yml so coding agents know\n                  \
+the conventions of this knowledge base.\n    \
+help          Show this message.\n"
+    );
+}
+
+/// Render an `AGENTS.md` from a config, teaching any coding agent (Claude Code,
+/// Codex, Cursor, …) the conventions of this specific knowledge base. Generated
+/// from `.gitnodes.yml` so it always matches the live taxonomy.
+pub fn render_agents_md(cfg: &gitnodes_domain::BrainConfig) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+
+    s.push_str(
+        "# AGENTS.md\n\n\
+This repository is a **GitNodes knowledge base**: a graph of markdown notes that \
+humans and AI agents both read and edit. Git is the source of truth — every note is a \
+plain markdown file with a YAML frontmatter block, and edits are ordinary commits or \
+pull requests.\n\n\
+> Generated from `.gitnodes.yml` by `gitnodes agents`. Re-run it after changing the config.\n\n",
+    );
+
+    s.push_str(
+        "## Node types\n\n\
+Each note declares a `type:` in its frontmatter; that decides which folder it belongs in \
+and how it is styled.\n\n",
+    );
+    for t in &cfg.node_types {
+        // Skip virtual types (e.g. `tag`) that have no directory of their own.
+        if t.directory.is_empty() {
+            continue;
+        }
+        let _ = write!(s, "- **{}** → `{}/`", t.name, t.directory);
+        if let Some(title_key) = &t.title_key {
+            let _ = write!(s, " — title in `{title_key}:`");
+        }
+        if !t.link_fields.is_empty() {
+            let edges: Vec<String> = t
+                .link_fields
+                .iter()
+                .map(|(field, target)| format!("`{field}:` → {target}"))
+                .collect();
+            let _ = write!(s, "; typed links: {}", edges.join(", "));
+        }
+        if !t.frontmatter_seed.is_empty() {
+            let keys: Vec<&str> = t.frontmatter_seed.keys().map(String::as_str).collect();
+            let _ = write!(s, "; seed fields: {}", keys.join(", "));
+        }
+        s.push('\n');
+    }
+    let _ = write!(
+        s,
+        "\nWhen unsure which type to use, default to `{}`.\n\n",
+        cfg.default_type
+    );
+
+    s.push_str(
+        "## Frontmatter\n\n\
+Every note begins with a fenced YAML block:\n\n\
+```yaml\n\
+---\n\
+type: <one of the types above>\n\
+# put the human title under that type's title key (e.g. topic: or name:)\n\
+tags: [optional, tags]\n\
+---\n\
+```\n\n\
+- `type:` must match a node type above.\n\
+- Unknown keys are preserved untouched on save — safe to add custom fields.\n\
+- A malformed YAML block blocks saving, so keep it valid.\n\n",
+    );
+
+    s.push_str(
+        "## Linking notes\n\n\
+- Use **standard markdown links**: `[Other note](../concepts/other-note.md)`.\n\
+- Do **not** use `[[wikilinks]]` — GitNodes does not parse them.\n\
+- Typed edges come from the `link_fields` listed above (a frontmatter field whose value \
+is the path or slug of another note).\n\
+- Shared `tags:` cluster related notes in the graph.\n\n",
+    );
+
+    s.push_str(
+        "## Adding a note\n\n\
+1. Pick the right `type` and create the file in that type's directory.\n\
+2. Write valid frontmatter (type + title + any seed fields), then the body in markdown.\n\
+3. Link it to related notes with standard markdown links.\n\
+4. Commit. The graph rebuilds from the repository.\n",
+    );
+
+    s
+}
+
+/// Write `AGENTS.md` into `root`, generated from `root/.gitnodes.yml` (or the
+/// built-in default taxonomy when the repo has no config yet).
+fn generate_agents(root: &Path) -> Result<(), String> {
+    let cfg_path = root.join(".gitnodes.yml");
+    let cfg = if cfg_path.exists() {
+        let raw = std::fs::read_to_string(&cfg_path)
+            .map_err(|e| format!("failed to read {}: {e}", cfg_path.display()))?;
+        gitnodes_domain::BrainConfig::parse(&raw)
+            .map_err(|e| format!("{} is invalid: {e}", cfg_path.display()))?
+    } else {
+        gitnodes_domain::BrainConfig::default()
+    };
+    let out = root.join("AGENTS.md");
+    std::fs::write(&out, render_agents_md(&cfg))
+        .map_err(|e| format!("failed to write {}: {e}", out.display()))
+}
+
+fn preflight_init(root: &Path) -> Result<(), String> {
+    if root.exists() && !root.is_dir() {
+        return Err(format!("{} exists and is not a directory", root.display()));
+    }
+    std::fs::create_dir_all(root)
+        .map_err(|e| format!("failed to create {}: {e}", root.display()))?;
+
+    let mut collisions = Vec::new();
+    for rel in STARTER_FILES
+        .iter()
+        .map(|(rel, _)| *rel)
+        .chain(std::iter::once("AGENTS.md"))
+    {
+        let path = root.join(rel);
+        if path.exists() {
+            collisions.push(path);
+            continue;
+        }
+
+        let mut parent = path.parent();
+        while let Some(candidate) = parent {
+            if candidate == root {
+                break;
+            }
+            if candidate.exists() && !candidate.is_dir() {
+                collisions.push(candidate.to_path_buf());
+                break;
+            }
+            parent = candidate.parent();
+        }
+    }
+
+    let gitignore = root.join(".gitignore");
+    if gitignore.exists() && !gitignore.is_file() {
+        collisions.push(gitignore);
+    }
+
+    if collisions.is_empty() {
+        Ok(())
+    } else {
+        let paths = collisions
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(format!(
+            "refusing to overwrite existing scaffold paths: {paths}"
+        ))
+    }
+}
+
+fn update_gitignore(root: &Path) -> Result<(), String> {
+    let path = root.join(".gitignore");
+    let existing = if path.exists() {
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?
+    } else {
+        String::new()
+    };
+    let missing = GITIGNORE_ENTRIES
+        .iter()
+        .copied()
+        .filter(|entry| !existing.lines().any(|line| line.trim() == *entry))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file).map_err(|e| format!("failed to update {}: {e}", path.display()))?;
+    }
+    if !existing.is_empty() {
+        writeln!(file).map_err(|e| format!("failed to update {}: {e}", path.display()))?;
+    }
+    writeln!(file, "{GITIGNORE_HEADER}")
+        .map_err(|e| format!("failed to update {}: {e}", path.display()))?;
+    for entry in missing {
+        writeln!(file, "{entry}")
+            .map_err(|e| format!("failed to update {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// `gitnodes agents [dir]` — (re)generate AGENTS.md from the local config.
+pub fn run_agents(dir: Option<&str>) -> Result<(), String> {
+    let root = PathBuf::from(dir.unwrap_or("."));
+    generate_agents(&root)?;
+    println!("Wrote {}", root.join("AGENTS.md").display());
+    Ok(())
+}
+
+/// Scaffold a starter brain into `dir` (default: current directory), `git init`
+/// it, and print the next steps to get it served. `Err` carries a message for
+/// the caller to print before exiting non-zero.
+pub fn run_init(dir: Option<&str>) -> Result<(), String> {
+    let root = PathBuf::from(dir.unwrap_or("."));
+    preflight_init(&root)?;
+
+    for (rel, contents) in STARTER_FILES {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, contents)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    }
+
+    // Keep runtime secrets and the local projection DB out of the content repo
+    // without discarding ignore rules from an existing repository.
+    update_gitignore(&root)?;
+
+    // Generate AGENTS.md so coding agents are productive in the brain immediately.
+    generate_agents(&root)?;
+
+    // Best-effort `git init` — a brain wants to live in a repo, but a failure
+    // here (no git installed) shouldn't fail the scaffold.
+    let git_ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let where_ = root.display();
+    println!("Scaffolded a starter brain (with AGENTS.md for coding agents) in {where_}.\n");
+    println!("Next steps:");
+    if !git_ok {
+        println!("  0. Install git, then `git init` in {where_}.");
+    }
+    println!(
+        "  1. Create a GitHub repo and push it (GitNodes reads from GitHub):\n     \
+gh repo create <name> --private --source={where_} --remote=origin --push\n     \
+(or create it on github.com and `git push`)\n  \
+2. Create a .env file (same on Windows, macOS, and Linux — no shell setup):\n     \
+GITHUB_PAT=...                  # github.com/settings/tokens (repo scope)\n     \
+TARGET_GITHUB_REPOSITORY=<owner>/<name>\n  \
+3. Run it (opens your browser automatically):\n     \
+gitnodes serve\n"
+    );
+    Ok(())
+}
+
+/// Best-effort: open `url` in the default browser. Silent on failure (headless
+/// servers, missing opener) — `serve` always logs the URL regardless.
+pub fn open_browser(url: &str) {
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(target_os = "windows") {
+        // `cmd /C start "" <url>` is the reliable way to hand a URL to the
+        // default browser on Windows; the empty "" is start's window-title arg.
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    let _ = cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_scaffolds_then_refuses_to_clobber() {
+        let dir = std::env::temp_dir().join(format!("gitnodes-init-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir_str = dir.to_string_lossy().to_string();
+
+        let first = run_init(Some(&dir_str));
+        // A starter brain landed with config + at least one note + AGENTS.md.
+        assert!(first.is_ok());
+        assert!(dir.join(".gitnodes.yml").exists());
+        assert!(dir.join("concepts/knowledge-graph.md").exists());
+        assert!(dir.join("AGENTS.md").exists());
+
+        // Second run must refuse rather than overwrite an existing brain.
+        assert!(run_init(Some(&dir_str)).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn init_preserves_existing_gitignore_and_unrelated_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitnodes-init-existing-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test directory");
+        std::fs::write(dir.join("notes.txt"), "keep me").expect("write unrelated file");
+        std::fs::write(dir.join(".gitignore"), "target/\n").expect("write existing gitignore");
+        let dir_str = dir.to_string_lossy().to_string();
+
+        assert!(run_init(Some(&dir_str)).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).expect("read unrelated file"),
+            "keep me"
+        );
+        let gitignore =
+            std::fs::read_to_string(dir.join(".gitignore")).expect("read updated gitignore");
+        assert!(gitignore.starts_with("target/\n"));
+        assert!(gitignore.lines().any(|line| line == ".env"));
+        assert!(gitignore.lines().any(|line| line == "/data/"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn init_preflights_all_scaffold_collisions_before_writing() {
+        let dir = std::env::temp_dir().join(format!(
+            "gitnodes-init-collision-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("projects")).expect("create projects directory");
+        let collision = dir.join("projects/trial-run.md");
+        std::fs::write(&collision, "existing project").expect("write collision");
+        let dir_str = dir.to_string_lossy().to_string();
+
+        let error = run_init(Some(&dir_str)).expect_err("collision must abort init");
+        assert!(error.contains("refusing to overwrite"));
+        assert_eq!(
+            std::fs::read_to_string(&collision).expect("read collision"),
+            "existing project"
+        );
+        assert!(!dir.join(".gitnodes.yml").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agents_md_teaches_conventions() {
+        let cfg = gitnodes_domain::BrainConfig::default();
+        let md = render_agents_md(&cfg);
+        // The non-obvious gotcha every agent must know.
+        assert!(md.contains("[[wikilinks]]"));
+        assert!(md.contains("standard markdown links"));
+        // Node types are enumerated with their directories.
+        assert!(md.contains("`concepts/`"));
+        assert!(md.contains("GitNodes knowledge base"));
+    }
+}

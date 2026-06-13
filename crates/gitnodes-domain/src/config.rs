@@ -538,7 +538,7 @@ pub struct NodeTypeSpec {
     #[serde(default)]
     pub frontmatter_seed: BTreeMap<String, serde_yaml::Value>,
     /// Frontmatter key that stores the human title for this type (e.g.
-    /// `"topic"` for concepts, `"progetto"` for preventivi). When `None`,
+    /// `"topic"` for concepts, `"name"` for projects). When `None`,
     /// the title is not injected into frontmatter on save — callers that
     /// need to read a title from frontmatter should fall back to `"topic"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -988,8 +988,10 @@ fn validate_link_fields(
 }
 
 impl Default for BrainConfig {
-    /// Equivalent to the hardcoded `NodeType` enum — repos without a
-    /// `.gitnodes.yml` must behave identically to pre-Phase-1 installs.
+    /// Built-in starter taxonomy used when a repo has no `.gitnodes.yml`: a
+    /// generic engineering knowledge base (concepts, ADRs, meetings,
+    /// post-mortems, projects, runbooks, tags) so a config-less repo renders
+    /// something sensible out of the box.
     fn default() -> Self {
         use serde_yaml::Value;
         let s = |v: &str| Value::String(v.to_string());
@@ -1063,21 +1065,17 @@ impl Default for BrainConfig {
                     link_fields: BTreeMap::new(),
                 },
                 NodeTypeSpec {
-                    name: "preventivo".into(),
-                    label: "Preventivo".into(),
-                    directory: "preventivi".into(),
+                    name: "project".into(),
+                    label: "Project".into(),
+                    directory: "projects".into(),
                     accent: "#38bdf8".into(),
-                    template_filename: Some("Preventivo.md".into()),
+                    template_filename: Some("Project.md".into()),
                     creatable: true,
-                    frontmatter_seed: seed(&[
-                        ("status", s("draft")),
-                        ("cliente", s("")),
-                        ("modello", s("T&M")),
-                    ]),
-                    title_key: Some("progetto".into()),
-                    date_create_field: Some("date".into()),
+                    frontmatter_seed: seed(&[("status", s("active"))]),
+                    title_key: Some("name".into()),
+                    date_create_field: Some("date_created".into()),
                     date_update_field: None,
-                    body_label: Some("Riepilogo".into()),
+                    body_label: Some("Overview".into()),
                     work_item_kind: None,
                     link_fields: BTreeMap::new(),
                 },
@@ -1132,6 +1130,20 @@ mod config_tests {
         assert_eq!(cfg.creatable().count(), 6);
     }
 
+    /// The bundled starter example is published as a template; guard it against
+    /// silently drifting out of sync with the config schema.
+    #[test]
+    fn starter_example_config_parses_and_validates() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/starter-brain/.gitnodes.yml"
+        );
+        let yaml = std::fs::read_to_string(path).expect("starter example config must exist");
+        let cfg = BrainConfig::parse(&yaml).expect("starter example config must parse + validate");
+        assert!(cfg.lookup("concept").is_some());
+        assert!(cfg.lookup("adr").is_some_and(|s| !s.link_fields.is_empty()));
+    }
+
     #[test]
     fn default_directories_match_enum() {
         let cfg = BrainConfig::default();
@@ -1147,7 +1159,7 @@ mod config_tests {
                 "adrs",
                 "meetings",
                 "post-mortems",
-                "preventivi",
+                "projects",
                 "runbooks",
                 "",
             ]
@@ -1704,17 +1716,17 @@ node_types:
     #[test]
     fn parses_quote_work_item_kind() {
         let yaml = r##"
-default_type: preventivo
+default_type: estimate
 node_types:
-  - name: preventivo
-    label: Preventivo
-    directory: preventivi
+  - name: estimate
+    label: Estimate
+    directory: estimates
     accent: "#38bdf8"
     work_item_kind: quote
 "##;
         let cfg = BrainConfig::parse(yaml).unwrap();
         assert_eq!(
-            cfg.lookup("preventivo")
+            cfg.lookup("estimate")
                 .and_then(|s| s.work_item_kind.clone()),
             Some(WorkItemKind::Quote)
         );

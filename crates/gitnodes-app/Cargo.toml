@@ -43,6 +43,7 @@ tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 ammonia = { version = "4", optional = true }
 infer = { version = "0.16", default-features = false, optional = true }
 tower_governor = { version = "0.7", optional = true }
+include_dir = { version = "0.7", optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 gitnodes-domain = { path = "../gitnodes-domain" }
 gitnodes-graph = { path = "../gitnodes-graph" }
@@ -112,10 +113,14 @@ ssr = [
     "leptos_meta/ssr",
     "leptos_router/ssr",
 ]
+# Bundle the built web assets (target/site) into the binary for a single,
+# self-contained distributable. Enabled only for release builds, after a normal
+# `cargo leptos build` has produced target/site. See .github/workflows/release.yml.
+embed-assets = ["ssr", "dep:include_dir"]
 
 [package.metadata.leptos]
 output-name = "gitnodes"
-site-root = "../../target/site"
+site-root = "target/site"
 site-pkg-dir = "pkg"
 style-file = "style/main.css"
 assets-dir = "../../public"

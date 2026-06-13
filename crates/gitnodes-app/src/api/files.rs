@@ -537,7 +537,7 @@ fn today_iso() -> String {
 
 /// Build the final frontmatter block by merging the form's authoritative
 /// fields onto the document's preserved map (update) or onto a seeded
-/// template (create). Preserves custom keys (status, severity, cliente,
+/// template (create). Preserves custom keys (status, severity, owner,
 /// etc.) that the form doesn't manage, per the fix for caveat #5.
 #[cfg(feature = "ssr")]
 pub(super) fn merge_frontmatter(

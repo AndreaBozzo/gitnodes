@@ -71,7 +71,7 @@ pub struct EditPrefill {
     pub related: Vec<String>,
     /// Full parsed frontmatter, preserved so `save_brain_file` can merge
     /// form-controlled fields without wiping custom keys (status, severity,
-    /// cliente, etc.). Empty map if the file has no frontmatter.
+    /// owner, etc.). Empty map if the file has no frontmatter.
     pub frontmatter: BTreeMap<String, serde_yaml::Value>,
     /// True when the source file had a frontmatter block that failed YAML
     /// parsing. The editor must surface this and prevent saves to avoid
@@ -223,7 +223,7 @@ pub struct BrainFilePayload {
     pub commit_message: Option<String>,
     /// Frontmatter parsed from the original file on update. `save_brain_file`
     /// merges form-controlled fields on top of this map so custom keys
-    /// (status, severity, cliente, etc.) survive the round-trip. `None` on
+    /// (status, severity, owner, etc.) survive the round-trip. `None` on
     /// create; old clients without the field still deserialize via serde
     /// default.
     #[serde(default)]
@@ -344,13 +344,13 @@ mod tests {
     }
 
     #[test]
-    fn prefill_preventivo_title_from_progetto() {
-        // Preventivo stores its title under `progetto:`, not `topic:`. Without
-        // this fallback the editor would open with an empty title and a save
-        // would blank out progetto.
-        let raw = "---\ntype: preventivo\nprogetto: \"Rewrite search\"\nstatus: draft\n---\n";
-        let p = EditPrefill::from_raw("preventivi/Foo.md", "s", raw, &BrainConfig::default());
-        assert_eq!(p.node_type, Some("preventivo".to_string()));
+    fn prefill_project_title_from_name() {
+        // Project stores its title under `name:`, not `topic:`. Without this
+        // fallback the editor would open with an empty title and a save would
+        // blank out name.
+        let raw = "---\ntype: project\nname: \"Rewrite search\"\nstatus: active\n---\n";
+        let p = EditPrefill::from_raw("projects/Foo.md", "s", raw, &BrainConfig::default());
+        assert_eq!(p.node_type, Some("project".to_string()));
         assert_eq!(p.title, "Rewrite search");
     }
 }

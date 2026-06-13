@@ -13,8 +13,28 @@ use serde::Deserialize;
 use std::sync::OnceLock;
 use tower_sessions::Session;
 
-// Re-exported session helpers so existing callers keep working.
-pub use gitnodes_auth::{get_session_token, get_session_user, is_authenticated};
+/// PAT-aware session token. In single-user PAT mode every request authenticates
+/// with the operator's PAT; otherwise the token comes from the OAuth session.
+pub async fn get_session_token(session: &Session) -> Option<String> {
+    if let Some(pat) = crate::server::pat::identity() {
+        return Some(pat.token.clone());
+    }
+    gitnodes_auth::get_session_token(session).await
+}
+
+/// PAT-aware login (the PAT owner in single-user mode).
+pub async fn get_session_user(session: &Session) -> Option<String> {
+    if let Some(pat) = crate::server::pat::identity() {
+        return Some(pat.login.clone());
+    }
+    gitnodes_auth::get_session_user(session).await
+}
+
+/// PAT-aware authentication check. In PAT mode the single operator is always
+/// authenticated; otherwise a live OAuth session is required.
+pub async fn is_authenticated(session: &Session) -> bool {
+    crate::server::pat::is_enabled() || gitnodes_auth::is_authenticated(session).await
+}
 
 static LOGIN_ORG: OnceLock<Option<String>> = OnceLock::new();
 
@@ -77,6 +97,10 @@ pub fn login_org() -> Option<String> {
 
 /// Handler for `GET /auth/login`.
 pub async fn login(session: Session) -> impl IntoResponse {
+    // PAT mode has no OAuth App; the single operator is always signed in.
+    if crate::server::pat::is_enabled() {
+        return Redirect::to("/knowledge").into_response();
+    }
     let state = generate_state();
     if session.insert(SESSION_STATE_KEY, &state).await.is_err() {
         return Redirect::to("/?error=session_init").into_response();

@@ -2,8 +2,11 @@ pub mod access;
 pub mod assets;
 pub mod audit;
 pub mod auth;
+#[cfg(feature = "embed-assets")]
+pub mod embedded;
 pub mod health;
 pub mod installation_token;
+pub mod pat;
 pub mod pending_sync_job;
 pub mod projection;
 pub mod retention;

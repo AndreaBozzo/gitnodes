@@ -199,6 +199,36 @@ async fn main() {
     use tower_sessions::{Session, SessionManagerLayer, cookie::SameSite};
     use tower_sessions_sqlx_store::SqliteStore;
 
+    // Subcommand dispatch. `serve` (or no command) runs the server below;
+    // `init` scaffolds a starter brain and exits without touching env/DB.
+    let argv: Vec<String> = std::env::args().collect();
+    match argv.get(1).map(String::as_str) {
+        Some("init") => match gitnodes_app::cli::run_init(argv.get(2).map(String::as_str)) {
+            Ok(()) => std::process::exit(0),
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
+        },
+        Some("agents") => match gitnodes_app::cli::run_agents(argv.get(2).map(String::as_str)) {
+            Ok(()) => std::process::exit(0),
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
+        },
+        Some("help") | Some("--help") | Some("-h") => {
+            gitnodes_app::cli::print_usage();
+            std::process::exit(0);
+        }
+        Some("serve") | None => {}
+        Some(other) => {
+            eprintln!("error: unknown command '{other}'\n");
+            gitnodes_app::cli::print_usage();
+            std::process::exit(2);
+        }
+    }
+
     // Explicitly register server functions to ensure the linker doesn't strip them
     // and they are available at runtime.
     use gitnodes_app::api;
@@ -349,6 +379,22 @@ async fn main() {
         .with_secure(cookie_secure)
         .with_private(session_key);
 
+    // Single-binary builds carry their web assets inside the executable. Unpack
+    // them to a cache dir and point Leptos at it before the config is read.
+    #[cfg(feature = "embed-assets")]
+    match gitnodes_app::server::embedded::extract_site() {
+        Ok(site) => {
+            // SAFETY: startup is single-threaded here, before any config read or
+            // task spawn observes the environment.
+            unsafe { std::env::set_var("LEPTOS_SITE_ROOT", &site) };
+            tracing::info!(site = %site.display(), "serving embedded web assets");
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to extract embedded web assets");
+            std::process::exit(1);
+        }
+    }
+
     let conf = get_configuration(None).expect("load Leptos configuration");
     let leptos_options = conf.leptos_options;
 
@@ -363,6 +409,11 @@ async fn main() {
     } else {
         leptos_options.site_addr
     };
+
+    // Resolve single-user PAT mode (if `GITHUB_PAT` is set) before serving. This
+    // validates the token, records the operator identity, and enforces the
+    // loopback guardrail — it exits the process on a misconfiguration.
+    gitnodes_app::server::pat::init(&addr).await;
 
     let routes = generate_route_list(App);
 
@@ -699,6 +750,13 @@ form-action 'self'";
             std::process::exit(1);
         }
     };
+    // Local dev convenience: pop open the browser at the knowledge view. Only on
+    // a loopback bind (skip server/container deployments), and suppressible.
+    let url = format!("http://{addr}/knowledge");
+    tracing::info!("GitNodes ready at {url}");
+    if addr.ip().is_loopback() && std::env::var("GITNODES_NO_OPEN").is_err() {
+        gitnodes_app::cli::open_browser(&url);
+    }
     // `into_make_service_with_connect_info` exposes the peer `SocketAddr` so the
     // rate limiter's `SmartIpKeyExtractor` has a fallback when no proxy headers
     // are present (e.g. local dev).

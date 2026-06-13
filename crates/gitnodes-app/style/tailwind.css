@@ -6,13 +6,13 @@
   :root {
     /* Optional overrides for node-type accents. `NodeTypeSpec::accent_var()`
        emits `var(--accent-{name}, {hex})`, so a custom type declared in
-       `.brain-config.yml` without a matching `--accent-*` here still renders
+       `.gitnodes.yml` without a matching `--accent-*` here still renders
        its configured hex. Add/remove entries only to override centrally. */
     --accent-concept: #2dd4bf;
     --accent-adr: #f59e0b;
     --accent-meeting: #a78bfa;
     --accent-post-mortem: #f87171;
-    --accent-preventivo: #38bdf8;
+    --accent-project: #38bdf8;
     --accent-runbook: #4ade80;
     --accent-tag: #64748b;
   }

@@ -4,6 +4,8 @@
 pub mod admin;
 pub mod api;
 pub mod app;
+#[cfg(feature = "ssr")]
+pub mod cli;
 pub mod knowledge;
 pub mod landing;
 pub mod markdown;
