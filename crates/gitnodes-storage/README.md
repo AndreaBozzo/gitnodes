@@ -1,6 +1,6 @@
-# brain-storage
+# gitnodes-storage
 
-GitHub API client and the atomic write layer for Brain UI. The most mature
+GitHub API client and the atomic write layer for GitNodes. The most mature
 crate in the workspace: `git_transaction` commits multiple files in one
 operation via the Git Data API, with typed preconditions and fast-forward retry.
 
@@ -22,7 +22,7 @@ flowchart TD
   writes. Backs the config preview before/after.
 
 **No Dual-Write:** mutations go to GitHub here; the SQLite projection in
-`brain-app` only updates through rebuild/webhook, never alongside a write.
+`gitnodes-app` only updates through rebuild/webhook, never alongside a write.
 
-Depends on [`brain-domain`](../brain-domain) and [`brain-graph`](../brain-graph).
-Apache-2.0. Part of the [Brain UI workspace](../../README.md).
+Depends on [`gitnodes-domain`](../gitnodes-domain) and [`gitnodes-graph`](../gitnodes-graph).
+Apache-2.0. Part of the [GitNodes workspace](../../README.md).

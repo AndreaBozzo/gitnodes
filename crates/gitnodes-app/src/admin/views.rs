@@ -81,7 +81,7 @@ pub fn ViewsAdminPage() -> impl IntoView {
                     "Each view applies the same "<code class="font-mono text-slate-300">"?tags="</code>
                     " / "<code class="font-mono text-slate-300">"?types="</code>
                     " filters that already exist — nothing new is introduced. "
-                    "Saving will rewrite "<code class="font-mono text-slate-300">".brain-config.yml"</code>
+                    "Saving will rewrite "<code class="font-mono text-slate-300">".gitnodes.yml"</code>
                     " in the target repo, going through the same permission-aware orchestrator as document edits."
                 </p>
 
@@ -199,7 +199,7 @@ fn ViewsEditor(
                         "No saved views. Saving now will remove the "
                         <code class="font-mono">"views"</code>
                         " block from "
-                        <code class="font-mono">".brain-config.yml"</code>
+                        <code class="font-mono">".gitnodes.yml"</code>
                         "."
                     </div>
                 </Show>

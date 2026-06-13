@@ -1,5 +1,5 @@
 //! Advisory banner listing nodes whose `type:` is not declared in
-//! `.brain-config.yml`. The lookup fallback already coerces unknown types into
+//! `.gitnodes.yml`. The lookup fallback already coerces unknown types into
 //! `default_spec()` for rendering — this banner makes the silent coercion
 //! visible so a typo in frontmatter can't go unnoticed.
 
@@ -46,7 +46,7 @@ pub fn OrphanBanner(
                         target="_blank"
                         class="ml-auto shrink-0 px-2 py-0.5 rounded border border-rose-400/50 hover:bg-rose-400/10 transition-colors"
                     >
-                        "Open .brain-config.yml →"
+                        "Open .gitnodes.yml →"
                     </a>
                     <button
                         class="px-2 py-0.5 text-rose-300/70 hover:text-rose-100"
@@ -94,7 +94,7 @@ pub fn OrphanBanner(
         <Show when=move || !dismissed.get()>
             <div class="px-6 py-2 bg-amber-500/10 border-b border-amber-400/40 text-amber-100 text-xs flex items-center gap-3">
                 <span class="font-medium">
-                    {format!("{total} node{plural} use types not in .brain-config.yml:",
+                    {format!("{total} node{plural} use types not in .gitnodes.yml:",
                              plural = if total == 1 { "" } else { "s" })}
                 </span>
                 <span class="text-amber-200/90">{summary.clone()}</span>
@@ -104,7 +104,7 @@ pub fn OrphanBanner(
                     target="_blank"
                     class="ml-auto px-2 py-0.5 rounded border border-amber-400/50 hover:bg-amber-400/10 transition-colors"
                 >
-                    "Add to .brain-config.yml →"
+                    "Add to .gitnodes.yml →"
                 </a>
                 <button
                     class="px-2 py-0.5 text-amber-300/70 hover:text-amber-100"

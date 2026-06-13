@@ -107,7 +107,7 @@ pub async fn load_brain_config_status_for_target(
 
 /// Read-only list of saved views for the active target. Backed by the same
 /// cached `BrainConfig` as the rest of the runtime, so it reflects the latest
-/// committed state of `.brain-config.yml` without an extra fetch.
+/// committed state of `.gitnodes.yml` without an extra fetch.
 #[server(ListViews, "/api", endpoint = "list_views")]
 pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ApiError> {
     use crate::knowledge::config_loader;
@@ -187,7 +187,7 @@ pub async fn preview_views(
     })
 }
 
-/// Replace the entire `views` block in `.brain-config.yml` with the supplied
+/// Replace the entire `views` block in `.gitnodes.yml` with the supplied
 /// list. Other config fields (node_types, label_taxonomy, default_type) are
 /// preserved by parsing -> mutating -> re-serializing the existing file. Routes
 /// through the same permission-aware orchestrator as document saves: direct
@@ -277,7 +277,7 @@ pub async fn save_views(
 }
 
 #[cfg(feature = "ssr")]
-const CONFIG_PATH: &str = ".brain-config.yml";
+const CONFIG_PATH: &str = ".gitnodes.yml";
 
 #[cfg(feature = "ssr")]
 async fn read_views_config(
@@ -307,7 +307,7 @@ fn build_views_config(
         BrainConfig::default()
     } else {
         BrainConfig::parse(existing_raw).map_err(|error| {
-            BrainError::other(format!("current .brain-config.yml does not parse: {error}"))
+            BrainError::other(format!("current .gitnodes.yml does not parse: {error}"))
         })?
     };
     cfg.views = views;

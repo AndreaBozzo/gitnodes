@@ -1,4 +1,5 @@
-//! Loader for `.brain-config.yml` from the target repo.
+//! Loader for `.gitnodes.yml` from the target repo (legacy `.brain-config.yml`
+//! is still read as a fallback for repos predating the rename).
 //!
 //! Fetches the file via the GitHub Contents API on first access (per target),
 //! caches the parsed `BrainConfig` for 30s (same TTL pattern as the graph
@@ -18,7 +19,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const TTL: Duration = Duration::from_secs(30);
-const CONFIG_PATH: &str = ".brain-config.yml";
+const CONFIG_PATH: &str = ".gitnodes.yml";
+/// Pre-rename filename, still honoured so brains created before the GitNodes
+/// rename keep loading without an immediate migration.
+const LEGACY_CONFIG_PATH: &str = ".brain-config.yml";
 
 /// Grace window during which a freshly-seeded entry is protected from
 /// `invalidate()`. Sized to outlast GitHub's contents-API eventual-consistency
@@ -124,7 +128,7 @@ struct ContentResponse {
 
 /// Load the config from the repo, or return the default on any non-fatal
 /// failure. Never returns `Err` from the caller's perspective — a malformed
-/// `.brain-config.yml` must not take the whole app down.
+/// `.gitnodes.yml` must not take the whole app down.
 pub async fn load(target: &TargetConfig, token: &str) -> Arc<BrainConfig> {
     load_with_diagnostic(target, token).await.config
 }
@@ -157,13 +161,29 @@ pub async fn load_with_diagnostic(target: &TargetConfig, token: &str) -> ConfigL
     }
 }
 
-/// Returns `Ok(Some(cfg))` on a valid file, `Ok(None)` on 404 (file absent),
-/// and `Err` on any other unrecoverable error. A malformed or
-/// validation-failing YAML is reported as `Err` and the caller logs+falls
-/// back to default.
+/// Returns `Ok(Some(cfg))` on a valid file, `Ok(None)` when neither the
+/// canonical nor the legacy file exists, and `Err` on any other unrecoverable
+/// error. A malformed or validation-failing YAML is reported as `Err` and the
+/// caller logs+falls back to default.
+///
+/// Tries `.gitnodes.yml` first; only if it is absent does it fall back to the
+/// pre-rename `.brain-config.yml`. A parse error on the canonical file is
+/// surfaced as-is rather than masked by the legacy probe.
 async fn fetch_and_parse(
     target: &TargetConfig,
     token: &str,
+) -> Result<Option<BrainConfig>, BrainError> {
+    match fetch_path(target, token, CONFIG_PATH).await? {
+        Some(cfg) => Ok(Some(cfg)),
+        None => fetch_path(target, token, LEGACY_CONFIG_PATH).await,
+    }
+}
+
+/// Fetch and parse a single config path. `Ok(None)` means a 404 for that path.
+async fn fetch_path(
+    target: &TargetConfig,
+    token: &str,
+    path: &str,
 ) -> Result<Option<BrainConfig>, BrainError> {
     // The transport is target-agnostic — pull it from context for connection
     // pooling — but the URL **must** be built from the explicit `target`
@@ -174,7 +194,7 @@ async fn fetch_and_parse(
         None => GithubHttp::new()?,
     };
     let gh = GithubClient::new(target.clone());
-    let url = gh.contents_url(CONFIG_PATH);
+    let url = gh.contents_url(path);
     let resp = http
         .get(&url, token)
         .query(&[("ref", target.branch.as_str())])

@@ -385,10 +385,10 @@ impl GithubClient {
         )
     }
 
-    /// Direct link to `.brain-config.yml` in the target repo. Used by the
+    /// Direct link to `.gitnodes.yml` in the target repo. Used by the
     /// orphan-type banner CTA.
     pub fn config_blob_url(&self) -> String {
-        format!("{}/.brain-config.yml", self.blob_base())
+        format!("{}/.gitnodes.yml", self.blob_base())
     }
 
     pub fn git_blobs_url(&self) -> String {
@@ -512,7 +512,7 @@ pub struct BrandConfig {
 }
 
 /// Declaration of a single node type — the dynamic, config-driven replacement
-/// for the hardcoded `NodeType` enum. Loaded from `.brain-config.yml` at the
+/// for the hardcoded `NodeType` enum. Loaded from `.gitnodes.yml` at the
 /// root of the target repo, or from the built-in default.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NodeTypeSpec {
@@ -573,7 +573,7 @@ fn default_true() -> bool {
 
 impl NodeTypeSpec {
     /// CSS color reference. Emits `var(--accent-{name}, {hex})` so a type
-    /// defined in `.brain-config.yml` renders its configured hex even when
+    /// defined in `.gitnodes.yml` renders its configured hex even when
     /// no matching `:root` custom property exists. Declared `:root` vars
     /// still win because CSS only uses the fallback when the var is unset.
     pub fn accent_var(&self) -> String {
@@ -606,7 +606,7 @@ pub struct WorkItemLabelSpec {
     pub state_labels: BTreeMap<WorkItemState, String>,
 }
 
-/// Top-level config parsed from `.brain-config.yml` at the repo root, or the
+/// Top-level config parsed from `.gitnodes.yml` at the repo root, or the
 /// built-in default when the file is absent.
 ///
 /// The default is guaranteed to be equivalent to the hardcoded `NodeType`
@@ -989,7 +989,7 @@ fn validate_link_fields(
 
 impl Default for BrainConfig {
     /// Equivalent to the hardcoded `NodeType` enum — repos without a
-    /// `.brain-config.yml` must behave identically to pre-Phase-1 installs.
+    /// `.gitnodes.yml` must behave identically to pre-Phase-1 installs.
     fn default() -> Self {
         use serde_yaml::Value;
         let s = |v: &str| Value::String(v.to_string());

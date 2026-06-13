@@ -1,4 +1,4 @@
-# brain-graph
+# gitnodes-graph
 
 Builds the knowledge graph from a set of markdown files. Pure logic, WASM-safe
 — no network, no storage.
@@ -15,5 +15,5 @@ Edges are typed by origin: `Body` (inline links), `Frontmatter` (related/see-als
 keys), and `Tag` (shared tags). Link resolution maps references to node ids; the
 force-directed pass produces coordinates for the canvas.
 
-Depends only on [`brain-domain`](../brain-domain). Apache-2.0. Part of the
-[Brain UI workspace](../../README.md).
+Depends only on [`gitnodes-domain`](../gitnodes-domain). Apache-2.0. Part of the
+[GitNodes workspace](../../README.md).

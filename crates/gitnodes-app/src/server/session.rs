@@ -42,7 +42,7 @@ pub fn storage() -> Result<GithubStorage, BrainError> {
 
 /// Build a `GithubStorage` for an **explicit** target. Use this when the
 /// caller already has the right `TargetConfig` in hand (e.g. config_loader
-/// loading `.brain-config.yml` for a specific repo) instead of the
+/// loading `.gitnodes.yml` for a specific repo) instead of the
 /// session-default target. Reuses the shared pooled transport.
 pub fn storage_for(target: TargetConfig) -> Result<GithubStorage, BrainError> {
     Ok(GithubStorage::new(github_http()?, target))

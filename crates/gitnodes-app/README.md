@@ -1,14 +1,14 @@
-# brain-app
+# gitnodes-app
 
-The Brain UI application: a Leptos 0.8 fullstack web app (SSR binary + WASM
+The GitNodes application: a Leptos 0.8 fullstack web app (SSR binary + WASM
 hydrate) with an Axum server. This is the deployable crate.
 
 ```mermaid
 flowchart TD
-    app["brain-app · Leptos + Axum"] --> storage["brain-storage · GitHub + git transactions"]
-    app --> auth["brain-auth · OAuth + sessions"]
-    storage --> graph["brain-graph · graph build + layout"]
-    auth --> domain["brain-domain · pure types"]
+    app["gitnodes-app · Leptos + Axum"] --> storage["gitnodes-storage · GitHub + git transactions"]
+    app --> auth["gitnodes-auth · OAuth + sessions"]
+    storage --> graph["gitnodes-graph · graph build + layout"]
+    auth --> domain["gitnodes-domain · pure types"]
     graph --> domain
 ```
 

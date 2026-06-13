@@ -133,7 +133,8 @@ pub struct AccessibleTarget {
     pub default_branch: String,
     pub active_branch: String,
     pub state: AccessibleTargetState,
-    /// Whether `.brain-config.yml` was found at the repo root.
+    /// Whether a GitNodes config (`.gitnodes.yml`, or legacy
+    /// `.brain-config.yml`) was found at the repo root.
     pub has_brain_config: bool,
 }
 
@@ -149,7 +150,8 @@ pub enum AccessibleTargetState {
 
 /// Discover repos accessible to the current user that might host a Brain
 /// knowledge base. Queries `GET /user/repos` (up to 100, sorted by pushed)
-/// then checks each for `.brain-config.yml` existence through the Contents API.
+/// then checks each for a GitNodes config (`.gitnodes.yml`, legacy
+/// `.brain-config.yml`) existence through the Contents API.
 /// Repos where the user has no read access are filtered out by the GitHub API
 /// automatically.
 ///
@@ -215,15 +217,24 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError
             repo: repo.clone(),
             branch: active_branch.clone(),
         };
-        let config_url = gitnodes_domain::GithubClient::new(active_target.clone())
+        let config_url =
+            gitnodes_domain::GithubClient::new(active_target.clone()).contents_url(".gitnodes.yml");
+        let legacy_config_url = gitnodes_domain::GithubClient::new(active_target.clone())
             .contents_url(".brain-config.yml");
         let branch_url = gitnodes_domain::GithubClient::new(active_target.clone())
             .branch_url(&active_target.branch);
         let http = http.clone();
         let token = token.clone();
         set.spawn(async move {
-            let state =
-                probe_brain_config(&http, &token, &config_url, &active_branch, &branch_url).await;
+            let state = probe_brain_config(
+                &http,
+                &token,
+                &config_url,
+                &legacy_config_url,
+                &active_branch,
+                &branch_url,
+            )
+            .await;
             AccessibleTarget {
                 org,
                 repo,
@@ -272,38 +283,60 @@ pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError
     Ok(targets)
 }
 
-/// Probe `.brain-config.yml` through the authenticated GitHub Contents API.
-/// This works for private repos, unlike raw.githubusercontent.com where bearer
-/// token behavior is inconsistent.
+/// Probe a repo for a GitNodes config through the authenticated GitHub Contents
+/// API (works for private repos, unlike raw.githubusercontent.com where bearer
+/// token behavior is inconsistent). Tries `.gitnodes.yml` first, then the
+/// pre-rename `.brain-config.yml`; only if both are absent does it fall back to
+/// the branch-existence check.
 #[cfg(feature = "ssr")]
 async fn probe_brain_config(
     http: &gitnodes_storage::GithubHttp,
     token: &str,
     config_url: &str,
+    legacy_config_url: &str,
     ref_name: &str,
     branch_url: &str,
 ) -> AccessibleTargetState {
+    if let Some(state) = probe_config_path(http, token, config_url, ref_name).await {
+        return state;
+    }
+    if let Some(state) = probe_config_path(http, token, legacy_config_url, ref_name).await {
+        return state;
+    }
+    if branch_exists(http, token, branch_url).await {
+        AccessibleTargetState::MissingConfig
+    } else {
+        AccessibleTargetState::BranchMissing
+    }
+}
+
+/// Probe a single config path. Returns `Some(state)` for a definitive answer
+/// (config found and parsed, present-but-invalid, or access denied) and `None`
+/// for a 404 so the caller can try the next candidate path.
+#[cfg(feature = "ssr")]
+async fn probe_config_path(
+    http: &gitnodes_storage::GithubHttp,
+    token: &str,
+    config_url: &str,
+    ref_name: &str,
+) -> Option<AccessibleTargetState> {
     let Ok(response) = http
         .get(config_url, token)
         .query(&[("ref", ref_name)])
         .send()
         .await
     else {
-        return AccessibleTargetState::Forbidden;
+        return Some(AccessibleTargetState::Forbidden);
     };
     let status = response.status();
     if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::UNAUTHORIZED {
-        return AccessibleTargetState::Forbidden;
+        return Some(AccessibleTargetState::Forbidden);
     }
     if status == reqwest::StatusCode::NOT_FOUND {
-        return if branch_exists(http, token, branch_url).await {
-            AccessibleTargetState::MissingConfig
-        } else {
-            AccessibleTargetState::BranchMissing
-        };
+        return None;
     }
     if !status.is_success() {
-        return AccessibleTargetState::Forbidden;
+        return Some(AccessibleTargetState::Forbidden);
     }
     #[derive(serde::Deserialize)]
     struct ContentsResponse {
@@ -312,10 +345,10 @@ async fn probe_brain_config(
         encoding: Option<String>,
     }
     let Ok(body) = response.json::<ContentsResponse>().await else {
-        return AccessibleTargetState::ConfigInvalid;
+        return Some(AccessibleTargetState::ConfigInvalid);
     };
     if body.encoding.as_deref() != Some("base64") {
-        return AccessibleTargetState::ConfigInvalid;
+        return Some(AccessibleTargetState::ConfigInvalid);
     }
     use base64::Engine;
     let compact: String = body
@@ -324,15 +357,15 @@ async fn probe_brain_config(
         .filter(|c| !c.is_whitespace())
         .collect();
     let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(compact) else {
-        return AccessibleTargetState::ConfigInvalid;
+        return Some(AccessibleTargetState::ConfigInvalid);
     };
     let Ok(raw) = String::from_utf8(decoded) else {
-        return AccessibleTargetState::ConfigInvalid;
+        return Some(AccessibleTargetState::ConfigInvalid);
     };
-    match BrainConfig::parse(&raw) {
+    Some(match BrainConfig::parse(&raw) {
         Ok(_) => AccessibleTargetState::Accessible,
         Err(_) => AccessibleTargetState::ConfigInvalid,
-    }
+    })
 }
 
 #[cfg(feature = "ssr")]

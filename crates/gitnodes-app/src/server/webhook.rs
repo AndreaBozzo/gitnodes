@@ -236,7 +236,7 @@ async fn handle_push(state: WebhookState, target: TargetRef) {
 
     let key = TargetKey::from(storage.target());
 
-    // Mirror the manual-refresh contract: a push can change `.brain-config.yml`
+    // Mirror the manual-refresh contract: a push can change `.gitnodes.yml`
     // and template files, so we must drop the per-target caches before reading
     // them. Without this, the projection rebuild can run against stale node-type
     // metadata for up to the config TTL and still broadcast `graph_updated`.
