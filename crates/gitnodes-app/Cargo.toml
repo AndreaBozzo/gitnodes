@@ -17,7 +17,7 @@ leptos_meta = { version = "0.8" }
 leptos_router = { version = "0.8" }
 axum = { version = "0.8", optional = true }
 leptos_axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -44,6 +44,8 @@ ammonia = { version = "4", optional = true }
 infer = { version = "0.16", default-features = false, optional = true }
 tower_governor = { version = "0.7", optional = true }
 include_dir = { version = "0.7", optional = true }
+rmcp = { version = "1.7", default-features = false, features = ["macros", "server", "transport-io"], optional = true }
+schemars = { version = "1.2", optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 gitnodes-domain = { path = "../gitnodes-domain" }
 gitnodes-graph = { path = "../gitnodes-graph" }
@@ -107,6 +109,8 @@ ssr = [
     "dep:ammonia",
     "dep:infer",
     "dep:tower_governor",
+    "dep:rmcp",
+    "dep:schemars",
     "dep:gitnodes-storage",
     "dep:gitnodes-auth",
     "leptos/ssr",

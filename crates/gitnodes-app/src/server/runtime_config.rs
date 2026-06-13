@@ -3,7 +3,7 @@
 use gitnodes_domain::{BrandConfig, TargetConfig, TargetRef};
 
 pub const DEFAULT_TARGET_BRANCH: &str = "main";
-pub const DEFAULT_BRAND_NAME: &str = "Brain UI";
+pub const DEFAULT_BRAND_NAME: &str = "GitNodes";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TargetBootstrap {

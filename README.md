@@ -36,18 +36,41 @@ Then scaffold a knowledge base and run it:
 
 ```bash
 gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md, git-initialised
-# push my-brain to a GitHub repo, e.g.:
-#   gh repo create my-brain --private --source=my-brain --remote=origin --push
-# create a .env file (same on every OS) with:
-#   GITHUB_PAT=...                  # github.com/settings/tokens (repo scope)
-#   TARGET_GITHUB_REPOSITORY=<owner>/my-brain
-gitnodes serve              # starts the server and opens your browser
+cd my-brain
+git add . && git commit -m "Initialize GitNodes knowledge base"
+gh repo create my-brain --private --source=. --remote=origin --push
+gitnodes serve              # discovers the repo, reuses `gh auth`, opens the browser
 ```
 
-`GITHUB_PAT` runs GitNodes in single-user mode — no GitHub OAuth App to register.
+If needed, run `gh auth login` once before the commands above. GitNodes reads the
+repository and branch from the local Git checkout and uses the credential already
+stored by GitHub CLI; it does not copy that token into `.env` or another file.
+`GITHUB_PAT` remains available as an explicit single-user fallback.
 The scaffolded `AGENTS.md` teaches coding agents (Claude Code, Codex, Cursor, …)
 the conventions of your brain so they can add and link notes correctly. GitNodes
 is built for humans and agents alike.
+
+## AI agent access
+
+GitNodes includes a read-only local MCP server. Point any stdio-capable MCP
+client at the repository:
+
+```json
+{
+  "mcpServers": {
+    "gitnodes": {
+      "command": "gitnodes",
+      "args": ["mcp", "/absolute/path/to/my-brain"]
+    }
+  }
+}
+```
+
+The server exposes `search_brain`, `list_nodes`, and `read_node`. It re-indexes
+the current working tree before each request through the same SQLite projection
+and FTS5 search path used by the web UI, so uncommitted notes are visible
+immediately. It is local and read-only: no PAT, GitHub login, push, or running
+web server is required.
 
 ## Stack
 
@@ -71,6 +94,7 @@ crates/
     src/
       main.rs                   # Axum entrypoint, session store, auth routes
       api.rs                    # Server functions: graph/file/work-item reads, writes, rebuilds
+      mcp.rs                    # Read-only local agent tools over stdio MCP
       markdown.rs               # pulldown-cmark wrapper + frontmatter splitter
       server/assets.rs          # Authenticated proxy for private-repo images
       server/projection/        # SQLite projection materialization + read model
@@ -140,7 +164,11 @@ backward-compatible (empty = no typed edges).
 
 ## Environment variables
 
-Required at runtime:
+For local `gitnodes serve [dir]`, the target repository, branch, and credential
+are discovered from the Git checkout and GitHub CLI login. Explicit environment
+configuration always takes precedence.
+
+Required for deployments or checkouts without an `origin` remote:
 
 | Var                        | Purpose                                   |
 | -------------------------- | ----------------------------------------- |

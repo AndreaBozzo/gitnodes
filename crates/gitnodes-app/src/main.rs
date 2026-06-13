@@ -199,10 +199,10 @@ async fn main() {
     use tower_sessions::{Session, SessionManagerLayer, cookie::SameSite};
     use tower_sessions_sqlx_store::SqliteStore;
 
-    // Subcommand dispatch. `serve` (or no command) runs the server below;
-    // `init` scaffolds a starter brain and exits without touching env/DB.
+    // Subcommand dispatch. `serve [dir]` (or no command) runs the server below.
+    // The remaining commands exit without starting the web runtime.
     let argv: Vec<String> = std::env::args().collect();
-    match argv.get(1).map(String::as_str) {
+    let serve_dir = match argv.get(1).map(String::as_str) {
         Some("init") => match gitnodes_app::cli::run_init(argv.get(2).map(String::as_str)) {
             Ok(()) => std::process::exit(0),
             Err(message) => {
@@ -217,16 +217,42 @@ async fn main() {
                 std::process::exit(1);
             }
         },
+        Some("mcp") => {
+            if argv.len() > 3 {
+                eprintln!("error: `gitnodes mcp` accepts at most one directory\n");
+                gitnodes_app::cli::print_usage();
+                std::process::exit(2);
+            }
+            match gitnodes_app::mcp::run(argv.get(2).map(String::as_str)).await {
+                Ok(()) => std::process::exit(0),
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("help") | Some("--help") | Some("-h") => {
             gitnodes_app::cli::print_usage();
             std::process::exit(0);
         }
-        Some("serve") | None => {}
+        Some("serve") => {
+            if argv.len() > 3 {
+                eprintln!("error: `gitnodes serve` accepts at most one directory\n");
+                gitnodes_app::cli::print_usage();
+                std::process::exit(2);
+            }
+            argv.get(2).map(String::as_str)
+        }
+        None => None,
         Some(other) => {
             eprintln!("error: unknown command '{other}'\n");
             gitnodes_app::cli::print_usage();
             std::process::exit(2);
         }
+    };
+    if let Err(message) = gitnodes_app::cli::enter_serve_dir(serve_dir) {
+        eprintln!("error: {message}");
+        std::process::exit(1);
     }
 
     // Explicitly register server functions to ensure the linker doesn't strip them
@@ -235,6 +261,13 @@ async fn main() {
     api::register_server_functions();
 
     dotenvy::dotenv().ok();
+    let discovery_notes = match gitnodes_app::cli::configure_local_serve() {
+        Ok(notes) => notes,
+        Err(message) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+    };
 
     // Structured logging. Level controlled by RUST_LOG (defaults to info for our
     // crate, warn elsewhere). Audit log stays as the domain-event stream; this is
@@ -250,6 +283,9 @@ async fn main() {
                 .unwrap_or_else(|_| "gitnodes_app=info,warn".into()),
         )
         .init();
+    for note in discovery_notes {
+        tracing::info!("{note}");
+    }
 
     let target_bootstrap = gitnodes_app::server::runtime_config::target_from_env_or_exit();
     auth::init_login_org(

@@ -6,6 +6,7 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Starter brain payload, embedded from `examples/starter-brain/` so the
 /// scaffold and the published example stay one source of truth (and the config
@@ -46,7 +47,8 @@ USAGE:\n    \
 gitnodes <command>\n\
 \n\
 COMMANDS:\n    \
-serve         Run the server (default if no command is given).\n    \
+serve [dir]   Run the server for a local Git checkout (default: current dir).\n    \
+mcp [dir]     Serve read-only local knowledge tools to AI agents over stdio.\n    \
 init [dir]    Scaffold a starter brain (.gitnodes.yml + sample notes + AGENTS.md).\n    \
 agents [dir]  (Re)generate AGENTS.md from .gitnodes.yml so coding agents know\n                  \
 the conventions of this knowledge base.\n    \
@@ -134,6 +136,13 @@ is the path or slug of another note).\n\
 2. Write valid frontmatter (type + title + any seed fields), then the body in markdown.\n\
 3. Link it to related notes with standard markdown links.\n\
 4. Commit. The graph rebuilds from the repository.\n",
+    );
+
+    s.push_str(
+        "\n## Agent tools\n\n\
+When the `gitnodes` MCP server is configured in your agent, prefer its read-only \
+`search_brain`, `list_nodes`, and `read_node` tools for discovery. They read the current \
+working tree through the same projection and search engine as the GitNodes UI.\n",
     );
 
     s
@@ -252,6 +261,160 @@ pub fn run_agents(dir: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// Move server startup into the requested knowledge-base checkout before
+/// loading `.env` or resolving relative runtime paths.
+pub fn enter_serve_dir(dir: Option<&str>) -> Result<(), String> {
+    let root = PathBuf::from(dir.unwrap_or("."));
+    if !root.is_dir() {
+        return Err(format!(
+            "serve directory {} does not exist or is not a directory",
+            root.display()
+        ));
+    }
+    std::env::set_current_dir(&root).map_err(|e| format!("failed to enter {}: {e}", root.display()))
+}
+
+/// Fill the local single-user runtime configuration from the current Git
+/// checkout and an existing GitHub CLI login.
+///
+/// Explicit environment values always win. Discovered credentials are kept in
+/// this process only; GitNodes never writes the token to `.env` or another file.
+pub fn configure_local_serve() -> Result<Vec<String>, String> {
+    let mut notes = Vec::new();
+
+    let target_configured = env_present("TARGET_GITHUB_REPOSITORY")
+        || env_present("TARGET_GITHUB_ORG")
+        || env_present("GITHUB_ORG")
+        || env_present("TARGET_GITHUB_REPO")
+        || env_present("GITHUB_REPO");
+    let target_discovered = !target_configured;
+    if target_discovered {
+        let remote =
+            command_stdout("git", &["config", "--get", "remote.origin.url"]).map_err(|error| {
+                format!(
+                    "TARGET_GITHUB_REPOSITORY is unset and the Git remote could not be read: \
+                     {error}. Push this checkout to GitHub or set \
+                     TARGET_GITHUB_REPOSITORY=owner/repo."
+                )
+            })?;
+        let repository = parse_github_repository(&remote)?;
+        // SAFETY: called during single-threaded startup before worker tasks are
+        // spawned or application configuration reads the environment.
+        unsafe { std::env::set_var("TARGET_GITHUB_REPOSITORY", &repository) };
+        notes.push(format!(
+            "Using GitHub repository {repository} from remote.origin.url."
+        ));
+    }
+
+    if target_discovered
+        && env_missing("TARGET_GITHUB_BRANCH")
+        && env_missing("GITHUB_BRANCH")
+        && let Ok(branch) = command_stdout("git", &["branch", "--show-current"])
+        && !branch.is_empty()
+    {
+        // SAFETY: see the startup ordering note above.
+        unsafe { std::env::set_var("TARGET_GITHUB_BRANCH", &branch) };
+        notes.push(format!("Using current Git branch {branch}."));
+    }
+
+    let oauth_id = env_present("GITHUB_CLIENT_ID");
+    let oauth_secret = env_present("GITHUB_CLIENT_SECRET");
+    if oauth_id != oauth_secret {
+        return Err(
+            "set both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or unset both to use the \
+             local GitHub CLI login"
+                .into(),
+        );
+    }
+
+    if env_missing("GITHUB_PAT") && !oauth_id {
+        let token = command_stdout("gh", &["auth", "token"]).map_err(|error| {
+            format!(
+                "GitNodes needs GitHub access, but no GITHUB_PAT/OAuth credentials were set \
+                 and `gh auth token` failed: {error}. Run `gh auth login`, then retry."
+            )
+        })?;
+        if token.is_empty() {
+            return Err("`gh auth token` returned an empty credential; run `gh auth login`".into());
+        }
+        // SAFETY: see the startup ordering note above. The token is inherited
+        // from gh's credential store and remains process-local.
+        unsafe { std::env::set_var("GITHUB_PAT", token) };
+        notes.push("Using your existing GitHub CLI login (token is not persisted).".into());
+    }
+
+    Ok(notes)
+}
+
+fn env_present(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn env_missing(name: &str) -> bool {
+    !env_present(name)
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("could not run `{program}`: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!(
+                "`{program} {}` exited with {}",
+                args.join(" "),
+                output.status
+            )
+        } else {
+            stderr
+        });
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|_| format!("`{program} {}` returned non-UTF-8 output", args.join(" ")))
+}
+
+fn parse_github_repository(remote: &str) -> Result<String, String> {
+    let remote = remote.trim().trim_end_matches('/');
+    let (host, path) = if let Some((_, rest)) = remote.split_once("://") {
+        rest.split_once('/')
+            .map(|(authority, path)| (authority.rsplit('@').next().unwrap_or(authority), path))
+    } else if let Some((authority, path)) = remote.split_once(':') {
+        Some((authority.rsplit('@').next().unwrap_or(authority), path))
+    } else {
+        None
+    }
+    .ok_or_else(|| {
+        format!(
+            "cannot infer owner/repo from Git remote {remote:?}; set \
+             TARGET_GITHUB_REPOSITORY=owner/repo"
+        )
+    })?;
+
+    if !host.eq_ignore_ascii_case("github.com") {
+        return Err(format!(
+            "remote {remote:?} is not hosted on github.com; set \
+             TARGET_GITHUB_REPOSITORY=owner/repo explicitly"
+        ));
+    }
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let repo = parts.next().unwrap_or_default();
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        return Err(format!(
+            "cannot infer owner/repo from Git remote {remote:?}; set \
+             TARGET_GITHUB_REPOSITORY=owner/repo"
+        ));
+    }
+    Ok(format!("{owner}/{repo}"))
+}
+
 /// Scaffold a starter brain into `dir` (default: current directory), `git init`
 /// it, and print the next steps to get it served. `Err` carries a message for
 /// the caller to print before exiting non-zero.
@@ -292,13 +455,12 @@ pub fn run_init(dir: Option<&str>) -> Result<(), String> {
         println!("  0. Install git, then `git init` in {where_}.");
     }
     println!(
-        "  1. Create a GitHub repo and push it (GitNodes reads from GitHub):\n     \
-gh repo create <name> --private --source={where_} --remote=origin --push\n     \
-(or create it on github.com and `git push`)\n  \
-2. Create a .env file (same on Windows, macOS, and Linux — no shell setup):\n     \
-GITHUB_PAT=...                  # github.com/settings/tokens (repo scope)\n     \
-TARGET_GITHUB_REPOSITORY=<owner>/<name>\n  \
-3. Run it (opens your browser automatically):\n     \
+        "  1. Commit the starter knowledge base:\n     \
+cd {where_}\n     \
+git add . && git commit -m \"Initialize GitNodes knowledge base\"\n  \
+2. Create a GitHub repo and push it:\n     \
+gh repo create <name> --private --source=. --remote=origin --push\n  \
+3. Run it (reuses your `gh` login and opens your browser):\n     \
 gitnodes serve\n"
     );
     Ok(())
@@ -410,5 +572,23 @@ mod tests {
         // Node types are enumerated with their directories.
         assert!(md.contains("`concepts/`"));
         assert!(md.contains("GitNodes knowledge base"));
+    }
+
+    #[test]
+    fn parses_common_github_remote_formats() {
+        for (remote, expected) in [
+            ("https://github.com/acme/notes.git", "acme/notes"),
+            ("git@github.com:acme/notes.git", "acme/notes"),
+            ("ssh://git@github.com/acme/notes", "acme/notes"),
+        ] {
+            assert_eq!(parse_github_repository(remote).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_remote_paths_that_are_not_owner_repo() {
+        assert!(parse_github_repository("https://example.com/group/acme/notes.git").is_err());
+        assert!(parse_github_repository("https://gitlab.com/acme/notes.git").is_err());
+        assert!(parse_github_repository("not-a-remote").is_err());
     }
 }

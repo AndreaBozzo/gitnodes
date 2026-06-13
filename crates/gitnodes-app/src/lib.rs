@@ -10,6 +10,8 @@ pub mod knowledge;
 pub mod landing;
 pub mod markdown;
 #[cfg(feature = "ssr")]
+pub mod mcp;
+#[cfg(feature = "ssr")]
 pub mod server;
 
 #[cfg(feature = "hydrate")]

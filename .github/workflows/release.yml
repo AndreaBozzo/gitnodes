@@ -103,3 +103,46 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: gitnodes-${{ matrix.target }}.${{ matrix.archive }}
+
+  package-metadata:
+    name: package metadata
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist
+
+      - name: Build checksums and package manifests
+        shell: bash
+        run: |
+          cd dist
+          sha256sum gitnodes-* > SHA256SUMS
+          cd ..
+
+          sha_for() {
+            awk -v name="$1" '$2 == name { print $1 }' dist/SHA256SUMS
+          }
+
+          scripts/render-package-manifests.sh \
+            "${RELEASE_TAG#v}" \
+            "$(sha_for gitnodes-x86_64-unknown-linux-gnu.tar.gz)" \
+            "$(sha_for gitnodes-x86_64-apple-darwin.tar.gz)" \
+            "$(sha_for gitnodes-aarch64-apple-darwin.tar.gz)" \
+            "$(sha_for gitnodes-x86_64-pc-windows-msvc.zip)" \
+            dist/package-manifests
+
+      - name: Upload checksums and package manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            dist/SHA256SUMS \
+            dist/package-manifests/*

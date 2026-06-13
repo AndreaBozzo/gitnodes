@@ -120,6 +120,24 @@ pub async fn rebuild(
     }
 }
 
+/// Materialize the normal projection from an already-loaded set of files.
+///
+/// Local and agent-facing entrypoints use this boundary so they share the
+/// exact graph, filtering, and FTS behavior of the GitHub-backed server.
+pub async fn rebuild_from_raw_files(
+    target: &gitnodes_domain::TargetConfig,
+    raw_files: &[RawFile],
+    config: &BrainConfig,
+    reason: &str,
+) -> Result<(), BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    record_attempt(pool, target_id, reason).await?;
+    let snapshot = ProjectionSnapshot::from_raw_files(raw_files, config);
+    persist_snapshot(pool, target_id, &snapshot, reason).await?;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct ProjectionSnapshot {
     pub(super) files: Vec<ProjectionFile>,
