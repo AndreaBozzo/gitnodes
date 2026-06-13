@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="public/brand/gitnodes-wordmark.png" alt="GitNodes" width="460"/>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/brand/gitnodes-wordmark-dark.png">
+    <img alt="GitNodes" src="public/brand/gitnodes-wordmark-light.png" width="460">
+  </picture>
 </p>
 
 GitNodes turns a GitHub repository of markdown files into a navigable, editable
@@ -51,6 +54,11 @@ stored by GitHub CLI; it does not copy that token into `.env` or another file.
 The scaffolded `AGENTS.md` teaches coding agents (Claude Code, Codex, Cursor, …)
 the conventions of your brain so they can add and link notes correctly. GitNodes
 is built for humans and agents alike.
+
+> This per-brain `AGENTS.md` is generated from your brain's `.gitnodes.yml` and
+> describes *that knowledge base's* taxonomy. It is distinct from the `AGENTS.md`
+> at the root of this repository, which guides contributors working on GitNodes
+> itself.
 
 ## AI agent access
 
