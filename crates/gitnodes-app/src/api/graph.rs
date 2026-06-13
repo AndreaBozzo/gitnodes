@@ -61,6 +61,7 @@ pub async fn list_nodes(
             paths: filters.paths,
             path_prefix: filters.path_prefix,
             include_virtual: filters.include_virtual,
+            limit: None,
         },
     )
     .await

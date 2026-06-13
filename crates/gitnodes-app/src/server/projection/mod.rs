@@ -19,7 +19,7 @@ mod work_items;
 
 pub use files::{FileFilters, ProjectedFile, list_files};
 pub use migrations::migrate;
-pub use nodes::{NodeFilters, list_nodes, read_node};
+pub use nodes::{Neighbor, NodeFilters, list_nodes, node_neighbors, read_node};
 pub use pending_sync::PendingSyncRecord;
 pub use rebuild::{load_graph, rebuild, rebuild_from_raw_files};
 pub use search::{SearchFilters, SearchHit, search_nodes};

@@ -12,6 +12,10 @@ pub struct NodeFilters {
     pub paths: Vec<String>,
     pub path_prefix: Option<String>,
     pub include_virtual: bool,
+    /// Cap on rows returned. Pushed into SQL only when no tag filter is set,
+    /// since tags are matched in Rust after the query; with tags the caller
+    /// must still bound the post-filtered result itself.
+    pub limit: Option<usize>,
 }
 
 impl Default for NodeFilters {
@@ -22,6 +26,7 @@ impl Default for NodeFilters {
             paths: Vec::new(),
             path_prefix: None,
             include_virtual: true,
+            limit: None,
         }
     }
 }
@@ -43,6 +48,94 @@ pub async fn read_node(target: &TargetConfig, path: &str) -> Result<Option<Node>
     };
     filters.paths.retain(|p| !p.trim().is_empty());
     Ok(list_nodes(target, &filters).await?.into_iter().next())
+}
+
+/// One edge incident to a node, resolved to the node on the other end. Lets an
+/// agent traverse the graph from a known path without pulling the whole edge set.
+#[derive(Clone, Debug)]
+pub struct Neighbor {
+    pub path: String,
+    pub title: String,
+    pub node_type: String,
+    pub is_virtual: bool,
+    /// `"outgoing"` (this node links out) or `"incoming"` (links here).
+    pub direction: &'static str,
+    /// Edge kind storage key: `body`, `frontmatter`, or `tag`.
+    pub kind: String,
+}
+
+/// Resolve every edge touching `path` to the node on the other end. Returns
+/// `None` when `path` is not a node in the projection (so callers can surface a
+/// not-found distinct from a node that simply has no links).
+pub async fn node_neighbors(
+    target: &TargetConfig,
+    path: &str,
+) -> Result<Option<Vec<Neighbor>>, BrainError> {
+    let pool = pool()?;
+    let target_id = ensure_target_id(pool, target).await?;
+    node_neighbors_from_pool(pool, target_id, path).await
+}
+
+pub(super) async fn node_neighbors_from_pool(
+    pool: &SqlitePool,
+    target_id: i64,
+    path: &str,
+) -> Result<Option<Vec<Neighbor>>, BrainError> {
+    let node_id: Option<i64> =
+        sqlx::query_scalar("SELECT node_id FROM nodes WHERE target_id = ? AND path = ?")
+            .bind(target_id)
+            .bind(path)
+            .fetch_optional(pool)
+            .await
+            .map_err(sqlx_error)?;
+    let Some(node_id) = node_id else {
+        return Ok(None);
+    };
+
+    let mut neighbors = fetch_neighbors(pool, target_id, node_id, "outgoing").await?;
+    neighbors.extend(fetch_neighbors(pool, target_id, node_id, "incoming").await?);
+    Ok(Some(neighbors))
+}
+
+/// `direction` is `"outgoing"` (anchor is the edge source) or anything else
+/// (anchor is the edge target). The column names it selects are derived from
+/// this fixed match — never from caller input — so the formatted SQL is safe.
+async fn fetch_neighbors(
+    pool: &SqlitePool,
+    target_id: i64,
+    node_id: i64,
+    direction: &'static str,
+) -> Result<Vec<Neighbor>, BrainError> {
+    let (anchor_col, endpoint_col) = if direction == "outgoing" {
+        ("from_id", "to_id")
+    } else {
+        ("to_id", "from_id")
+    };
+    let sql = format!(
+        "SELECT n.path AS path, n.title AS title, n.node_type AS node_type, \
+                n.is_virtual AS is_virtual, e.kind AS kind \
+         FROM edges e \
+         JOIN nodes n ON n.node_id = e.{endpoint_col} AND n.target_id = e.target_id \
+         WHERE e.target_id = ? AND e.{anchor_col} = ? \
+         ORDER BY n.path ASC, e.kind ASC"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(target_id)
+        .bind(node_id)
+        .fetch_all(pool)
+        .await
+        .map_err(sqlx_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| Neighbor {
+            path: row.get::<String, _>("path"),
+            title: row.get::<String, _>("title"),
+            node_type: row.get::<String, _>("node_type"),
+            is_virtual: row.get::<i64, _>("is_virtual") != 0,
+            direction,
+            kind: row.get::<String, _>("kind"),
+        })
+        .collect())
 }
 
 pub(super) async fn list_nodes_from_pool(
@@ -85,6 +178,15 @@ pub(super) async fn list_nodes_from_pool(
         query.push_bind(format!("{prefix}%"));
     }
     query.push(" ORDER BY node_id ASC");
+
+    // Tags are matched in Rust below, so a SQL LIMIT would truncate before that
+    // filter and under-return. Only push it down when no tag filter is active.
+    if filters.tags.is_empty()
+        && let Some(limit) = filters.limit
+    {
+        query.push(" LIMIT ");
+        query.push_bind(limit as i64);
+    }
 
     let wanted_tags: HashSet<String> = filters.tags.iter().map(|t| t.to_lowercase()).collect();
     let rows = query.build().fetch_all(pool).await.map_err(sqlx_error)?;

@@ -11,7 +11,7 @@ use super::{
     FileFilters, NodeFilters, WorkItemFilters,
     files::list_files_from_pool,
     migrations::migrate,
-    nodes::{list_nodes_from_pool, load_cached_graph},
+    nodes::{list_nodes_from_pool, load_cached_graph, node_neighbors_from_pool},
     pending_sync,
     rebuild::{ProjectionSnapshot, persist_snapshot},
     search::{SearchFilters, search_nodes_from_pool},
@@ -252,6 +252,125 @@ async fn snapshot_materializes_backlinks_and_sync_state() {
     assert_eq!(sync.status, "ready");
     assert!(sync.last_success_at.is_some());
     assert_eq!(backlink_count, 1);
+}
+
+#[tokio::test]
+async fn node_neighbors_resolves_edges_in_both_directions() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+    let target = target("org", "repo-neighbors", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    let snapshot = ProjectionSnapshot::from_raw_files(
+        &[
+            raw(
+                "concepts/A.md",
+                "sha-a",
+                "---\ntype: concept\ntopic: Alpha\n---\nsee [B](./B.md)\n",
+            ),
+            raw(
+                "concepts/B.md",
+                "sha-b",
+                "---\ntype: concept\ntopic: Beta\n---\nbody\n",
+            ),
+        ],
+        &config,
+    );
+    persist_snapshot(&pool, target_id, &snapshot, "test-neighbors")
+        .await
+        .unwrap();
+
+    // A links out to B.
+    let from_a = node_neighbors_from_pool(&pool, target_id, "concepts/A.md")
+        .await
+        .unwrap()
+        .expect("A is a node");
+    assert!(
+        from_a
+            .iter()
+            .any(|n| n.path == "concepts/B.md" && n.direction == "outgoing"),
+        "A should have an outgoing edge to B: {from_a:?}"
+    );
+
+    // B sees the same edge as incoming.
+    let into_b = node_neighbors_from_pool(&pool, target_id, "concepts/B.md")
+        .await
+        .unwrap()
+        .expect("B is a node");
+    assert!(
+        into_b
+            .iter()
+            .any(|n| n.path == "concepts/A.md" && n.direction == "incoming"),
+        "B should have an incoming edge from A: {into_b:?}"
+    );
+
+    // An unknown path is None, not an empty edge list.
+    assert!(
+        node_neighbors_from_pool(&pool, target_id, "concepts/missing.md")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn list_nodes_limit_caps_results_without_a_tag_filter() {
+    let pool = test_pool().await;
+    let config = BrainConfig::default();
+    let target = target("org", "repo-limit", "main");
+    let target_id = ensure_target_id(&pool, &target).await.unwrap();
+    let snapshot = ProjectionSnapshot::from_raw_files(
+        &[
+            raw(
+                "concepts/A.md",
+                "sha-a",
+                "---\ntype: concept\ntopic: Alpha\ntags: [k]\n---\nbody\n",
+            ),
+            raw(
+                "concepts/B.md",
+                "sha-b",
+                "---\ntype: concept\ntopic: Beta\ntags: [k]\n---\nbody\n",
+            ),
+            raw(
+                "concepts/C.md",
+                "sha-c",
+                "---\ntype: concept\ntopic: Gamma\ntags: [k]\n---\nbody\n",
+            ),
+        ],
+        &config,
+    );
+    persist_snapshot(&pool, target_id, &snapshot, "test-limit")
+        .await
+        .unwrap();
+
+    // No tag filter: the limit is pushed into SQL and caps the rows returned.
+    let capped = list_nodes_from_pool(
+        &pool,
+        target_id,
+        &NodeFilters {
+            include_virtual: false,
+            limit: Some(2),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(capped.len(), 2);
+
+    // With a tag filter the SQL limit is suppressed (tags are matched in Rust),
+    // so all three tagged nodes come back for the caller to bound itself.
+    let tagged = list_nodes_from_pool(
+        &pool,
+        target_id,
+        &NodeFilters {
+            tags: vec!["k".to_string()],
+            include_virtual: false,
+            limit: Some(2),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(tagged.len(), 3);
 }
 
 #[tokio::test]

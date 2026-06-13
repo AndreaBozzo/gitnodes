@@ -1,9 +1,12 @@
 //! Read-only MCP access to a local GitNodes working tree.
 
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
+    time::SystemTime,
 };
 
 use gitnodes_domain::{BrainConfig, TargetConfig};
@@ -31,6 +34,10 @@ struct GitNodesMcp {
     root: Arc<PathBuf>,
     target: TargetConfig,
     refresh_lock: Arc<Mutex<()>>,
+    /// Fingerprint of the working tree behind the last rebuild. Lets `refresh`
+    /// skip the rescan-and-rebuild when nothing on disk has changed, so an agent
+    /// doing many tool calls in a row doesn't rebuild the projection each time.
+    last_fingerprint: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -110,6 +117,31 @@ struct NodeDocument {
     content: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct NodeLinksParams {
+    /// Repository-relative markdown path returned by search_brain or list_nodes.
+    path: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct LinkedNode {
+    path: String,
+    title: String,
+    node_type: String,
+    /// "outgoing" (this node links out) or "incoming" (the other node links here).
+    direction: String,
+    /// Edge kind: "body" link, "frontmatter" link, or shared "tag".
+    kind: String,
+    /// True for generated tag nodes, which have no markdown file of their own.
+    is_virtual: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct NodeLinksResponse {
+    path: String,
+    links: Vec<LinkedNode>,
+}
+
 #[tool_router(server_handler)]
 impl GitNodesMcp {
     #[tool(
@@ -168,6 +200,7 @@ impl GitNodesMcp {
                 paths: Vec::new(),
                 path_prefix: params.path_prefix,
                 include_virtual: params.include_virtual,
+                limit: Some(limit),
             },
         )
         .await
@@ -213,18 +246,71 @@ impl GitNodesMcp {
             content,
         }))
     }
+
+    #[tool(
+        name = "node_links",
+        description = "List the typed graph edges touching one node — incoming and outgoing body links, frontmatter links, and shared-tag connections — so an agent can traverse the GitNodes knowledge graph instead of grepping."
+    )]
+    async fn node_links(
+        &self,
+        Parameters(params): Parameters<NodeLinksParams>,
+    ) -> Result<Json<NodeLinksResponse>, String> {
+        self.refresh().await?;
+        let neighbors = projection::node_neighbors(&self.target, &params.path)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("node not found: {}", params.path))?;
+
+        Ok(Json(NodeLinksResponse {
+            links: neighbors
+                .into_iter()
+                .map(|neighbor| LinkedNode {
+                    path: neighbor.path,
+                    title: neighbor.title,
+                    node_type: neighbor.node_type,
+                    direction: neighbor.direction.to_string(),
+                    kind: neighbor.kind,
+                    is_virtual: neighbor.is_virtual,
+                })
+                .collect(),
+            path: params.path,
+        }))
+    }
 }
 
 impl GitNodesMcp {
     async fn refresh(&self) -> Result<(), String> {
         let _guard = self.refresh_lock.lock().await;
         let root = Arc::clone(&self.root);
-        let (config, files) = tokio::task::spawn_blocking(move || load_working_tree(&root))
+        let last = *self
+            .last_fingerprint
+            .lock()
+            .expect("fingerprint mutex poisoned");
+        let scan = tokio::task::spawn_blocking(move || scan_for_refresh(&root, last))
             .await
             .map_err(|error| format!("local index task failed: {error}"))??;
-        projection::rebuild_from_raw_files(&self.target, &files, &config, "mcp-working-tree")
-            .await
-            .map_err(|error| error.to_string())
+        match scan {
+            RefreshScan::Unchanged => Ok(()),
+            RefreshScan::Changed {
+                config,
+                files,
+                fingerprint,
+            } => {
+                projection::rebuild_from_raw_files(
+                    &self.target,
+                    &files,
+                    &config,
+                    "mcp-working-tree",
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                *self
+                    .last_fingerprint
+                    .lock()
+                    .expect("fingerprint mutex poisoned") = Some(fingerprint);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -265,6 +351,7 @@ pub async fn run(dir: Option<&str>) -> Result<(), String> {
         root: Arc::new(root),
         target,
         refresh_lock: Arc::new(Mutex::new(())),
+        last_fingerprint: Arc::new(std::sync::Mutex::new(None)),
     };
     server.refresh().await?;
     server
@@ -277,27 +364,112 @@ pub async fn run(dir: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-fn load_working_tree(root: &Path) -> Result<(BrainConfig, Vec<RawFile>), String> {
+/// One indexable markdown file located by the working-tree scan, before its
+/// contents are read. `size` and `mtime` are the cheap signals the fingerprint
+/// compares so an unchanged tree is detected without reading every file.
+struct ScanEntry {
+    rel: String,
+    abs: PathBuf,
+    size: u64,
+    mtime: Option<SystemTime>,
+}
+
+/// Outcome of a refresh scan: either nothing changed since the last rebuild, or
+/// the working tree was re-read and is ready to project.
+enum RefreshScan {
+    Unchanged,
+    Changed {
+        config: BrainConfig,
+        files: Vec<RawFile>,
+        fingerprint: u64,
+    },
+}
+
+/// Walk the working tree, fingerprint it, and only re-read file contents when
+/// the fingerprint differs from `last`. The stat-only walk is far cheaper than
+/// reading every file plus rebuilding FTS, which is the common no-change path.
+fn scan_for_refresh(root: &Path, last: Option<u64>) -> Result<RefreshScan, String> {
+    let entries = scan_entries(root)?;
+    let fingerprint = working_tree_fingerprint(root, &entries);
+    if last == Some(fingerprint) {
+        return Ok(RefreshScan::Unchanged);
+    }
+    let config = read_config(root)?;
+    let files = read_entries(&entries)?;
+    Ok(RefreshScan::Changed {
+        config,
+        files,
+        fingerprint,
+    })
+}
+
+/// Cheap content-independent signature of the working tree: the config file's
+/// size and mtime plus every indexable file's path, size, and mtime. A content
+/// edit changes size or mtime; a config edit is folded in because `.gitnodes.yml`
+/// shapes the projection even though it is not itself an indexed node.
+fn working_tree_fingerprint(root: &Path, entries: &[ScanEntry]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match std::fs::metadata(root.join(".gitnodes.yml")) {
+        Ok(meta) => {
+            meta.len().hash(&mut hasher);
+            hash_mtime(meta.modified().ok(), &mut hasher);
+        }
+        // Distinguish "no config" from a present-but-empty config.
+        Err(_) => u64::MAX.hash(&mut hasher),
+    }
+    for entry in entries {
+        entry.rel.hash(&mut hasher);
+        entry.size.hash(&mut hasher);
+        hash_mtime(entry.mtime, &mut hasher);
+    }
+    hasher.finish()
+}
+
+fn hash_mtime(mtime: Option<SystemTime>, hasher: &mut DefaultHasher) {
+    mtime
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos())
+        .hash(hasher);
+}
+
+fn read_config(root: &Path) -> Result<BrainConfig, String> {
     let config_path = root.join(".gitnodes.yml");
-    let config = if config_path.is_file() {
+    if config_path.is_file() {
         let source = std::fs::read_to_string(&config_path)
             .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?;
         BrainConfig::parse(&source)
-            .map_err(|error| format!("{} is invalid: {error}", config_path.display()))?
+            .map_err(|error| format!("{} is invalid: {error}", config_path.display()))
     } else {
-        BrainConfig::default()
-    };
-
-    let mut files = Vec::new();
-    scan_markdown(root, root, &mut files)?;
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok((config, files))
+        Ok(BrainConfig::default())
+    }
 }
 
-fn scan_markdown(root: &Path, current: &Path, files: &mut Vec<RawFile>) -> Result<(), String> {
-    let entries = std::fs::read_dir(current)
-        .map_err(|error| format!("failed to scan {}: {error}", current.display()))?;
+fn read_entries(entries: &[ScanEntry]) -> Result<Vec<RawFile>, String> {
+    let mut files = Vec::with_capacity(entries.len());
     for entry in entries {
+        let content = std::fs::read_to_string(&entry.abs)
+            .map_err(|error| format!("failed to read {} as UTF-8: {error}", entry.abs.display()))?;
+        let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
+        files.push(RawFile {
+            path: entry.rel.clone(),
+            sha,
+            content,
+        });
+    }
+    Ok(files)
+}
+
+fn scan_entries(root: &Path) -> Result<Vec<ScanEntry>, String> {
+    let mut entries = Vec::new();
+    collect_entries(root, root, &mut entries)?;
+    entries.sort_by(|left, right| left.rel.cmp(&right.rel));
+    Ok(entries)
+}
+
+fn collect_entries(root: &Path, current: &Path, out: &mut Vec<ScanEntry>) -> Result<(), String> {
+    let dir = std::fs::read_dir(current)
+        .map_err(|error| format!("failed to scan {}: {error}", current.display()))?;
+    for entry in dir {
         let entry =
             entry.map_err(|error| format!("failed to read {}: {error}", current.display()))?;
         let path = entry.path();
@@ -314,7 +486,7 @@ fn scan_markdown(root: &Path, current: &Path, files: &mut Vec<RawFile>) -> Resul
             {
                 continue;
             }
-            scan_markdown(root, &path, files)?;
+            collect_entries(root, &path, out)?;
             continue;
         }
         if !file_type.is_file() {
@@ -328,23 +500,21 @@ fn scan_markdown(root: &Path, current: &Path, files: &mut Vec<RawFile>) -> Resul
         if !is_included_md(&relative) {
             continue;
         }
-        let size = entry
+        let metadata = entry
             .metadata()
-            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
-            .len();
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+        let size = metadata.len();
         if size > MAX_MARKDOWN_BYTES {
             return Err(format!(
                 "{} is larger than the 1 MiB local indexing limit",
                 path.display()
             ));
         }
-        let content = std::fs::read_to_string(&path)
-            .map_err(|error| format!("failed to read {} as UTF-8: {error}", path.display()))?;
-        let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
-        files.push(RawFile {
-            path: relative,
-            sha,
-            content,
+        out.push(ScanEntry {
+            rel: relative,
+            abs: path,
+            size,
+            mtime: metadata.modified().ok(),
         });
     }
     Ok(())
@@ -365,7 +535,10 @@ fn read_confined_markdown(root: &Path, relative: &str) -> Result<String, String>
 
 #[cfg(test)]
 mod tests {
-    use super::{GitNodesMcp, load_working_tree, read_confined_markdown};
+    use super::{
+        GitNodesMcp, RefreshScan, read_confined_markdown, read_entries, scan_entries,
+        scan_for_refresh,
+    };
     use gitnodes_domain::TargetConfig;
     use rmcp::ServiceExt;
     use std::{
@@ -419,7 +592,8 @@ mod tests {
         std::fs::write(dir.path().join(".private/secret.md"), "# ignored")
             .expect("write hidden node");
 
-        let (_, files) = load_working_tree(dir.path()).expect("scan working tree");
+        let files = read_entries(&scan_entries(dir.path()).expect("scan working tree"))
+            .expect("read entries");
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "concepts/search.md");
@@ -444,6 +618,7 @@ mod tests {
                 branch: "working-tree".to_string(),
             },
             refresh_lock: Arc::new(Mutex::new(())),
+            last_fingerprint: Arc::new(std::sync::Mutex::new(None)),
         };
         let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
@@ -496,10 +671,44 @@ mod tests {
             .map(|tool| tool["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>();
         names.sort_unstable();
-        assert_eq!(names, ["list_nodes", "read_node", "search_brain"]);
+        assert_eq!(
+            names,
+            ["list_nodes", "node_links", "read_node", "search_brain"]
+        );
 
         drop(writer);
         drop(reader);
         server_task.await.expect("join MCP server task");
+    }
+
+    #[test]
+    fn refresh_scan_detects_changes_and_skips_unchanged_trees() {
+        let dir = TestDir::new();
+        std::fs::create_dir_all(dir.path().join("concepts")).expect("create concepts");
+        let note = dir.path().join("concepts/a.md");
+        std::fs::write(&note, "---\ntype: concept\ntopic: a\n---\nbody\n").expect("write note");
+
+        let fingerprint = match scan_for_refresh(dir.path(), None).expect("first scan") {
+            RefreshScan::Changed { fingerprint, .. } => fingerprint,
+            RefreshScan::Unchanged => panic!("first scan must rebuild"),
+        };
+
+        // Nothing changed on disk: the rescan must short-circuit.
+        assert!(matches!(
+            scan_for_refresh(dir.path(), Some(fingerprint)).expect("unchanged scan"),
+            RefreshScan::Unchanged
+        ));
+
+        // A content edit changes the file size, so the fingerprint must differ
+        // regardless of mtime resolution.
+        std::fs::write(
+            &note,
+            "---\ntype: concept\ntopic: a\n---\nbody, now longer\n",
+        )
+        .expect("edit note");
+        assert!(matches!(
+            scan_for_refresh(dir.path(), Some(fingerprint)).expect("changed scan"),
+            RefreshScan::Changed { .. }
+        ));
     }
 }
