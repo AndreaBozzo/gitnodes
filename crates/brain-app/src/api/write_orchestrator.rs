@@ -1,5 +1,5 @@
 use brain_domain::{BrainError, TargetConfig, WriteIntent};
-use brain_storage::Storage;
+use brain_storage::{BranchTransaction, GitTransaction};
 
 use super::{WriteResult, slugify};
 
@@ -17,40 +17,37 @@ pub(super) async fn save_file_permission_aware(
     intent: WriteIntent,
 ) -> Result<WriteResult, BrainError> {
     let permissions = crate::server::access::repository_permissions(storage, token).await?;
-    // `ProposeViaPr` skips the direct attempt even when the user could push,
-    // routing through the same PR orchestrator used by the capability fallback.
-    let force_pr = intent == WriteIntent::ProposeViaPr;
-    if permissions.push && !force_pr {
-        match storage
-            .save_file(token, path, content, sha, message, user, author_email)
-            .await
-        {
-            Ok(path) => return Ok(WriteResult::direct(path)),
+    let mut transaction =
+        GitTransaction::new(message, user, author_email).upsert_text(path, content);
+    transaction = match sha.filter(|sha| !sha.is_empty()) {
+        Some(sha) => transaction.expect_sha(path, sha),
+        None => transaction.expect_absent(path),
+    };
+
+    if permissions.push && intent != WriteIntent::ProposeViaPr {
+        match storage.commit_transaction(token, transaction.clone()).await {
+            Ok(_) => return Ok(WriteResult::direct(path)),
             Err(error) if should_fallback_to_pr(&error) => {}
             Err(error) => return Err(error),
         }
     }
 
-    let plan =
-        prepare_pr_write(storage, token, user, target, "save", path, permissions.push).await?;
-    let written_path = plan
-        .storage
-        .save_file(token, path, content, sha, message, user, author_email)
-        .await?;
-    let pr = open_write_pr(
+    propose_transaction(
         storage,
         token,
-        &plan,
+        user,
+        target,
+        "save",
+        path,
+        permissions.push,
+        transaction,
         &format!("Propose {path} via Brain UI"),
-        &format!("Brain UI could not write directly to `{}` and proposed this change through a pull request instead.\n\nTouched path: `{path}`", target.branch),
+        &format!(
+            "Brain UI could not write directly to `{}` and proposed this change through a pull request instead.\n\nTouched path: `{path}`",
+            target.branch
+        ),
     )
-    .await?;
-    Ok(WriteResult::pull_request(
-        written_path,
-        plan.branch,
-        pr.number,
-        pr.html_url,
-    ))
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -65,18 +62,19 @@ pub(super) async fn delete_file_permission_aware(
     target: &TargetConfig,
 ) -> Result<WriteResult, BrainError> {
     let permissions = crate::server::access::repository_permissions(storage, token).await?;
+    let transaction = GitTransaction::new(message, user, author_email)
+        .delete(path)
+        .expect_sha(path, sha);
+
     if permissions.push {
-        match storage
-            .delete_file(token, path, sha, message, user, author_email)
-            .await
-        {
-            Ok(()) => return Ok(WriteResult::direct(path)),
+        match storage.commit_transaction(token, transaction.clone()).await {
+            Ok(_) => return Ok(WriteResult::direct(path)),
             Err(error) if should_fallback_to_pr(&error) => {}
             Err(error) => return Err(error),
         }
     }
 
-    let plan = prepare_pr_write(
+    propose_transaction(
         storage,
         token,
         user,
@@ -84,25 +82,14 @@ pub(super) async fn delete_file_permission_aware(
         "delete",
         path,
         permissions.push,
-    )
-    .await?;
-    plan.storage
-        .delete_file(token, path, sha, message, user, author_email)
-        .await?;
-    let pr = open_write_pr(
-        storage,
-        token,
-        &plan,
+        transaction,
         &format!("Propose deleting {path} via Brain UI"),
-        &format!("Brain UI could not delete `{path}` directly from `{}` and proposed the deletion through a pull request instead.", target.branch),
+        &format!(
+            "Brain UI could not delete `{path}` directly from `{}` and proposed the deletion through a pull request instead.",
+            target.branch
+        ),
     )
-    .await?;
-    Ok(WriteResult::pull_request(
-        path,
-        plan.branch,
-        pr.number,
-        pr.html_url,
-    ))
+    .await
 }
 
 pub(super) fn should_fallback_to_pr(error: &BrainError) -> bool {
@@ -117,13 +104,8 @@ pub(super) fn should_fallback_to_pr(error: &BrainError) -> bool {
     }
 }
 
-pub(super) struct PrWritePlan {
-    pub(super) storage: brain_storage::GithubStorage,
-    pub(super) branch: String,
-    head: String,
-}
-
-pub(super) async fn prepare_pr_write(
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn propose_transaction(
     upstream_storage: &brain_storage::GithubStorage,
     token: &str,
     user: &str,
@@ -131,86 +113,63 @@ pub(super) async fn prepare_pr_write(
     action: &str,
     path: &str,
     can_push_upstream: bool,
-) -> Result<PrWritePlan, BrainError> {
-    let base_sha = upstream_storage.head_sha(token).await?;
-    let branch = pr_branch_name(user, action, path);
-
-    if can_push_upstream {
-        upstream_storage
-            .create_branch_from_sha(token, &branch, &base_sha)
-            .await?;
-        let branch_target = TargetConfig {
-            org: target.org.clone(),
-            repo: target.repo.clone(),
-            branch: branch.clone(),
-        };
-        return Ok(PrWritePlan {
-            storage: brain_storage::GithubStorage::new(
-                upstream_storage.http().clone(),
-                branch_target,
-            ),
-            branch: branch.clone(),
-            head: branch,
-        });
-    }
-
-    upstream_storage.ensure_fork(token, user).await?;
-    let fork_target = TargetConfig {
-        org: user.to_string(),
-        repo: target.repo.clone(),
-        branch: branch.clone(),
-    };
-    let fork_storage =
-        brain_storage::GithubStorage::new(upstream_storage.http().clone(), fork_target);
-    create_branch_with_retry(&fork_storage, token, &branch, &base_sha).await?;
-    Ok(PrWritePlan {
-        storage: fork_storage,
-        branch: branch.clone(),
-        head: format!("{user}:{branch}"),
-    })
-}
-
-async fn create_branch_with_retry(
-    storage: &brain_storage::GithubStorage,
-    token: &str,
-    branch: &str,
-    sha: &str,
-) -> Result<(), BrainError> {
-    let delays = [
-        std::time::Duration::from_millis(0),
-        std::time::Duration::from_millis(1_000),
-        std::time::Duration::from_millis(2_000),
-        std::time::Duration::from_millis(4_000),
-    ];
-    let mut last_error = None;
-    for delay in delays {
-        if !delay.is_zero() {
-            tokio::time::sleep(delay).await;
-        }
-        match storage.create_branch_from_sha(token, branch, sha).await {
-            Ok(()) => return Ok(()),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| BrainError::github("branch create failed")))
-}
-
-pub(super) async fn open_write_pr(
-    upstream_storage: &brain_storage::GithubStorage,
-    token: &str,
-    plan: &PrWritePlan,
+    transaction: GitTransaction,
     title: &str,
     body: &str,
-) -> Result<brain_storage::PullRequestOutcome, BrainError> {
-    upstream_storage
-        .open_pull_request(
-            token,
-            &plan.head,
-            &upstream_storage.target().branch,
-            title,
-            body,
+) -> Result<WriteResult, BrainError> {
+    let base_sha = upstream_storage.head_sha(token).await?;
+    let branch = pr_branch_name(user, action, path);
+    let (branch_storage, head) = if can_push_upstream {
+        (
+            brain_storage::GithubStorage::new(upstream_storage.http().clone(), target.clone()),
+            branch.clone(),
         )
+    } else {
+        upstream_storage.ensure_fork(token, user).await?;
+        (
+            brain_storage::GithubStorage::new(
+                upstream_storage.http().clone(),
+                TargetConfig {
+                    org: user.to_string(),
+                    repo: target.repo.clone(),
+                    branch: target.branch.clone(),
+                },
+            ),
+            format!("{user}:{branch}"),
+        )
+    };
+
+    let outcome = branch_storage
+        .commit_branch_transaction(
+            token,
+            BranchTransaction::new(base_sha, branch.clone()).add(transaction),
+        )
+        .await?;
+
+    match upstream_storage
+        .open_pull_request(token, &head, &target.branch, title, body)
         .await
+    {
+        Ok(pr) => Ok(WriteResult::pull_request(
+            path,
+            branch,
+            pr.number,
+            pr.html_url,
+        )),
+        Err(error) => {
+            if let Err(cleanup_error) = branch_storage
+                .rollback_branch_transaction(token, &outcome)
+                .await
+            {
+                tracing::warn!(
+                    branch = %outcome.branch,
+                    error = %cleanup_error,
+                    "failed to roll back branch after pull request creation failure"
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 fn pr_branch_name(user: &str, action: &str, path: &str) -> String {

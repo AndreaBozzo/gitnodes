@@ -311,16 +311,16 @@ Sfruttare la maturazione del backend GitHub-first per standardizzare il boundary
 - **Track 2 — Forge boundary (gated):** 4.1 `ForgeAdapter` → 4.3 Local/Offline. Si apre solo quando un secondo forge è davvero in scope.
 - **Track 3 — User-facing surfaces:** 4.2 Temporal Graph → 4.6 Multi-Tab. 4.5 Auto-binding work item (richiede sidecar outbox recovery — vedi 6.x trigger).
 
-**Reshape 2026-06-04 — punto di ingresso, keystone e stato reale del write path:**
+**Reshape 2026-06-13 — transaction layer maturato:**
 
-Grounding (audit codice 2026-06-04): il write path è unificato su `GitTransaction` per **un solo call site su quattro** — solo `rename_brain_file`. Il path save/delete/PR-fallback in [`api/write_orchestrator.rs`](../crates/brain-app/src/api/write_orchestrator.rs) gira ancora su `save_file`/`delete_file` (Contents API, single-file), con una **seconda policy di retry duplicata** (`create_branch_with_retry`, delay fissi `[0,1s,2s,4s]`, separata dal `BackoffPolicy` con jitter di `git_transaction.rs`) e **nessuna atomicità multi-file** sul branch di PR. Il success criterion di 4.0 ("ogni write path passa per GitTransaction/BranchTransaction") è quindi soddisfatto per 1 path su 4.
+Grounding aggiornato: save, delete, rename, work-item mutation, config write, asset upload e fallback PR passano tutti da `GitTransaction` o `BranchTransaction`. Il retry duplicato del vecchio orchestrator è stato rimosso; branch upstream/fork, commit e rollback usano una sola policy nel transaction layer. Il config editor usa `transaction.plan()` per una preview YAML prima/dopo legata allo SHA osservato.
 
-- **Keystone della Fase 4 = unificare il write path su `BranchTransaction`.** Non è "costruire 5 primitive nuove": è promuovere la sequenza PR che *già esiste* in `write_orchestrator.rs` (`prepare_pr_write` → write → `open_pull_request`) a un tipo `BranchTransaction` ri-backato su `GitTransaction`. Refactoring di codice esistente, basso rischio di design. In un colpo: elimina il retry duplicato, dà al path PR il commit multi-file atomico (**sblocca 4.0-B**), e produce la 2ª/3ª forma d'uso reale richiesta prima di estrarre `ForgeAdapter` (4.1). Le altre primitive di 4.0 (`expect_tree_sha`, `plan()`, `TransactionObserver`, idempotency) **non si costruiscono a vuoto**: si raccolgono quando un consumer reale le tira (vedi tiering in 4.0).
+- **Keystone completato.** `BranchTransaction` possiede il lifecycle del branch temporaneo, concatena una o più `GitTransaction`, elimina il branch se un commit fallisce e offre rollback esplicito quando fallisce l'apertura della PR. La PR resta intenzionalmente un'azione applicativa separata.
 
 - **Sequenza di ingresso consigliata:**
     1. **4.0-C PR-as-Choice** _(✅ DONE 2026-06-04, #22)_ — smallest spike shippato: il dispatch `WriteIntent` è in tree, l'editor lo usa. Punto di ingresso live ora = il keystone 4.0.
-    2. **4.0 keystone** _(← next)_ — unify write path su `BranchTransaction`, appoggiato al `WriteIntent` già introdotto.
-    3. **Fork (non in conflitto, code path diversi):** Track 1 collab depth (4.0-B → 4.4) **oppure** 4.2 Temporal Graph (indipendente, read-only, host già pronto).
+    2. **4.0 keystone** _(✅ DONE 2026-06-13)_ — write path unificato, `BranchTransaction` e `plan()` live.
+    3. **Next:** Track 1 collab depth (4.0-B → 4.4); 4.2 Temporal Graph resta indipendente.
 
 - **Risoluzione del fork → Track 1 prima.** Legame con l'open-sourcing (target Luglio 2026): aprire il repo carica esattamente il write/PR/conflict path coi PR dei contributor esterni. Track 1 indirizza quel carico; 4.2 è alta visibilità ma non regge nessuno stress reale introdotto dall'open-sourcing. Tenere 4.2 come ricompensa visibile dopo che 4.0-B/4.4 hanno irrobustito il path.
 
@@ -328,19 +328,19 @@ Grounding (audit codice 2026-06-04): il write path è unificato su `GitTransacti
 
 ### Track 1 — Transaction maturation (sequential)
 
-- [ ] **4.0 Git Transaction Layer Maturation** _(prerequisito di 4.1)_
+- [x] **4.0 Git Transaction Layer Maturation** _(DONE 2026-06-13; prerequisito di 4.1)_
 
-    Razionale: `crates/brain-storage/src/git_transaction.rs` è oggi il pezzo più maturo del workspace — builder fluente, preconditions duali (`expect_absent` / `expect_sha`), retry mirato solo su 422 fast-forward, riuso blob content-addressed, outcome osservabile, invariante No Dual-Write rispetto alla projection. È stato validato però contro un solo call site applicativo (`api/file_ops.rs::rename_brain_file`) e contro un fallback PR composto inline nel `write_orchestrator`. Prima di estrarre un `ForgeAdapter` trait servono altre due/tre forme d'uso reali per evitare di cementare la firma sbagliata.
+    Razionale iniziale: `crates/brain-storage/src/git_transaction/mod.rs` era già il pezzo più maturo del workspace — builder fluente, preconditions duali (`expect_absent` / `expect_sha`), retry mirato solo su 422 fast-forward, riuso blob content-addressed, outcome osservabile, invariante No Dual-Write rispetto alla projection. Prima della 4.0 era però validato contro un solo call site applicativo (`api/file_ops.rs::rename_brain_file`) e contro un fallback PR composto inline nel `write_orchestrator`. La slice ha aggiunto le forme d'uso reali necessarie senza anticipare il futuro `ForgeAdapter`.
 
     Obiettivo della 4.0: chiudere quelle forme nel runtime esistente, **senza ancora** estrarre un crate esterno o un trait multi-forge. Le primitive di sotto vengono disegnate in modo che il loro nome e contratto siano riusabili tali e quali da un futuro `ForgeTransactionAdapter`.
 
-    **Tiering (reshape 2026-06-04):** una sola primitiva è il keystone da fare per prima — `BranchTransaction`, che unifica il write path (oggi 1 call site su 4 passa per `GitTransaction`). Le altre quattro sono **consumer-driven**: si costruiscono quando una superficie reale le tira, non in astratto — la 4.0 stessa avverte contro il cementare la firma sbagliata senza forme d'uso reali.
+    **Shipped:** `BranchTransaction`, `TransactionPlan`, preview config a due passaggi, migrazione di tutti i write path e test pubblici in `crates/brain-storage/tests/git_transaction/`. I regression test low-level restano colocati nel modulo per accedere agli helper privati.
 
-    - **`BranchTransaction` esplicita** _(keystone — punto di ingresso del lavoro su 4.0)_ — oggi il fallback PR (write_orchestrator: `prepare_pr_write` → `create_branch_from_sha` / `ensure_fork` + `create_branch_with_retry` → `commit_transaction` su branch effimero → `open_pull_request`) è una sequenza ad-hoc spalmata fra orchestrator e storage. Promuoverla a tipo: `BranchTransaction::new(base_sha, branch_name, …).add(GitTransaction).commit_all(http, gh, token) → BranchTransactionOutcome { branch, head_sha, commits, pr: Option<…> }`. Rollback esplicito = delete del branch se uno step fallisce dopo la creazione. Vincolo: niente magia sul `head` del branch utente — la PR resta un'azione separata.
+    - **`BranchTransaction` esplicita — ✅ shipped.** `BranchTransaction::new(base_sha, branch_name).add(GitTransaction).commit_all(...)` crea il ref, concatena i commit sul branch e restituisce `BranchTransactionOutcome { branch, head_sha, commits }`. Rollback automatico su commit failure ed esplicito su PR failure.
 
     - **`expect_tree_sha(prefix)`** _(consumer-driven: lo tira Admin Node Control / 4.5)_ — generalizzazione di `expect_sha` a livello directory. Oggi puoi dichiarare "il file X è a sha Y", non "la sottocartella Z non è cambiata sotto di me". Serve a Admin Node Control (move/rename di intere directory, retag bulk, fix orphan) e al futuro auto-binding 4.5 quando la mutazione tocca più file derivati dal work item. Implementazione: leggere `base_tree` recursive (già fatto) e calcolare un hash deterministico delle entry sotto `prefix`, oppure verificare che il `tree.sha` della subdir non sia cambiato.
 
-    - **`transaction.plan(http, gh, token) → TransactionPlan`** _(consumer-driven: lo tira 4.4 / config editor)_ — dry-run che ritorna l'elenco di blob/tree da creare e gli eventuali precondition failure rilevati, senza eseguire `PATCH /git/refs`. Use case principali: il Visual Configuration Editor di 3.4 quando estende a editorial config (preview diff prima del commit), Admin Node Control (impatto su backlink/binding prima di un rename strutturale), Auto-binding 4.5 (preview "create issue + write file" prima di committare). Questo è anche il pezzo che rende la futura conflict resolution (4.4) implementabile senza shortcut.
+    - **`transaction.plan(...) → TransactionPlan` — ✅ shipped.** Il dry-run usa solo GET, espone head/tree, upsert/delete e precondition tipizzate. Il Saved Views editor mostra YAML prima/dopo e la conferma rifiuta uno SHA diventato stale.
 
     - **`TransactionObserver` trait** _(consumer-driven, basso valore finché audit/intent inline non fa male)_ — hook su `attempt_started / precondition_failed / fast_forward_retry / committed`. Oggi i log/audit sono inline. Estrarre l'observer chiarisce cosa appartiene al transaction layer (eventi tecnici) e cosa appartiene all'audit applicativo (intent: `propose_write`, `propose_rename`, ecc.).
 
@@ -350,7 +350,7 @@ Grounding (audit codice 2026-06-04): il write path è unificato su `GitTransacti
 
     - **Crate Rust di terze parti — valutati e scartati per questa slice.** Per archiviare la decisione: `octocrab` ha solo wrapper sottili sulla Git Data API e zero transazionalità — sostituirebbe `GithubHttp` (50 righe) con ~5 KLOC nel binario senza vantaggi. `gix`/`git2` parlano protocollo Git locale, non REST forge: rilevanti per 4.3 (Local mode), non qui. `backon`/`backoff` sostituirebbero le ~30 righe di `BackoffPolicy` con una dipendenza che capisco peggio. `reqwest-retry` non distingue retry semantici (422 fast-forward = retry, 422 precondition = abort) e quindi non è usabile.
 
-    - Success criterion: ogni write path applicativo (save, delete, rename, work item mutation, fallback PR) passa per `GitTransaction` o `BranchTransaction`; `plan()` è chiamato almeno da una superficie reale (config editor o admin); il file `git_transaction.rs` è promosso a sottomodulo dichiarato pubblico di `brain-storage` con test estratti da inline a `tests/git_transaction/`.
+    - **Deferred consumer-driven:** `expect_tree_sha(prefix)` resta per Admin Node Control/4.5; `TransactionObserver` resta rinviato finché audit inline non crea attrito; idempotency keys richiedono evidenza di replay reali. Nessun crate split o trait forge in questa slice.
 
 - [ ] **4.0-B Edit Session (Staged Commit)**
 

@@ -21,16 +21,17 @@ pub(crate) use file_ops::{relativize, slugify, validate_markdown_path};
 mod config_admin;
 pub use config_admin::{
     AppConfig, AuditEntry, ConfigLoadDiagnostic, ConfigLoadStatus, PendingSyncEntry,
-    ProjectionStatus, ProjectionStatusEntry, SessionEntry, get_app_config, get_current_user,
-    get_projection_status, list_pending_sync, list_sessions, list_views, load_audit_log,
-    load_brain_config, load_brain_config_status, load_brain_config_status_for_target,
-    load_brain_template, revoke_session, save_views,
+    ProjectionStatus, ProjectionStatusEntry, SessionEntry, ViewsPreview, get_app_config,
+    get_current_user, get_projection_status, list_pending_sync, list_sessions, list_views,
+    load_audit_log, load_brain_config, load_brain_config_status,
+    load_brain_config_status_for_target, load_brain_template, preview_views, revoke_session,
+    save_views,
 };
 #[cfg(feature = "ssr")]
 pub use config_admin::{
     GetAppConfig, GetCurrentUser, GetProjectionStatus, ListPendingSync, ListSessions, ListViews,
     LoadAuditLog, LoadBrainConfig, LoadBrainConfigStatus, LoadBrainConfigStatusForTarget,
-    LoadBrainTemplate, RevokeSession, SaveViews,
+    LoadBrainTemplate, PreviewViews, RevokeSession, SaveViews,
 };
 
 mod graph;
@@ -188,6 +189,7 @@ const SERVER_FNS: &[&str] = &[
     "AssignWorkItem",
     "BindWorkItem",
     "ListViews",
+    "PreviewViews",
     "SaveViews",
     "SearchBrain",
     "ListOpenPrs",
@@ -235,6 +237,7 @@ pub fn register_server_functions() {
     register_explicit::<AssignWorkItem>();
     register_explicit::<BindWorkItem>();
     register_explicit::<ListViews>();
+    register_explicit::<PreviewViews>();
     register_explicit::<SaveViews>();
     register_explicit::<SearchBrain>();
     register_explicit::<ListOpenPrs>();

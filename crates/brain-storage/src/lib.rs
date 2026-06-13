@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 pub mod atomic_rename;
 pub mod git_transaction;
 pub use git_transaction::{
-    BackoffPolicy, GitTransaction, GitTransactionOutcome, RenameMutation, RenameOutcome,
+    BackoffPolicy, BranchTransaction, BranchTransactionOutcome, GitTransaction,
+    GitTransactionOutcome, PreconditionExpectation, PreconditionStatus, RenameMutation,
+    RenameOutcome, TransactionPlan, TransactionPrecondition, TransactionUpsert,
 };
 
 pub trait Storage: Send + Sync {
@@ -571,6 +573,33 @@ impl GithubStorage {
         Ok(outcome)
     }
 
+    pub async fn plan_transaction(
+        &self,
+        token: &str,
+        transaction: &GitTransaction,
+    ) -> Result<TransactionPlan, BrainError> {
+        transaction.plan(&self.http, &self.gh, token).await
+    }
+
+    pub async fn commit_branch_transaction(
+        &self,
+        token: &str,
+        transaction: BranchTransaction,
+    ) -> Result<BranchTransactionOutcome, BrainError> {
+        // A branch transaction only ever writes to a freshly created ephemeral
+        // branch, never the served target branch, so the served target's graph
+        // cache stays valid — invalidating it here would force a needless refetch.
+        transaction.commit_all(&self.http, &self.gh, token).await
+    }
+
+    pub async fn rollback_branch_transaction(
+        &self,
+        token: &str,
+        outcome: &BranchTransactionOutcome,
+    ) -> Result<(), BrainError> {
+        outcome.rollback(&self.http, &self.gh, token).await
+    }
+
     /// Apply a rename as a single Git Data API commit. Kept as a compatibility
     /// wrapper while callers migrate to [`GitTransaction`].
     pub async fn atomic_rename(
@@ -951,40 +980,11 @@ impl Storage for GithubStorage {
         author_name: &str,
         author_email: &str,
     ) -> Result<String, BrainError> {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-        let body = serde_json::json!({
-            "message": message,
-            "content": encoded,
-            "branch": self.branch(),
-            "committer": {
-                "name": author_name,
-                "email": author_email,
-            }
-        });
-        let url = self.contents_url(path);
-        let response = self
-            .http
-            .put(&url, token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BrainError::github(format!("PUT: {e}")))?;
-        if response.status().is_success() {
-            // An uploaded asset doesn't change the markdown graph but it _can_
-            // appear in `![alt](...)` markdown that we just rendered; bumping
-            // the cache here is cheap insurance against stale image links and
-            // closes the gap that was a latent bug pre-Phase-2A.
-            invalidate(&self.target_key());
-            Ok(path.to_string())
-        } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            Err(BrainError::github(format!(
-                "API error {} — {}",
-                status,
-                body.chars().take(200).collect::<String>()
-            )))
-        }
+        let transaction = GitTransaction::new(message, author_name, author_email)
+            .upsert_bytes(path, bytes.to_vec())
+            .expect_absent(path);
+        self.commit_transaction(token, transaction).await?;
+        Ok(path.to_string())
     }
 
     async fn list_folders(&self, token: &str) -> Result<Vec<String>, BrainError> {

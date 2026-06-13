@@ -41,6 +41,7 @@ use crate::GithubHttp;
 
 /// Inputs retained for the rename call site. Prefer [`GitTransaction`] for new
 /// write paths; this type now maps one-to-one onto [`GitMutation`].
+#[derive(Clone)]
 pub struct RenameMutation {
     /// `(path, new_content)` pairs to add or update in the tree. The renamed
     /// file's *new* path must be in here; backlink-rewritten referrers also
@@ -69,6 +70,7 @@ pub struct RenameMutation {
 /// - save: one `upsert`, plus either `expect_absent` or `expected_shas`
 /// - delete: one `delete`, plus `expected_shas`
 /// - rename: one or more `upsert`s, one `delete`, and both precondition kinds
+#[derive(Clone)]
 struct GitMutation {
     upserts: Vec<(String, Vec<u8>)>,
     deletes: Vec<String>,
@@ -100,6 +102,7 @@ impl From<RenameMutation> for GitMutation {
 /// Fluent builder for a Git transaction. It accumulates tree edits in memory,
 /// then commits them against the current branch head with optimistic
 /// preconditions and fast-forward retry.
+#[derive(Clone)]
 pub struct GitTransaction {
     mutation: GitMutation,
     policy: BackoffPolicy,
@@ -165,16 +168,163 @@ impl GitTransaction {
     ) -> Result<GitTransactionOutcome, BrainError> {
         run_transaction(http, gh, token, self.mutation, self.policy).await
     }
+
+    /// Inspect the current branch head and evaluate optimistic preconditions
+    /// without creating blobs, trees, commits, or updating a ref.
+    pub async fn plan(
+        &self,
+        http: &GithubHttp,
+        gh: &GithubClient,
+        token: &str,
+    ) -> Result<TransactionPlan, BrainError> {
+        plan_transaction(http, gh, token, &self.mutation).await
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionUpsert {
+    pub path: String,
+    pub byte_len: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreconditionExpectation {
+    Absent,
+    BlobSha(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreconditionStatus {
+    Satisfied,
+    Failed { kind: ConflictKind, message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionPrecondition {
+    pub path: String,
+    pub expectation: PreconditionExpectation,
+    pub status: PreconditionStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionPlan {
+    pub head_sha: String,
+    pub base_tree_sha: String,
+    pub upserts: Vec<TransactionUpsert>,
+    pub deletes: Vec<String>,
+    pub preconditions: Vec<TransactionPrecondition>,
+}
+
+impl TransactionPlan {
+    pub fn can_commit(&self) -> bool {
+        self.preconditions
+            .iter()
+            .all(|check| check.status == PreconditionStatus::Satisfied)
+    }
 }
 
 /// Observable result of a successful transaction. The caller doesn't need this
 /// for correctness today, but tests and future audit logging benefit from it.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GitTransactionOutcome {
     pub commit_sha: String,
     pub head_before: String,
     pub head_after: String,
     pub attempts: u32,
+}
+
+/// A sequence of commits owned by one ephemeral branch lifecycle.
+pub struct BranchTransaction {
+    base_sha: String,
+    branch: String,
+    transactions: Vec<GitTransaction>,
+    branch_policy: BackoffPolicy,
+}
+
+impl BranchTransaction {
+    pub fn new(base_sha: impl Into<String>, branch: impl Into<String>) -> Self {
+        Self {
+            base_sha: base_sha.into(),
+            branch: branch.into(),
+            transactions: Vec::new(),
+            branch_policy: BackoffPolicy {
+                max_attempts: 4,
+                base_delay: Duration::from_secs(1),
+                max_delay: Duration::from_secs(4),
+            },
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)] // Fluent transaction builder, not arithmetic addition.
+    pub fn add(mut self, transaction: GitTransaction) -> Self {
+        self.transactions.push(transaction);
+        self
+    }
+
+    pub fn with_branch_policy(mut self, policy: BackoffPolicy) -> Self {
+        self.branch_policy = policy;
+        self
+    }
+
+    pub async fn commit_all(
+        self,
+        http: &GithubHttp,
+        gh: &GithubClient,
+        token: &str,
+    ) -> Result<BranchTransactionOutcome, BrainError> {
+        if self.transactions.is_empty() {
+            return Err(BrainError::other("branch_transaction: no transactions"));
+        }
+
+        let branch_gh = gh.with_branch(self.branch.clone());
+        create_branch_with_retry(http, &branch_gh, token, &self.base_sha, self.branch_policy)
+            .await?;
+
+        let mut commits = Vec::with_capacity(self.transactions.len());
+        for transaction in self.transactions {
+            match transaction.commit(http, &branch_gh, token).await {
+                Ok(outcome) => commits.push(outcome),
+                Err(error) => {
+                    if let Err(cleanup_error) = delete_branch(http, &branch_gh, token).await {
+                        tracing::warn!(
+                            branch = %self.branch,
+                            error = %cleanup_error,
+                            "failed to roll back branch after transaction failure"
+                        );
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        let head_sha = commits
+            .last()
+            .map(|outcome| outcome.head_after.clone())
+            .unwrap_or_else(|| self.base_sha.clone());
+        Ok(BranchTransactionOutcome {
+            branch: self.branch,
+            head_sha,
+            commits,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BranchTransactionOutcome {
+    pub branch: String,
+    pub head_sha: String,
+    pub commits: Vec<GitTransactionOutcome>,
+}
+
+impl BranchTransactionOutcome {
+    pub async fn rollback(
+        &self,
+        http: &GithubHttp,
+        gh: &GithubClient,
+        token: &str,
+    ) -> Result<(), BrainError> {
+        delete_branch(http, &gh.with_branch(self.branch.clone()), token).await
+    }
 }
 
 /// Backwards-compatible rename result.
@@ -295,6 +445,104 @@ async fn run_transaction(
     }))
 }
 
+async fn plan_transaction(
+    http: &GithubHttp,
+    gh: &GithubClient,
+    token: &str,
+    mutation: &GitMutation,
+) -> Result<TransactionPlan, BrainError> {
+    if mutation.upserts.is_empty() && mutation.deletes.is_empty() {
+        return Err(BrainError::other("git_transaction: empty mutation"));
+    }
+
+    let head_sha = get_head_sha(http, gh, token).await?;
+    let base_tree_sha = get_commit_tree(http, gh, token, &head_sha).await?;
+    let preconditions = evaluate_preconditions(http, gh, token, &base_tree_sha, mutation).await?;
+
+    Ok(TransactionPlan {
+        head_sha,
+        base_tree_sha,
+        upserts: mutation
+            .upserts
+            .iter()
+            .map(|(path, content)| TransactionUpsert {
+                path: path.clone(),
+                byte_len: content.len(),
+            })
+            .collect(),
+        deletes: mutation.deletes.clone(),
+        preconditions,
+    })
+}
+
+async fn evaluate_preconditions(
+    http: &GithubHttp,
+    gh: &GithubClient,
+    token: &str,
+    base_tree: &str,
+    mutation: &GitMutation,
+) -> Result<Vec<TransactionPrecondition>, BrainError> {
+    if mutation.expect_absent.is_empty() && mutation.expected_shas.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let entries = get_tree_recursive(http, gh, token, base_tree).await?;
+    let by_path: HashMap<&str, &str> = entries
+        .iter()
+        .filter(|entry| entry.kind == "blob")
+        .map(|entry| (entry.path.as_str(), entry.sha.as_str()))
+        .collect();
+    let mut checks =
+        Vec::with_capacity(mutation.expect_absent.len() + mutation.expected_shas.len());
+
+    for path in &mutation.expect_absent {
+        let status = if by_path.contains_key(path.as_str()) {
+            PreconditionStatus::Failed {
+                kind: ConflictKind::PathTaken,
+                message: format!("destination already exists: {path}"),
+            }
+        } else {
+            PreconditionStatus::Satisfied
+        };
+        checks.push(TransactionPrecondition {
+            path: path.clone(),
+            expectation: PreconditionExpectation::Absent,
+            status,
+        });
+    }
+
+    for (path, expected) in &mutation.expected_shas {
+        let status = match by_path.get(path.as_str()) {
+            Some(actual) if *actual == expected.as_str() => PreconditionStatus::Satisfied,
+            Some(actual) => PreconditionStatus::Failed {
+                kind: ConflictKind::BlobShaMoved,
+                message: format!("{path} changed since read (expected {expected}, found {actual})"),
+            },
+            None => PreconditionStatus::Failed {
+                kind: ConflictKind::RemotePathDeletedUnderUs,
+                message: format!("{path} no longer exists"),
+            },
+        };
+        checks.push(TransactionPrecondition {
+            path: path.clone(),
+            expectation: PreconditionExpectation::BlobSha(expected.clone()),
+            status,
+        });
+    }
+
+    Ok(checks)
+}
+
+fn ensure_preconditions(checks: &[TransactionPrecondition]) -> Result<(), BrainError> {
+    match checks.iter().find_map(|check| match &check.status {
+        PreconditionStatus::Satisfied => None,
+        PreconditionStatus::Failed { kind, message } => Some((*kind, message.clone())),
+    }) {
+        Some((kind, message)) => Err(BrainError::conflict(kind, message)),
+        None => Ok(()),
+    }
+}
+
 enum AttemptError {
     /// Final ref update was rejected with `422 not a fast forward`. Safe to
     /// retry: re-read HEAD, re-check preconditions, rebuild tree+commit,
@@ -321,46 +569,12 @@ async fn attempt_commit(
         .await
         .map_err(AttemptError::Fatal)?;
 
-    // Precondition check: verify against the *exact* base_tree we are about to
-    // build on top of. This is atomic with respect to the commit because the
-    // commit's `parents` is `head_before` and `base_tree` is its root tree —
-    // anything we observe here is what the new commit will rebase onto.
-    if !mutation.expect_absent.is_empty() || !mutation.expected_shas.is_empty() {
-        let entries = get_tree_recursive(http, gh, token, &base_tree)
-            .await
-            .map_err(AttemptError::Fatal)?;
-        let mut by_path: HashMap<&str, &str> = HashMap::with_capacity(entries.len());
-        for e in &entries {
-            if e.kind == "blob" {
-                by_path.insert(e.path.as_str(), e.sha.as_str());
-            }
-        }
-        for path in &mutation.expect_absent {
-            if by_path.contains_key(path.as_str()) {
-                return Err(AttemptError::Fatal(BrainError::conflict(
-                    ConflictKind::PathTaken,
-                    format!("destination already exists: {path}"),
-                )));
-            }
-        }
-        for (path, expected) in &mutation.expected_shas {
-            match by_path.get(path.as_str()) {
-                Some(actual) if *actual == expected.as_str() => {}
-                Some(actual) => {
-                    return Err(AttemptError::Fatal(BrainError::conflict(
-                        ConflictKind::BlobShaMoved,
-                        format!("{path} changed since read (expected {expected}, found {actual})"),
-                    )));
-                }
-                None => {
-                    return Err(AttemptError::Fatal(BrainError::conflict(
-                        ConflictKind::RemotePathDeletedUnderUs,
-                        format!("{path} no longer exists"),
-                    )));
-                }
-            }
-        }
-    }
+    // Verify against the exact tree used as this commit's parent. The same
+    // evaluator powers dry-run plans, preventing preview/commit drift.
+    let preconditions = evaluate_preconditions(http, gh, token, &base_tree, mutation)
+        .await
+        .map_err(AttemptError::Fatal)?;
+    ensure_preconditions(&preconditions).map_err(AttemptError::Fatal)?;
 
     let tree_sha = create_tree(http, gh, token, &base_tree, path_to_blob, &mutation.deletes)
         .await
@@ -604,6 +818,90 @@ async fn create_commit(
     let resp: CommitCreatedResponse =
         GithubHttp::send_json(http.post(&url, token).json(&body), "git_commit_create").await?;
     Ok(resp.sha)
+}
+
+async fn create_branch_with_retry(
+    http: &GithubHttp,
+    gh: &GithubClient,
+    token: &str,
+    base_sha: &str,
+    policy: BackoffPolicy,
+) -> Result<(), BrainError> {
+    let mut last_error = None;
+    for attempt in 1..=policy.max_attempts {
+        match create_branch(http, gh, token, base_sha).await {
+            Ok(()) => return Ok(()),
+            Err(error) if branch_creation_is_transient(&error) => {
+                last_error = Some(error);
+                if attempt < policy.max_attempts {
+                    sleep_with_backoff(&policy, attempt).await;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| BrainError::github("git_ref_create failed")))
+}
+
+async fn create_branch(
+    http: &GithubHttp,
+    gh: &GithubClient,
+    token: &str,
+    base_sha: &str,
+) -> Result<(), BrainError> {
+    let url = gh.git_refs_url();
+    let body = json!({
+        "ref": format!("refs/heads/{}", gh.target().branch),
+        "sha": base_sha,
+    });
+    let resp = http
+        .post(&url, token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| BrainError::github(format!("git_ref_create fetch: {error}")))?;
+    response_without_body(resp, "git_ref_create").await
+}
+
+async fn delete_branch(
+    http: &GithubHttp,
+    gh: &GithubClient,
+    token: &str,
+) -> Result<(), BrainError> {
+    let resp = http
+        .delete(&gh.git_ref_url(), token)
+        .send()
+        .await
+        .map_err(|error| BrainError::github(format!("git_ref_delete fetch: {error}")))?;
+    response_without_body(resp, "git_ref_delete").await
+}
+
+async fn response_without_body(resp: reqwest::Response, context: &str) -> Result<(), BrainError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(BrainError::github(format!(
+        "{context} status {status}: {}",
+        body.chars().take(512).collect::<String>()
+    )))
+}
+
+fn branch_creation_is_transient(error: &BrainError) -> bool {
+    let message = error.to_string().to_lowercase();
+    if message.contains("already exists")
+        || message.contains("status 401")
+        || message.contains("status 403")
+    {
+        return false;
+    }
+    message.contains("status 404")
+        || message.contains("status 422")
+        || message.contains("status 500")
+        || message.contains("status 502")
+        || message.contains("status 503")
+        || message.contains("status 504")
 }
 
 async fn update_ref(

@@ -118,6 +118,70 @@ pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ApiError> {
     Ok(cfg.views.clone())
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ViewsPreview {
+    pub path: String,
+    pub operation: String,
+    pub current_yaml: String,
+    pub proposed_yaml: String,
+    pub expected_sha: Option<String>,
+    pub head_sha: String,
+    pub base_tree_sha: String,
+}
+
+#[server(PreviewViews, "/api", endpoint = "preview_views")]
+pub async fn preview_views(
+    target: TargetRef,
+    views: Vec<ViewSpec>,
+) -> Result<ViewsPreview, ApiError> {
+    use crate::server::session;
+
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
+    let user = session::session_user_or_fallback(&s).await;
+    let storage = session::storage_for(target).map_err(sfe)?;
+    crate::server::access::require_admin(&storage, &token)
+        .await
+        .map_err(sfe)?;
+
+    let (current_yaml, expected_sha) = read_views_config(&storage, &token).await.map_err(sfe)?;
+    let (_cfg, proposed_yaml) = build_views_config(&current_yaml, views).map_err(sfe)?;
+    let transaction = views_transaction(
+        &proposed_yaml,
+        expected_sha.as_deref(),
+        &user,
+        &format!("{user}@users.noreply.github.com"),
+    );
+    let plan = storage
+        .plan_transaction(&token, &transaction)
+        .await
+        .map_err(sfe)?;
+    if !plan.can_commit() {
+        let failed = plan
+            .preconditions
+            .into_iter()
+            .find(|check| !matches!(check.status, brain_storage::PreconditionStatus::Satisfied))
+            .expect("can_commit false requires a failed precondition");
+        if let brain_storage::PreconditionStatus::Failed { kind, message } = failed.status {
+            return Err(sfe(BrainError::conflict(kind, message)));
+        }
+    }
+
+    Ok(ViewsPreview {
+        path: CONFIG_PATH.to_string(),
+        operation: if expected_sha.is_some() {
+            "update".to_string()
+        } else {
+            "create".to_string()
+        },
+        current_yaml,
+        proposed_yaml,
+        expected_sha,
+        head_sha: plan.head_sha,
+        base_tree_sha: plan.base_tree_sha,
+    })
+}
+
 /// Replace the entire `views` block in `.brain-config.yml` with the supplied
 /// list. Other config fields (node_types, label_taxonomy, default_type) are
 /// preserved by parsing -> mutating -> re-serializing the existing file. Routes
@@ -127,10 +191,13 @@ pub async fn list_views(target: TargetRef) -> Result<Vec<ViewSpec>, ApiError> {
 /// Returns the same `WriteResult` shape as `SaveBrainFile` so the admin UI can
 /// render `Saved` / `Proposed via PR #...` consistently with the editor.
 #[server(SaveViews, "/api", endpoint = "save_views")]
-pub async fn save_views(target: TargetRef, views: Vec<ViewSpec>) -> Result<WriteResult, ApiError> {
+pub async fn save_views(
+    target: TargetRef,
+    views: Vec<ViewSpec>,
+    expected_sha: Option<String>,
+) -> Result<WriteResult, ApiError> {
     use crate::knowledge::config_loader;
     use crate::server::session;
-    use brain_storage::Storage;
 
     let target = super::target_from_ref(target).map_err(sfe)?;
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
@@ -140,30 +207,9 @@ pub async fn save_views(target: TargetRef, views: Vec<ViewSpec>) -> Result<Write
         .await
         .map_err(sfe)?;
 
-    const CONFIG_PATH: &str = ".brain-config.yml";
-    let (existing_raw, existing_sha) = match storage.read_file(&token, CONFIG_PATH).await {
-        Ok((raw, sha)) => (raw, Some(sha)),
-        Err(BrainError::NotFound(_)) => (String::new(), None),
-        Err(e) => return Err(sfe(e)),
-    };
-
-    let mut cfg = if existing_raw.trim().is_empty() {
-        BrainConfig::default()
-    } else {
-        BrainConfig::parse(&existing_raw).map_err(|e| {
-            sfe(BrainError::other(format!(
-                "current .brain-config.yml does not parse: {e}"
-            )))
-        })?
-    };
-    cfg.views = views;
-    cfg.validate()
-        .map_err(|e| sfe(BrainError::other(e.to_string())))?;
-
-    let new_yaml = serde_yaml::to_string(&cfg)
-        .map_err(|e| sfe(BrainError::other(format!("yaml serialize: {e}"))))?;
-    super::limits::check_len("Views config", &new_yaml, super::limits::MAX_VIEWS_BYTES)
-        .map_err(sfe)?;
+    let (existing_raw, live_sha) = read_views_config(&storage, &token).await.map_err(sfe)?;
+    ensure_preview_sha(expected_sha.as_deref(), live_sha.as_deref()).map_err(sfe)?;
+    let (cfg, new_yaml) = build_views_config(&existing_raw, views).map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = "Update saved views via Brain UI".to_string();
 
@@ -172,7 +218,7 @@ pub async fn save_views(target: TargetRef, views: Vec<ViewSpec>) -> Result<Write
         &token,
         CONFIG_PATH,
         &new_yaml,
-        existing_sha.as_deref(),
+        expected_sha.as_deref(),
         &commit_msg,
         &user,
         &author_email,
@@ -222,6 +268,111 @@ pub async fn save_views(target: TargetRef, views: Vec<ViewSpec>) -> Result<Write
             crate::server::audit::log("api_error", Some(&user), &format!("save_views: {e}")).await;
             Err(sfe(e))
         }
+    }
+}
+
+#[cfg(feature = "ssr")]
+const CONFIG_PATH: &str = ".brain-config.yml";
+
+#[cfg(feature = "ssr")]
+async fn read_views_config(
+    storage: &brain_storage::GithubStorage,
+    token: &str,
+) -> Result<(String, Option<String>), BrainError> {
+    use brain_storage::Storage;
+
+    match storage.read_file(token, CONFIG_PATH).await {
+        Ok((raw, sha)) => Ok((raw, Some(sha))),
+        Err(BrainError::NotFound(_)) => Ok((String::new(), None)),
+        // `read_file` surfaces a missing file as a `content status 404` from the
+        // Contents endpoint. Match that context specifically so unrelated 404s
+        // (repo/permission errors) keep surfacing instead of masquerading as an
+        // empty config.
+        Err(error) if error.to_string().contains("content status 404") => Ok((String::new(), None)),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn build_views_config(
+    existing_raw: &str,
+    views: Vec<ViewSpec>,
+) -> Result<(BrainConfig, String), BrainError> {
+    let mut cfg = if existing_raw.trim().is_empty() {
+        BrainConfig::default()
+    } else {
+        BrainConfig::parse(existing_raw).map_err(|error| {
+            BrainError::other(format!("current .brain-config.yml does not parse: {error}"))
+        })?
+    };
+    cfg.views = views;
+    cfg.validate()
+        .map_err(|error| BrainError::other(error.to_string()))?;
+    let yaml = serde_yaml::to_string(&cfg)
+        .map_err(|error| BrainError::other(format!("yaml serialize: {error}")))?;
+    super::limits::check_len("Views config", &yaml, super::limits::MAX_VIEWS_BYTES)?;
+    Ok((cfg, yaml))
+}
+
+#[cfg(feature = "ssr")]
+fn views_transaction(
+    yaml: &str,
+    expected_sha: Option<&str>,
+    user: &str,
+    author_email: &str,
+) -> brain_storage::GitTransaction {
+    let transaction =
+        brain_storage::GitTransaction::new("Update saved views via Brain UI", user, author_email)
+            .upsert_text(CONFIG_PATH, yaml);
+    match expected_sha {
+        Some(sha) => transaction.expect_sha(CONFIG_PATH, sha),
+        None => transaction.expect_absent(CONFIG_PATH),
+    }
+}
+
+#[cfg(feature = "ssr")]
+fn ensure_preview_sha(expected: Option<&str>, live: Option<&str>) -> Result<(), BrainError> {
+    if expected == live {
+        return Ok(());
+    }
+    Err(BrainError::conflict(
+        brain_domain::ConflictKind::BlobShaMoved,
+        format!(
+            "{CONFIG_PATH} changed after preview (expected {}, found {})",
+            expected.unwrap_or("absent"),
+            live.unwrap_or("absent")
+        ),
+    ))
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod views_transaction_tests {
+    use super::*;
+
+    #[test]
+    fn views_yaml_generation_is_deterministic() {
+        let views = vec![ViewSpec {
+            name: "Open tasks".into(),
+            slug: "open-tasks".into(),
+            tags: vec!["open".into()],
+            types: Vec::new(),
+            weight: Some(10),
+        }];
+        let (_, first) = build_views_config("", views.clone()).expect("first");
+        let (_, second) = build_views_config("", views).expect("second");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn stale_preview_sha_is_rejected() {
+        let error = ensure_preview_sha(Some("OLD"), Some("NEW")).expect_err("stale");
+        assert!(matches!(
+            error,
+            BrainError::Conflict {
+                kind: brain_domain::ConflictKind::BlobShaMoved,
+                ..
+            }
+        ));
     }
 }
 

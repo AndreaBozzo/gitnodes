@@ -244,7 +244,7 @@ async fn apply_work_item_mutation(
 ) -> Result<WorkItemMutationResult, brain_domain::BrainError> {
     use crate::server::session;
 
-    use super::write_orchestrator::{open_write_pr, prepare_pr_write, should_fallback_to_pr};
+    use super::write_orchestrator::{propose_transaction, should_fallback_to_pr};
 
     super::limits::check_len("Work item id", &brain_id, super::limits::MAX_FIELD_LEN)?;
     if let WorkItemMutation::Assignees(ref names) = mutation {
@@ -257,22 +257,27 @@ async fn apply_work_item_mutation(
     let (s, token, permissions) = session::require_target_read(&target).await?;
     let user = session::session_user_or_fallback(&s).await;
     let storage = session::storage_for(target.clone())?;
+    let prepared = prepare_work_item_mutation(
+        &token,
+        &user,
+        &target,
+        &storage,
+        brain_id.clone(),
+        mutation.clone(),
+    )
+    .await?;
 
     if permissions.push {
-        match apply_work_item_mutation_inner(
-            &token,
-            &user,
-            &target,
-            &storage,
-            brain_id.clone(),
-            mutation.clone(),
-            true,
-            true,
-            true,
-        )
-        .await
+        match storage
+            .commit_transaction(&token, prepared.transaction.clone())
+            .await
         {
-            Ok(item) => {
+            Ok(_) => {
+                let item = finalize_work_item_mutation(
+                    &token, &user, &target, &storage, &brain_id, &mutation, &prepared, true, true,
+                    true,
+                )
+                .await?;
                 let path = item.content_path.clone().unwrap_or_default();
                 return Ok(WorkItemMutationResult {
                     item,
@@ -284,15 +289,8 @@ async fn apply_work_item_mutation(
         }
     }
 
-    let current = crate::server::projection::load_work_item_by_brain_id(&target, &brain_id)
-        .await?
-        .ok_or_else(|| {
-            brain_domain::BrainError::parse(format!("work item not found: {brain_id}"))
-        })?;
-    let path = current.content_path.clone().ok_or_else(|| {
-        brain_domain::BrainError::parse(format!("work item {brain_id} has no content path"))
-    })?;
-    let plan = prepare_pr_write(
+    let path = prepared.path.clone();
+    let write = propose_transaction(
         &storage,
         &token,
         &user,
@@ -300,37 +298,21 @@ async fn apply_work_item_mutation(
         "work-item",
         &path,
         permissions.push,
-    )
-    .await?;
-    let item = apply_work_item_mutation_inner(
-        &token,
-        &user,
-        &target,
-        &plan.storage,
-        brain_id.clone(),
-        mutation,
-        false,
-        false,
-        false,
-    )
-    .await?;
-    let pr = open_write_pr(
-        &storage,
-        &token,
-        &plan,
+        prepared.transaction.clone(),
         &format!("Propose work item update {brain_id} via Brain UI"),
         &format!("Brain UI could not update `{path}` directly on `{}` and proposed the work item change through a pull request instead.", target.branch),
     )
     .await?;
+    let pr_number = write.pr_number.unwrap_or_default();
     crate::server::audit::log(
         "propose_work_item_mutation",
         Some(&user),
-        &format!("{brain_id} via PR #{}", pr.number),
+        &format!("{brain_id} via PR #{pr_number}"),
     )
     .await;
     Ok(WorkItemMutationResult {
-        item,
-        write: WriteResult::pull_request(path, plan.branch, pr.number, pr.html_url),
+        item: prepared.mutated,
+        write,
     })
 }
 
@@ -408,6 +390,50 @@ async fn apply_work_item_mutation_inner(
     patch_projection: bool,
     publish_event: bool,
 ) -> Result<WorkItem, brain_domain::BrainError> {
+    let prepared = prepare_work_item_mutation(
+        token,
+        user,
+        target,
+        storage,
+        brain_id.clone(),
+        mutation.clone(),
+    )
+    .await?;
+    storage
+        .commit_transaction(token, prepared.transaction.clone())
+        .await?;
+    finalize_work_item_mutation(
+        token,
+        user,
+        target,
+        storage,
+        &brain_id,
+        &mutation,
+        &prepared,
+        sync_provider,
+        patch_projection,
+        publish_event,
+    )
+    .await
+}
+
+#[cfg(feature = "ssr")]
+struct PreparedWorkItemMutation {
+    original: WorkItem,
+    mutated: WorkItem,
+    path: String,
+    transaction: brain_storage::GitTransaction,
+}
+
+#[cfg(feature = "ssr")]
+async fn prepare_work_item_mutation(
+    token: &str,
+    user: &str,
+    target: &brain_domain::TargetConfig,
+    storage: &brain_storage::GithubStorage,
+    brain_id: String,
+    mutation: WorkItemMutation,
+) -> Result<PreparedWorkItemMutation, brain_domain::BrainError> {
     use brain_domain::BrainError;
     use brain_storage::Storage;
     use serde_yaml::Value;
@@ -475,34 +501,49 @@ async fn apply_work_item_mutation_inner(
         }
     };
     let author_email = format!("{user}@users.noreply.github.com");
+    let transaction = brain_storage::GitTransaction::new(commit_msg, user, author_email)
+        .upsert_text(&path, new_content)
+        .expect_sha(&path, sha);
 
-    storage
-        .save_file(
-            token,
-            &path,
-            &new_content,
-            Some(&sha),
-            &commit_msg,
-            user,
-            &author_email,
-        )
-        .await?;
+    Ok(PreparedWorkItemMutation {
+        mutated: work_item_with_mutation(work_item.clone(), &mutation),
+        original: work_item,
+        path,
+        transaction,
+    })
+}
 
-    crate::server::audit::log(mutation.audit_kind(), Some(user), &path).await;
+#[cfg(feature = "ssr")]
+#[allow(clippy::too_many_arguments)]
+async fn finalize_work_item_mutation(
+    token: &str,
+    user: &str,
+    target: &brain_domain::TargetConfig,
+    storage: &brain_storage::GithubStorage,
+    brain_id: &str,
+    mutation: &WorkItemMutation,
+    prepared: &PreparedWorkItemMutation,
+    sync_provider: bool,
+    patch_projection: bool,
+    publish_event: bool,
+) -> Result<WorkItem, brain_domain::BrainError> {
+    use brain_domain::BrainError;
+
+    crate::server::audit::log(mutation.audit_kind(), Some(user), &prepared.path).await;
 
     if patch_projection {
-        match &mutation {
+        match mutation {
             WorkItemMutation::State(state) => {
-                crate::server::projection::update_work_item_state(target, &brain_id, state).await?;
+                crate::server::projection::update_work_item_state(target, brain_id, state).await?;
             }
             WorkItemMutation::Assignees(assignees) => {
-                crate::server::projection::update_work_item_assignees(target, &brain_id, assignees)
+                crate::server::projection::update_work_item_assignees(target, brain_id, assignees)
                     .await?;
             }
             WorkItemMutation::Binding(binding) => {
                 crate::server::projection::upsert_work_item_binding(
                     target,
-                    &brain_id,
+                    brain_id,
                     binding.as_ref(),
                 )
                 .await?;
@@ -513,7 +554,8 @@ async fn apply_work_item_mutation_inner(
     if sync_provider {
         let config = crate::knowledge::config_loader::load(target, token).await;
         if let Err(error) =
-            sync_work_item_provider(storage, token, &config, &work_item, &mutation, user).await
+            sync_work_item_provider(storage, token, &config, &prepared.original, mutation, user)
+                .await
         {
             crate::server::audit::log(
                 "work_item_provider_sync_error",
@@ -527,7 +569,7 @@ async fn apply_work_item_mutation_inner(
             // (slice γ). Enqueue failure is itself non-fatal — just logged.
             if let Err(enqueue_err) = crate::server::projection::enqueue_pending_sync(
                 target,
-                &brain_id,
+                brain_id,
                 mutation.sync_kind(),
                 &error.to_string(),
             )
@@ -542,25 +584,25 @@ async fn apply_work_item_mutation_inner(
         let event = if mutation.is_binding() {
             crate::server::sse::BrainEvent::BindingUpdated {
                 target: brain_domain::TargetRef::from(target),
-                brain_id: brain_id.clone(),
-                content_path: Some(path.clone()),
+                brain_id: brain_id.to_string(),
+                content_path: Some(prepared.path.clone()),
             }
         } else {
             crate::server::sse::BrainEvent::WorkItemUpdated {
                 target: brain_domain::TargetRef::from(target),
-                brain_id: brain_id.clone(),
-                content_path: Some(path.clone()),
+                brain_id: brain_id.to_string(),
+                content_path: Some(prepared.path.clone()),
             }
         };
         bus.send(event);
     }
 
     if patch_projection {
-        crate::server::projection::load_work_item_by_brain_id(target, &brain_id)
+        crate::server::projection::load_work_item_by_brain_id(target, brain_id)
             .await?
             .ok_or_else(|| BrainError::other("work item disappeared after mutation"))
     } else {
-        Ok(work_item_with_mutation(work_item, &mutation))
+        Ok(prepared.mutated.clone())
     }
 }
 

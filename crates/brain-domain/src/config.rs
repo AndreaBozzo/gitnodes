@@ -301,6 +301,18 @@ impl GithubClient {
         self
     }
 
+    /// Derive a client for another branch in the same repository while
+    /// preserving the configured API base. Branch transactions use this to
+    /// target an ephemeral ref without rebuilding transport configuration.
+    pub fn with_branch(&self, branch: impl Into<String>) -> Self {
+        let mut target = self.target.clone();
+        target.branch = branch.into();
+        Self {
+            target,
+            api_base: self.api_base.clone(),
+        }
+    }
+
     pub fn default_api_base() -> &'static str {
         DEFAULT_API_BASE
     }
@@ -1757,6 +1769,21 @@ node_types:
             c.git_ref_url(),
             "https://api.github.com/repos/o/r/git/refs/heads/feat/x"
         );
+    }
+
+    #[test]
+    fn with_branch_preserves_repository_and_api_base() {
+        let c = gh("acme", "kb", "main").with_api_base("https://example.test/api/");
+        let branch = c.with_branch("patch/alice/change");
+
+        assert_eq!(branch.target().org, "acme");
+        assert_eq!(branch.target().repo, "kb");
+        assert_eq!(branch.target().branch, "patch/alice/change");
+        assert_eq!(
+            branch.git_ref_url(),
+            "https://example.test/api/repos/acme/kb/git/refs/heads/patch/alice/change"
+        );
+        assert_eq!(c.target().branch, "main");
     }
 
     #[test]

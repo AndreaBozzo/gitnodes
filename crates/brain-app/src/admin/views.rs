@@ -4,7 +4,8 @@ use leptos_router::hooks::use_params_map;
 use brain_domain::{BrainConfig, TargetRef, ViewSpec, decode_path_segment, slugify_view_name};
 
 use crate::api::{
-    WriteMode, list_views, load_brain_config_for_target, resolve_legacy_target, save_views,
+    ViewsPreview, WriteMode, list_views, load_brain_config_for_target, preview_views,
+    resolve_legacy_target, save_views,
 };
 
 #[component]
@@ -124,11 +125,29 @@ fn ViewsEditor(
             .collect(),
     );
     let type_options: Vec<String> = cfg.node_types.iter().map(|t| t.name.clone()).collect();
-
-    let save = Action::new(move |payload: &Vec<ViewSpec>| {
+    let preview_state = RwSignal::new(Option::<(ViewsPreview, Vec<ViewSpec>)>::None);
+    let preview_target = target.clone();
+    let preview = Action::new(move |payload: &Vec<ViewSpec>| {
         let payload = payload.clone();
+        let target = preview_target.clone();
+        async move {
+            let plan = preview_views(target, payload.clone()).await?;
+            Ok::<_, crate::api::ApiError>((plan, payload))
+        }
+    });
+    let save = Action::new(move |payload: &(Vec<ViewSpec>, Option<String>)| {
+        let (views, expected_sha) = payload.clone();
         let target = target.clone();
-        async move { save_views(target, payload).await }
+        async move { save_views(target, views, expected_sha).await }
+    });
+
+    Effect::new(move |_| {
+        if let Some(Ok(result)) = preview.value().get() {
+            preview_state.set(Some(result));
+            outcome_msg.set(None);
+        } else if let Some(Err(error)) = preview.value().get() {
+            outcome_msg.set(Some(OutcomeBanner::Error(error.to_string())));
+        }
     });
 
     Effect::new(move |_| {
@@ -140,14 +159,18 @@ fn ViewsEditor(
                     url: result.pr_url,
                 },
             };
+            preview_state.set(None);
             outcome_msg.set(Some(banner));
             reload_tick.update(|t| *t += 1);
         } else if let Some(Err(e)) = save.value().get() {
+            preview_state.set(None);
             outcome_msg.set(Some(OutcomeBanner::Error(e.to_string())));
         }
     });
 
-    let pending = save.pending();
+    let preview_pending = preview.pending();
+    let save_pending = save.pending();
+    let pending = Memo::new(move |_| preview_pending.get() || save_pending.get());
     let draft_count = Memo::new(move |_| drafts.with(Vec::len));
 
     let on_add = move |_| {
@@ -162,7 +185,7 @@ fn ViewsEditor(
         match collected {
             Ok(specs) => {
                 outcome_msg.set(None);
-                save.dispatch(specs);
+                preview.dispatch(specs);
             }
             Err(msg) => outcome_msg.set(Some(OutcomeBanner::Error(msg))),
         }
@@ -170,52 +193,96 @@ fn ViewsEditor(
 
     view! {
         <div class="space-y-4">
-            <Show when=move || draft_count.get() == 0>
-                <div class="rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
-                    "No saved views. Saving now will remove the "
-                    <code class="font-mono">"views"</code>
-                    " block from "
-                    <code class="font-mono">".brain-config.yml"</code>
-                    "."
-                </div>
-            </Show>
-            <For
-                each=move || drafts.with(|list| list.iter().map(|d| d.id).collect::<Vec<_>>())
-                key=|id| *id
-                children=move |id| {
-                    let type_options = type_options.clone();
-                    view! {
-                        <ViewDraftCard
-                            draft_id=id
-                            drafts=drafts
-                            type_options=type_options
-                        />
-                    }
-                }
-            />
-            <div class="flex items-center gap-3 pt-2">
-                <button
-                    class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700"
-                    on:click=on_add
-                >
-                    "+ add view"
-                </button>
-                <button
-                    class="ml-auto px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-100 hover:bg-teal-500/30 text-xs disabled:opacity-50"
-                    on:click=on_save
-                    prop:disabled=move || pending.get()
-                >
-                    {move || {
-                        if pending.get() {
-                            "saving…"
-                        } else if draft_count.get() == 0 {
-                            "save deletion"
-                        } else {
-                            "save views"
+            <fieldset prop:disabled=move || pending.get() || preview_state.get().is_some() class="space-y-4 disabled:opacity-60">
+                <Show when=move || draft_count.get() == 0>
+                    <div class="rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+                        "No saved views. Saving now will remove the "
+                        <code class="font-mono">"views"</code>
+                        " block from "
+                        <code class="font-mono">".brain-config.yml"</code>
+                        "."
+                    </div>
+                </Show>
+                <For
+                    each=move || drafts.with(|list| list.iter().map(|d| d.id).collect::<Vec<_>>())
+                    key=|id| *id
+                    children=move |id| {
+                        let type_options = type_options.clone();
+                        view! {
+                            <ViewDraftCard
+                                draft_id=id
+                                drafts=drafts
+                                type_options=type_options
+                            />
                         }
-                    }}
-                </button>
-            </div>
+                    }
+                />
+                <div class="flex items-center gap-3 pt-2">
+                    <button
+                        class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700"
+                        on:click=on_add
+                    >
+                        "+ add view"
+                    </button>
+                    <button
+                        class="ml-auto px-3 py-1.5 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-100 hover:bg-teal-500/30 text-xs disabled:opacity-50"
+                        on:click=on_save
+                        prop:disabled=move || pending.get()
+                    >
+                        {move || {
+                            if preview_pending.get() {
+                                "planning…"
+                            } else if draft_count.get() == 0 {
+                                "preview deletion"
+                            } else {
+                                "preview changes"
+                            }
+                        }}
+                    </button>
+                </div>
+            </fieldset>
+
+            {move || preview_state.get().map(|(plan, specs)| {
+                let expected_sha = plan.expected_sha.clone();
+                view! {
+                    <div class="rounded-md border border-teal-400/30 bg-slate-900/70 p-4 space-y-4">
+                        <div>
+                            <h2 class="text-sm font-semibold text-teal-100">"Review planned config change"</h2>
+                            <p class="text-[11px] text-slate-400 font-mono">
+                                {format!("{} · {} · head {}", plan.operation, plan.path, plan.head_sha)}
+                            </p>
+                        </div>
+                        <div class="grid gap-3 lg:grid-cols-2">
+                            <div>
+                                <p class="mb-1 text-[11px] uppercase tracking-wide text-slate-500">"Before"</p>
+                                <pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-3 text-[11px] text-slate-300 border border-slate-800">{plan.current_yaml}</pre>
+                            </div>
+                            <div>
+                                <p class="mb-1 text-[11px] uppercase tracking-wide text-slate-500">"After"</p>
+                                <pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-3 text-[11px] text-slate-300 border border-slate-800">{plan.proposed_yaml}</pre>
+                            </div>
+                        </div>
+                        <div class="flex justify-end gap-2">
+                            <button
+                                class="px-3 py-1.5 rounded border border-slate-700 text-xs text-slate-300 hover:bg-slate-800"
+                                on:click=move |_| preview_state.set(None)
+                                prop:disabled=move || save_pending.get()
+                            >
+                                "Cancel"
+                            </button>
+                            <button
+                                class="px-3 py-1.5 rounded border border-teal-400/40 bg-teal-500/20 text-xs text-teal-100 hover:bg-teal-500/30 disabled:opacity-50"
+                                on:click=move |_| {
+                                    save.dispatch((specs.clone(), expected_sha.clone()));
+                                }
+                                prop:disabled=move || save_pending.get()
+                            >
+                                {move || if save_pending.get() { "saving…" } else { "confirm save" }}
+                            </button>
+                        </div>
+                    </div>
+                }
+            })}
         </div>
     }
 }

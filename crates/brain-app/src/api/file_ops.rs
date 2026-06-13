@@ -9,7 +9,7 @@ use super::sanitize_commit_message;
 use super::sfe;
 #[cfg(feature = "ssr")]
 use super::write_orchestrator::{
-    open_write_pr, prepare_pr_write, rebuild_projection_after_write, should_fallback_to_pr,
+    propose_transaction, rebuild_projection_after_write, should_fallback_to_pr,
 };
 use brain_domain::TargetRef;
 #[cfg(feature = "ssr")]
@@ -56,20 +56,25 @@ pub async fn rename_brain_file(
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
 
     let user_msg = sanitize_commit_message(commit_message.as_deref());
+    let (transaction, updated_referrers) = prepare_rename_transaction(
+        &storage,
+        &token,
+        &old_path,
+        &new_path,
+        &old_sha,
+        user_msg,
+        &user,
+        &author_email,
+    )
+    .await
+    .map_err(sfe)?;
+
     if permissions.push {
-        match perform_rename_on_storage(
-            &storage,
-            &token,
-            &old_path,
-            &new_path,
-            &old_sha,
-            user_msg.clone(),
-            &user,
-            &author_email,
-        )
-        .await
+        match storage
+            .commit_transaction(&token, transaction.clone())
+            .await
         {
-            Ok(updated_referrers) => {
+            Ok(_) => {
                 crate::server::audit::log(
                     "rename",
                     Some(&user),
@@ -98,7 +103,7 @@ pub async fn rename_brain_file(
         }
     }
 
-    let plan = prepare_pr_write(
+    let write = propose_transaction(
         &storage,
         &token,
         &user,
@@ -106,47 +111,30 @@ pub async fn rename_brain_file(
         "rename",
         &old_path,
         permissions.push,
-    )
-    .await
-    .map_err(sfe)?;
-    let updated_referrers = perform_rename_on_storage(
-        &plan.storage,
-        &token,
-        &old_path,
-        &new_path,
-        &old_sha,
-        user_msg,
-        &user,
-        &author_email,
-    )
-    .await
-    .map_err(sfe)?;
-    let pr = open_write_pr(
-        &storage,
-        &token,
-        &plan,
+        transaction,
         &format!("Propose rename {old_path} to {new_path} via Brain UI"),
         &format!("Brain UI could not rename `{old_path}` directly on `{}` and proposed the rename through a pull request instead.\n\nNew path: `{new_path}`\nRewritten referrers: {}", target.branch, updated_referrers.len()),
     )
     .await
     .map_err(sfe)?;
+    let pr_number = write.pr_number.unwrap_or_default();
     crate::server::audit::log(
         "propose_rename",
         Some(&user),
-        &format!("{old_path} -> {new_path} via PR #{}", pr.number),
+        &format!("{old_path} -> {new_path} via PR #{pr_number}"),
     )
     .await;
 
     Ok(RenameResult {
         new_path: new_path.clone(),
         updated_referrers,
-        write: WriteResult::pull_request(new_path, plan.branch, pr.number, pr.html_url),
+        write,
     })
 }
 
 #[cfg(feature = "ssr")]
 #[allow(clippy::too_many_arguments)]
-async fn perform_rename_on_storage(
+async fn prepare_rename_transaction(
     storage: &brain_storage::GithubStorage,
     token: &str,
     old_path: &str,
@@ -155,7 +143,7 @@ async fn perform_rename_on_storage(
     user_msg: Option<String>,
     user: &str,
     author_email: &str,
-) -> Result<Vec<String>, BrainError> {
+) -> Result<(brain_storage::GitTransaction, Vec<String>), BrainError> {
     use brain_storage::Storage;
 
     // Sanity: the source file still exists at the sha the client saw.
@@ -218,9 +206,7 @@ async fn perform_rename_on_storage(
         .into_iter()
         .fold(transaction, |tx, (path, sha)| tx.expect_sha(path, sha));
 
-    storage.commit_transaction(token, transaction).await?;
-
-    Ok(updated_referrers)
+    Ok((transaction, updated_referrers))
 }
 
 #[cfg(feature = "ssr")]

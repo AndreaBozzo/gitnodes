@@ -22,10 +22,11 @@ Shipped and considered stable:
 - **Multi-target routing** — canonical `/{owner}/{repo}/{branch}/...` URLs;
   several Brains served by one deployment, each with its own projection,
   config cache, and SSE channel.
-- **Editing with permission-aware writes** — direct commit for users with
-  `push`, automatic PR fallback otherwise, opt-in "Propose via PR" for users
-  who could commit directly. Multi-file renames are atomic (Git Data API with
-  preconditions and retry).
+- **Editing with permission-aware transactions** — save, delete, rename,
+  work-item mutation, config writes and asset uploads use the Git Data API
+  transaction layer. Users with `push` commit directly; protected branches or
+  limited contributors use automatic PR fallback. Temporary PR branches roll
+  back when a commit or PR creation fails.
 - **Work items** — markdown documents as tasks with state, assignees, and
   bidirectional GitHub issue/PR binding; provider pushes are best-effort with
   a supervised retry outbox.
@@ -101,6 +102,8 @@ projection is disposable.
 | "Stale Data" / `SyncFailed` banner | Webhook rebuild failed or no server credentials | Check warn logs; fix `GITHUB_APP_*`/`GITHUB_TOKEN`; manual refresh from the UI or wait for next push |
 | Save fails with conflict | File changed under the user (stale sha) | User reloads and reapplies; no server-side cleanup needed |
 | Save silently became a PR | User lacks `push` or branch is protected | Expected fallback — review/merge the PR |
+| Config preview says the file changed | `.brain-config.yml` changed after the preview was generated | Cancel, reload the editor, review the new before/after YAML, then confirm again |
+| PR creation failed after branch preparation | GitHub rejected or timed out while opening the PR | The runtime attempts to delete the temporary `patch/...` branch; if a cleanup warning remains in logs, delete that branch manually |
 | Work item edit saved but issue not updated | Provider push failed | Row sits in `pending_provider_sync`; supervised retry (App auth) reconciles, gives up after 20 attempts — then fix credentials and retouch the item |
 | Types/nodes vanished from the graph | `.brain-config.yml` no longer parses | "Config invalid" banner shows the parse error and file link; fix the YAML, cache TTL is 30s |
 | Login loops with `state_missing` in audit | Secure cookie dropped (no TLS / missing `SESSION_COOKIE_SECURE`) | Set the env, confirm TLS termination; `state_mismatch` instead means replay/stale link |
