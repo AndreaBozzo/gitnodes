@@ -166,8 +166,19 @@ pub fn Landing() -> impl IntoView {
                         </section>
                     </div>
                 </main>
-                <footer class="px-6 py-4 border-t border-slate-800 text-xs text-slate-600 text-center">
-                    "Brain · Edge Administration"
+                <footer class="px-6 py-4 border-t border-slate-800 text-xs text-slate-600 text-center space-y-1">
+                    <p>"Brain · Edge Administration"</p>
+                    <p>
+                        "© 2026 Andrea Bozzo · AGPLv3 · "
+                        <a
+                            href="https://github.com/AndreaBozzo/Brain_UI"
+                            rel="external noopener"
+                            target="_blank"
+                            class="underline hover:text-slate-400"
+                        >
+                            "Source"
+                        </a>
+                    </p>
                 </footer>
                 </>
                 }}

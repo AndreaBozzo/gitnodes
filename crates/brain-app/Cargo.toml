@@ -2,7 +2,9 @@
 name = "brain-app"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# The deployable web app is AGPL-3.0; the library crates stay Apache-2.0
+# (workspace default). See README "License" for the rationale.
+license = "AGPL-3.0-or-later"
 publish.workspace = true
 
 [lib]

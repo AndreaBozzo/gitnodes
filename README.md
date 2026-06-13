@@ -209,4 +209,18 @@ conflict resolution remain tracked, but they are not automatic Phase 3 growth.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+This workspace is split-licensed:
+
+- The **library crates** — `brain-domain`, `brain-graph`, `brain-auth`,
+  `brain-storage` — are licensed under the
+  [Apache License, Version 2.0](LICENSE-APACHE). Reuse them freely.
+- The **deployable application** — `brain-app` — is licensed under the
+  [GNU Affero General Public License v3.0 or later](LICENSE-AGPL). If you run a
+  modified Brain UI as a network service, the AGPL requires you to offer your
+  users the corresponding source.
+
+`brain-app` incorporates the Apache-2.0 libraries (one-way compatible into the
+AGPL), so the combined application is distributed under the AGPL while the
+libraries remain independently usable under Apache-2.0.
+
+Copyright (C) 2026 Andrea Bozzo.
