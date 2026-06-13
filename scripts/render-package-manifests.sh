@@ -7,6 +7,14 @@ if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
 fi
 
 VERSION="${1#v}"
+# VERSION is interpolated into sed below, so reject anything outside a semver-ish
+# alphabet — a stray '/' or '&' would otherwise corrupt the rendered manifests.
+case "$VERSION" in
+  ""|*[!0-9A-Za-z.+-]*)
+    echo "error: VERSION must contain only [0-9A-Za-z.+-] (got '$VERSION')" >&2
+    exit 1
+    ;;
+esac
 SHA_LINUX_X64="$2"
 SHA_MACOS_X64="$3"
 SHA_MACOS_ARM64="$4"

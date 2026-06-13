@@ -51,6 +51,39 @@ printf 'Downloading %s ...\n' "$asset"
 curl -fSL --proto '=https' --tlsv1.2 "$url" -o "$tmp/$asset" \
   || err "download failed: $url"
 
+# --- verify checksum ---------------------------------------------------------
+# Each release publishes a SHA256SUMS asset. A mismatch is fatal; an absent
+# checksum file (e.g. mid-publish or a pre-checksums release) only warns, so the
+# install still works without ever accepting a binary that fails verification.
+if [ "$VERSION" = "latest" ]; then
+  sums_url="https://github.com/${REPO}/releases/latest/download/SHA256SUMS"
+else
+  sums_url="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS"
+fi
+if curl -fSL --proto '=https' --tlsv1.2 "$sums_url" -o "$tmp/SHA256SUMS" 2>/dev/null; then
+  expected="$(awk -v n="$asset" '$2 == n || $2 == "*"n { print $1; exit }' "$tmp/SHA256SUMS")"
+  if [ -n "$expected" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual="$(sha256sum "$tmp/$asset" | awk '{ print $1 }')"
+    elif command -v shasum >/dev/null 2>&1; then
+      actual="$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')"
+    else
+      actual=""
+    fi
+    if [ -z "$actual" ]; then
+      printf 'warning: no sha256 tool found; skipping checksum verification\n' >&2
+    elif [ "$actual" != "$expected" ]; then
+      err "checksum mismatch for $asset (expected $expected, got $actual)"
+    else
+      printf 'Verified checksum.\n'
+    fi
+  else
+    printf 'warning: %s not listed in SHA256SUMS; skipping verification\n' "$asset" >&2
+  fi
+else
+  printf 'warning: could not fetch SHA256SUMS; skipping checksum verification\n' >&2
+fi
+
 tar -xzf "$tmp/$asset" -C "$tmp" || err "extract failed"
 [ -f "$tmp/gitnodes" ] || err "archive did not contain a 'gitnodes' binary"
 
