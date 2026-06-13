@@ -33,6 +33,8 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>
+                <link rel="icon" type="image/png" href="/favicon.png"/>
+                <link rel="apple-touch-icon" href="/apple-touch-icon.png"/>
                 <script>
                     {r#"
                         window.brainMermaidReady = false;

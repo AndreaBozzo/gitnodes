@@ -1,4 +1,6 @@
-# GitNodes
+<p align="center">
+  <img src="public/brand/gitnodes-wordmark.png" alt="GitNodes" width="460"/>
+</p>
 
 GitNodes turns a GitHub repository of markdown files into a navigable, editable
 knowledge graph. It reads and renders markdown with YAML frontmatter, writes new
