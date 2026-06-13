@@ -59,9 +59,17 @@ help          Show this message.\n"
 /// Render an `AGENTS.md` from a config, teaching any coding agent (Claude Code,
 /// Codex, Cursor, …) the conventions of this specific knowledge base. Generated
 /// from `.gitnodes.yml` so it always matches the live taxonomy.
-pub fn render_agents_md(cfg: &gitnodes_domain::BrainConfig) -> String {
+pub fn render_agents_md(cfg: &gitnodes_domain::BrainConfig, root: &Path) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
+
+    // Absolute, forward-slashed path to this brain so the setup commands below
+    // are copy-paste-ready. Forward slashes keep the JSON valid and work on
+    // Windows too; `absolute` avoids touching the filesystem or the `\\?\` prefix.
+    let repo_path = std::path::absolute(root)
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/");
 
     s.push_str(
         "# AGENTS.md\n\n\
@@ -141,8 +149,29 @@ is the path or slug of another note).\n\
     s.push_str(
         "\n## Agent tools\n\n\
 When the `gitnodes` MCP server is configured in your agent, prefer its read-only \
-`search_brain`, `list_nodes`, and `read_node` tools for discovery. They read the current \
-working tree through the same projection and search engine as the GitNodes UI.\n",
+`search_brain`, `list_nodes`, `read_node`, and `node_links` tools for discovery. They read \
+the current working tree through the same projection and search engine as the GitNodes UI. \
+Use `node_links` to walk the graph from a note to its incoming and outgoing connections \
+instead of guessing relationships from the text.\n",
+    );
+
+    let _ = write!(
+        s,
+        "\n### Connecting the MCP server\n\n\
+The command is the same for every client — `gitnodes mcp <path-to-this-repo>`; only where \
+the config lives differs. One-line setup for CLI agents:\n\n\
+```bash\n\
+# Claude Code\n\
+claude mcp add gitnodes -- gitnodes mcp \"{repo_path}\"\n\
+# Codex CLI\n\
+codex mcp add gitnodes -- gitnodes mcp \"{repo_path}\"\n\
+```\n\n\
+For editors that use a JSON config (Cursor, Antigravity, Cline, Windsurf, Claude Desktop, …), \
+add the standard `mcpServers` entry to your client's config file:\n\n\
+```json\n\
+{{\n  \"mcpServers\": {{\n    \"gitnodes\": {{\n      \"command\": \"gitnodes\",\n      \"args\": [\"mcp\", \"{repo_path}\"]\n    }}\n  }}\n}}\n\
+```\n\n\
+See your client's MCP documentation for the exact config-file location.\n",
     );
 
     s
@@ -161,7 +190,7 @@ fn generate_agents(root: &Path) -> Result<(), String> {
         gitnodes_domain::BrainConfig::default()
     };
     let out = root.join("AGENTS.md");
-    std::fs::write(&out, render_agents_md(&cfg))
+    std::fs::write(&out, render_agents_md(&cfg, root))
         .map_err(|e| format!("failed to write {}: {e}", out.display()))
 }
 
@@ -565,13 +594,16 @@ mod tests {
     #[test]
     fn agents_md_teaches_conventions() {
         let cfg = gitnodes_domain::BrainConfig::default();
-        let md = render_agents_md(&cfg);
+        let md = render_agents_md(&cfg, Path::new("/brains/example"));
         // The non-obvious gotcha every agent must know.
         assert!(md.contains("[[wikilinks]]"));
         assert!(md.contains("standard markdown links"));
         // Node types are enumerated with their directories.
         assert!(md.contains("`concepts/`"));
         assert!(md.contains("GitNodes knowledge base"));
+        // The MCP setup commands are filled in with this brain's real path.
+        assert!(md.contains("claude mcp add gitnodes -- gitnodes mcp \"/brains/example\""));
+        assert!(md.contains("\"args\": [\"mcp\", \"/brains/example\"]"));
     }
 
     #[test]

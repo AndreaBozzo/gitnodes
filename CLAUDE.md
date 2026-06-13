@@ -45,7 +45,11 @@ Five crates, strict dependency direction (app → storage/auth → graph → dom
 
 Key gitnodes-app areas:
 
-- `src/main.rs` — Axum router: OAuth routes, `/webhook/github` (HMAC-verified, fires background sync), `/sse/events`, `/api/{fn}` server functions, asset proxy with locked-down CSP, CSRF origin check on mutating POSTs.
+- `src/main.rs` — subcommand dispatch (`serve`/`init`/`agents`/`mcp`) then the Axum router: OAuth routes, `/webhook/github` (HMAC-verified, fires background sync), `/sse/events`, `/api/{fn}` server functions, asset proxy with locked-down CSP, CSRF origin check on mutating POSTs.
+- `src/cli.rs` — the `gitnodes` subcommands for first-run setup: `init` scaffolds a starter brain (embedded from `examples/starter-brain/`) + `AGENTS.md`, `agents` (re)generates `AGENTS.md` from `.gitnodes.yml`, `serve` discovers the target from the Git remote and reuses `gh auth`.
+- `src/mcp.rs` — read-only local MCP server (`gitnodes mcp [dir]`, stdio) exposing `search_brain`/`list_nodes`/`read_node`/`node_links` over an in-memory SQLite projection of the working tree; `refresh()` debounces via a size+mtime fingerprint so repeated tool calls don't rebuild.
+- `src/server/pat.rs` — single-user PAT mode (`GITHUB_PAT`): the PAT is the token for every call and the session is the PAT owner; refuses a non-loopback bind unless `GITNODES_ALLOW_REMOTE_PAT` is set. Authorization still flows through live `repository_permissions`.
+- `src/server/embedded.rs` — `embed-assets` feature compiles `target/site` into the binary for single-file distribution; extracted once to a per-version cache dir at startup.
 - `src/server/projection/` — SQLite projection (nodes, edges, files, backlinks, work_items + blob_sha drift detection). Rebuild is explicit: fetch raw files → build graph → persist snapshot → watermark in `projection_sync_state`.
 - `src/server/routing.rs` — multi-target routing via `TargetRef`: 4-segment canonical `/{org}/{repo}/{branch}/...`, 3-segment legacy resolved through the `target_registry` table.
 - `src/api/write_orchestrator.rs` — permission-aware writes: direct commit if `push`, PR fallback otherwise; `WriteIntent::ProposeViaPr` lets users with push rights opt into PR flow.

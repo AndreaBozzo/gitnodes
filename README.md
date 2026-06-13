@@ -52,8 +52,40 @@ is built for humans and agents alike.
 
 ## AI agent access
 
-GitNodes includes a read-only local MCP server. Point any stdio-capable MCP
-client at the repository:
+GitNodes includes a read-only local MCP server (`gitnodes mcp [dir]`, stdio).
+It re-indexes the working tree before each request through the same SQLite
+projection and FTS5 search path as the web UI, so uncommitted notes are visible
+immediately. No PAT, GitHub login, push, or running web server is required.
+
+It exposes four tools:
+
+- **`search_brain`** — full-text search, ranked like the UI (type/tag/path filters).
+- **`list_nodes`** — enumerate notes, filtered by type, tag, or directory.
+- **`read_node`** — one note's projected metadata plus its markdown body.
+- **`node_links`** — walk a note's incoming and outgoing graph edges (body links,
+  frontmatter links, shared tags) so the agent traverses the graph instead of grepping.
+
+### Wiring it into your agent
+
+The launch command is identical for every client — `gitnodes mcp <path-to-your-brain>`.
+Only *where* the config lives differs, and that drifts between releases, so use the
+one-line CLI commands where they exist and otherwise drop in the standard JSON. Use the
+absolute path to your brain checkout in every example below.
+
+**CLI agents** — one command each:
+
+```bash
+# Claude Code (add --scope project to write a committable .mcp.json in the repo)
+claude mcp add gitnodes -- gitnodes mcp /absolute/path/to/my-brain
+
+# Codex CLI (or hand-edit ~/.codex/config.toml under [mcp_servers.gitnodes])
+codex mcp add gitnodes -- gitnodes mcp /absolute/path/to/my-brain
+```
+
+**JSON-config editors** — Cursor (`.cursor/mcp.json`), Antigravity
+(`~/.gemini/config/mcp_config.json`, or the IDE's *Manage MCP Servers → View raw config*),
+Cline, Windsurf, Claude Desktop, Continue. Add the standard `mcpServers` entry; see each
+client's MCP docs for the exact file:
 
 ```json
 {
@@ -66,11 +98,33 @@ client at the repository:
 }
 ```
 
-The server exposes `search_brain`, `list_nodes`, and `read_node`. It re-indexes
-the current working tree before each request through the same SQLite projection
-and FTS5 search path used by the web UI, so uncommitted notes are visible
-immediately. It is local and read-only: no PAT, GitHub login, push, or running
-web server is required.
+### 60-second test
+
+Once the server is configured, ask your agent something that forces a graph hop,
+for example:
+
+> Use the gitnodes tools to find notes about *knowledge graphs*, then show me
+> what the top result links to and summarise it.
+
+A working setup will call `search_brain`, then `node_links` on the top hit's
+path, then `read_node` to pull the full note — discovering structure you never
+had to describe.
+
+### Letting an agent maintain the brain
+
+The MCP server is read-only **by design**: agents discover through it, but they
+write through Git, which stays the single source of truth. The authoring loop:
+
+1. The agent edits markdown files directly in the checkout. The scaffolded
+   `AGENTS.md` (generated from `.gitnodes.yml`) teaches it the node types,
+   frontmatter rules, and link conventions, so its edits land on-taxonomy.
+2. Commit and push, or open a pull request — every change is an ordinary,
+   reviewable commit.
+3. `gitnodes serve` (or the deployed app) rebuilds the projection from Git on the
+   next sync; the new notes appear in the graph and in the agent's tools.
+
+Because Git is the interface, no special write API is needed and nothing edits
+your knowledge base behind your back.
 
 ## Stack
 
