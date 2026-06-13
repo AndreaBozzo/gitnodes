@@ -1,0 +1,15 @@
+[package]
+name = "gitnodes-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+readme = "README.md"
+
+[dependencies]
+gitnodes-domain = { path = "../gitnodes-domain" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+rand = "0.8"
+tower-sessions = "0.14"

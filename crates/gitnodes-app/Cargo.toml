@@ -1,0 +1,133 @@
+[package]
+name = "gitnodes-app"
+version.workspace = true
+edition.workspace = true
+# The deployable web app is AGPL-3.0; the library crates stay Apache-2.0
+# (workspace default). See README "License" for the rationale.
+license = "AGPL-3.0-or-later"
+publish.workspace = true
+readme = "README.md"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { version = "0.8" }
+leptos_meta = { version = "0.8" }
+leptos_router = { version = "0.8" }
+axum = { version = "0.8", optional = true }
+leptos_axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
+http = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+dotenvy = { version = "0.15", optional = true }
+tower-sessions = { version = "0.14", features = ["private"], optional = true }
+tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "migrate"], optional = true }
+time = { version = "0.3", optional = true }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+serde_json = { version = "1" }
+rand = { version = "0.8", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+jsonwebtoken = { version = "9", optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+ammonia = { version = "4", optional = true }
+infer = { version = "0.16", default-features = false, optional = true }
+tower_governor = { version = "0.7", optional = true }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+gitnodes-domain = { path = "../gitnodes-domain" }
+gitnodes-graph = { path = "../gitnodes-graph" }
+gitnodes-storage = { path = "../gitnodes-storage", optional = true }
+gitnodes-auth = { path = "../gitnodes-auth", optional = true }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Location",
+    "Storage",
+    "DragEvent",
+    "DataTransfer",
+    "File",
+    "FileList",
+    "HtmlTextAreaElement",
+    "Blob",
+    "EventSource",
+    "MessageEvent",
+    "Element",
+    "DomRect",
+    "PointerEvent",
+    "Touch",
+    "TouchEvent",
+    "TouchList",
+    "WheelEvent",
+] }
+getrandom = { version = "0.2", features = ["js"] }
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+
+[features]
+hydrate = [
+    "leptos/hydrate",
+    "dep:console_error_panic_hook",
+    "dep:wasm-bindgen",
+    "dep:gloo-timers",
+    "dep:js-sys",
+    "dep:wasm-bindgen-futures",
+]
+ssr = [
+    "dep:axum",
+    "dep:tokio",
+    "dep:leptos_axum",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:http",
+    "dep:base64",
+    "dep:dotenvy",
+    "dep:tower-sessions",
+    "dep:tower-sessions-sqlx-store",
+    "dep:sqlx",
+    "dep:time",
+    "dep:reqwest",
+    "dep:rand",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:jsonwebtoken",
+    "dep:tokio-stream",
+    "dep:ammonia",
+    "dep:infer",
+    "dep:tower_governor",
+    "dep:gitnodes-storage",
+    "dep:gitnodes-auth",
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+]
+
+[package.metadata.leptos]
+output-name = "gitnodes"
+site-root = "../../target/site"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+assets-dir = "../../public"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+lib-profile-release = "wasm-release"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+http-body-util = "0.1"

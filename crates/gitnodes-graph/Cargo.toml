@@ -1,0 +1,12 @@
+[package]
+name = "gitnodes-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+readme = "README.md"
+description = "Pure graph building + force-directed layout for gitnodes. No I/O."
+
+[dependencies]
+gitnodes-domain = { path = "../gitnodes-domain" }
+serde_yaml = "0.9"

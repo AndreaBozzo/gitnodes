@@ -265,101 +265,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brain-app"
-version = "0.3.0"
-dependencies = [
- "ammonia",
- "axum",
- "base64",
- "brain-auth",
- "brain-domain",
- "brain-graph",
- "brain-storage",
- "console_error_panic_hook",
- "dotenvy",
- "getrandom 0.2.17",
- "gloo-timers",
- "hmac",
- "http",
- "http-body-util",
- "infer",
- "js-sys",
- "jsonwebtoken",
- "leptos",
- "leptos_axum",
- "leptos_meta",
- "leptos_router",
- "pulldown-cmark",
- "rand 0.8.6",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "sqlx",
- "time",
- "tokio",
- "tokio-stream",
- "tower",
- "tower-http",
- "tower-sessions",
- "tower-sessions-sqlx-store",
- "tower_governor",
- "tracing",
- "tracing-subscriber",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wiremock",
-]
-
-[[package]]
-name = "brain-auth"
-version = "0.3.0"
-dependencies = [
- "base64",
- "brain-domain",
- "rand 0.8.6",
- "reqwest",
- "serde",
- "tower-sessions",
-]
-
-[[package]]
-name = "brain-domain"
-version = "0.3.0"
-dependencies = [
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "brain-graph"
-version = "0.3.0"
-dependencies = [
- "brain-domain",
- "serde_yaml",
-]
-
-[[package]]
-name = "brain-storage"
-version = "0.3.0"
-dependencies = [
- "base64",
- "brain-domain",
- "brain-graph",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1096,6 +1001,101 @@ checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
 dependencies = [
  "opaque-debug",
  "polyval",
+]
+
+[[package]]
+name = "gitnodes-app"
+version = "0.3.0"
+dependencies = [
+ "ammonia",
+ "axum",
+ "base64",
+ "console_error_panic_hook",
+ "dotenvy",
+ "getrandom 0.2.17",
+ "gitnodes-auth",
+ "gitnodes-domain",
+ "gitnodes-graph",
+ "gitnodes-storage",
+ "gloo-timers",
+ "hmac",
+ "http",
+ "http-body-util",
+ "infer",
+ "js-sys",
+ "jsonwebtoken",
+ "leptos",
+ "leptos_axum",
+ "leptos_meta",
+ "leptos_router",
+ "pulldown-cmark",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "sqlx",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-http",
+ "tower-sessions",
+ "tower-sessions-sqlx-store",
+ "tower_governor",
+ "tracing",
+ "tracing-subscriber",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wiremock",
+]
+
+[[package]]
+name = "gitnodes-auth"
+version = "0.3.0"
+dependencies = [
+ "base64",
+ "gitnodes-domain",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "tower-sessions",
+]
+
+[[package]]
+name = "gitnodes-domain"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gitnodes-graph"
+version = "0.3.0"
+dependencies = [
+ "gitnodes-domain",
+ "serde_yaml",
+]
+
+[[package]]
+name = "gitnodes-storage"
+version = "0.3.0"
+dependencies = [
+ "base64",
+ "futures-util",
+ "gitnodes-domain",
+ "gitnodes-graph",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

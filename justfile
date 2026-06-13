@@ -17,11 +17,11 @@ css:
 
 # Full dev loop: assumes `just css-watch` is running in another terminal.
 dev:
-    cargo leptos watch -p brain-app
+    cargo leptos watch -p gitnodes-app
 
 # Release build (SSR binary + hydrate WASM).
 build:
-    cargo leptos build --release -p brain-app
+    cargo leptos build --release -p gitnodes-app
 
 # Checks — same set CI runs.
 fmt:
@@ -31,16 +31,16 @@ fmt-fix:
     cargo fmt --all
 
 lint:
-    cargo clippy -p brain-app --no-default-features --features ssr -- -D warnings
-    cargo clippy -p brain-app --no-default-features --features hydrate --target wasm32-unknown-unknown -- -D warnings
-    cargo clippy --workspace --exclude brain-app -- -D warnings
+    cargo clippy -p gitnodes-app --no-default-features --features ssr -- -D warnings
+    cargo clippy -p gitnodes-app --no-default-features --features hydrate --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy --workspace --exclude gitnodes-app -- -D warnings
 
 test:
-    cargo test -p brain-app --no-default-features --features ssr
-    cargo test --workspace --exclude brain-app
+    cargo test -p gitnodes-app --no-default-features --features ssr
+    cargo test --workspace --exclude gitnodes-app
 
 check: fmt lint test
 
 # Docker build (multi-stage: Node CSS → Rust → debian slim).
 docker:
-    docker build -t brain_ui .
+    docker build -t gitnodes .
