@@ -17,4 +17,11 @@ ignore = [
     # Leptos chain replaces it. Track upstream and drop this entry when
     # `paste` is no longer in `Cargo.lock`.
     "RUSTSEC-2024-0436",
+
+    # `proc-macro-error2` declared unmaintained. Transitive via the stable
+    # Leptos 0.8 macro stack (including leptos_macro, leptos_router_macro,
+    # reactive_stores_macro, and rstml). No patched release exists
+    # (2026-06-13). Re-evaluate when Leptos migrates to a maintained
+    # diagnostics crate and `proc-macro-error2` leaves `Cargo.lock`.
+    "RUSTSEC-2026-0173",
 ]
