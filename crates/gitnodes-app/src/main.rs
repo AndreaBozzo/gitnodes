@@ -380,16 +380,10 @@ async fn run() {
         gitnodes_storage::GithubHttp::new().expect("failed to build pooled GitHub HTTP client");
     tracing::info!("github http client built (pooled, target-agnostic)");
 
-    // Persistent runtime store backed by SQLite.
-    // Holds sessions, audit events, and the local graph projection.
-    // Use a standard URL format. Default to local sqlite.
-    // Preview keeps its ephemeral state out of the user's content directory by
-    // using a fresh temp-file SQLite database (cleaned at boot).
-    let preview_db_path =
-        std::env::temp_dir().join(format!("gitnodes-preview-{}.db", std::process::id()));
+    // Runtime store backed by SQLite. Normal servers persist sessions, audit
+    // events, and projections; preview keeps the same schema entirely in memory.
     let db_url = if local_preview {
-        let _ = std::fs::remove_file(&preview_db_path);
-        format!("sqlite://{}", preview_db_path.display())
+        "sqlite::memory:".to_string()
     } else {
         std::env::var("SESSION_DB_URL").unwrap_or_else(|_| "sqlite://data/sessions.db".to_string())
     };
@@ -419,7 +413,9 @@ async fn run() {
         .create_if_missing(true)
         .busy_timeout(Duration::from_secs(5));
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        // A SQLite in-memory database is connection-local. Preview uses one
+        // pooled connection so sessions and the projection see the same schema.
+        .max_connections(if local_preview { 1 } else { 5 })
         .connect_with(sqlite_opts)
         .await
         .expect("failed to open sessions SQLite pool");
@@ -454,19 +450,19 @@ async fn run() {
     let event_bus = gitnodes_app::server::sse::EventBus::new();
     gitnodes_app::server::sse::init(event_bus.clone());
 
-    // Slice γ: supervised background retry for the provider-sync outbox. Polls
-    // `pending_provider_sync` and reconciles failed best-effort pushes as the
-    // GitHub App. No-op until rows appear; safe to always start.
-    gitnodes_app::server::pending_sync_job::spawn(pool.clone(), gh_http.clone());
+    if !local_preview {
+        // Slice γ: supervised background retry for the provider-sync outbox.
+        gitnodes_app::server::pending_sync_job::spawn(pool.clone(), gh_http.clone());
 
-    // Schema v2: supervised retention task. Drains expired audit/session rows
-    // on a daily tick and warns on stuck `pending_provider_sync` rows.
-    gitnodes_app::server::retention::spawn(pool.clone());
+        // Schema v2: supervised retention for persistent runtime state.
+        gitnodes_app::server::retention::spawn(pool.clone());
+    }
 
     let allow_insecure_webhooks = std::env::var("ALLOW_INSECURE_WEBHOOKS")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(cfg!(debug_assertions));
     let webhook_auth = match std::env::var("WEBHOOK_SECRET") {
+        _ if local_preview => gitnodes_app::server::webhook::WebhookAuth::Disabled,
         Ok(secret) if !secret.is_empty() => {
             gitnodes_app::server::webhook::WebhookAuth::Secret(secret)
         }

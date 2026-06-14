@@ -52,6 +52,7 @@ pub async fn rename_brain_file(
 ) -> Result<RenameResult, ApiError> {
     use crate::server::session;
 
+    crate::server::local::ensure_writable().map_err(sfe)?;
     let old_path = old_path.trim().trim_matches('/').to_string();
     let new_path = new_path.trim().trim_matches('/').to_string();
 
@@ -385,6 +386,7 @@ pub async fn upload_asset(
     use crate::server::session;
     use gitnodes_storage::Storage;
 
+    crate::server::local::ensure_writable().map_err(sfe)?;
     if bytes.is_empty() {
         return Err(sfe(BrainError::parse("Empty upload")));
     }
@@ -558,6 +560,25 @@ pub async fn list_brain_folders(target: TargetRef) -> Result<Vec<String>, ApiErr
 
     let target = super::target_from_ref(target).map_err(sfe)?;
     let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
+    if crate::server::local::is_enabled() {
+        let files = crate::server::projection::list_files(
+            &target,
+            &crate::server::projection::FileFilters::default(),
+        )
+        .await
+        .map_err(sfe)?;
+        let mut folders = files
+            .into_iter()
+            .filter_map(|file| {
+                file.path
+                    .rsplit_once('/')
+                    .map(|(folder, _filename)| folder.to_string())
+            })
+            .collect::<Vec<_>>();
+        folders.sort_unstable();
+        folders.dedup();
+        return Ok(folders);
+    }
     let storage = session::storage_for(target).map_err(sfe)?;
     storage.list_folders(&token).await.map_err(sfe)
 }

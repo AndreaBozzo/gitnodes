@@ -114,24 +114,16 @@ pub struct WriteCapabilities {
 pub async fn get_write_capabilities(target: TargetRef) -> Result<WriteCapabilities, ApiError> {
     use crate::server::session;
 
-    // Preview mode is read-only: advertise read-only capabilities so the editor
-    // and detail panel hide every write/admin control. Server-side write gates
-    // still refuse independently.
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let (_s, _token, permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     if crate::server::local::is_enabled() {
         return Ok(WriteCapabilities {
-            can_read: true,
+            can_read: permissions.pull,
             can_write_default_branch: false,
             can_review_via_pr: false,
             can_admin_config: false,
         });
     }
-
-    let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
-    let target = super::target_from_ref(target).map_err(sfe)?;
-    let storage = session::storage_for(target).map_err(sfe)?;
-    let permissions = crate::server::access::repository_permissions(&storage, &token)
-        .await
-        .map_err(sfe)?;
     Ok(WriteCapabilities {
         can_read: permissions.pull,
         can_write_default_branch: permissions.push,
@@ -298,6 +290,7 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, A
     use crate::server::session;
     use gitnodes_storage::Storage;
 
+    crate::server::local::ensure_writable().map_err(sfe)?;
     use super::limits;
     limits::check_len("Document body", &payload.body, limits::MAX_MARKDOWN_BYTES).map_err(sfe)?;
     // Path length is enforced by `validate_markdown_path` below (covers the
@@ -449,6 +442,7 @@ pub async fn delete_brain_file(
 ) -> Result<WriteResult, ApiError> {
     use crate::server::session;
 
+    crate::server::local::ensure_writable().map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
     let (s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;

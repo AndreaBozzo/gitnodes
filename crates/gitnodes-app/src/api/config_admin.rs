@@ -592,6 +592,13 @@ pub async fn load_brain_template(target: TargetRef, node_type: String) -> Result
     else {
         return Ok(String::new());
     };
+    if crate::server::local::is_enabled() {
+        let raw = crate::server::local::read_template(filename)
+            .map_err(gitnodes_domain::BrainError::Io)
+            .map_err(sfe)?;
+        let (body, _front) = crate::markdown::split_frontmatter(&raw);
+        return Ok(body.trim_start_matches('\n').to_string());
+    }
     let storage = session::storage_for(target).map_err(sfe)?;
     let raw = storage.load_template(&token, filename).await.map_err(sfe)?;
     let (body, _front) = crate::markdown::split_frontmatter(&raw);

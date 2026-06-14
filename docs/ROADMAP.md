@@ -28,6 +28,8 @@ The core is mature and in daily use:
 - Multi-repository routing, one deployment serving many targets.
 - Inbound sync via HMAC-verified webhooks; live freshness over SSE.
 - Bidirectional work-item ↔ GitHub issue/PR binding.
+- Zero-config local reads for humans (`gitnodes preview`) and agents
+  (`gitnodes mcp`), both over the same working-tree projection pipeline.
 - Security and operational hardening: CSRF protection, rate limiting, session
   encryption, `/healthz` and `/readyz`.
 
@@ -37,8 +39,8 @@ The core is mature and in daily use:
   single-file binary with reviewed download installers, single-user PAT mode
   (no OAuth App), a `gitnodes init` starter scaffold, and a generated
   `AGENTS.md` so humans and coding agents are productive from minute one.
-  Homebrew and WinGet publishing are the next distribution step, followed by
-  local/offline mode (run with zero GitHub).
+  Read-only local/offline usage now runs with zero GitHub. Homebrew and WinGet
+  publishing are the next distribution step once the public upstream is live.
 - **Write-path unification** — converging every mutation (save, delete, rename,
   config, assets, work items) onto the single atomic transaction layer, so all
   write paths share the same precondition and rollback guarantees.
@@ -55,7 +57,7 @@ Pulled in only when a real need appears:
 - External blob storage for binary assets (so large files don't bloat the repo).
 - Forge abstraction beyond GitHub (GitLab, Gitea, self-hosted).
 - Temporal / history views of the graph.
-- Local / offline mode.
+- Local writes and commits beyond the current read-only preview.
 - Large-graph performance: viewport culling past the current ~500-node comfort
   zone.
 

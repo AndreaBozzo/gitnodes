@@ -231,9 +231,13 @@ pub async fn handle(
                 .into_response();
         }
     };
-    // Preview mode is read-only with no forge: skip the token + access check and
-    // serve an idle stream (no webhooks fire, so the channel stays quiet).
-    if !super::local::is_enabled() {
+    // Preview mode is read-only with no forge: constrain the stream to the local
+    // target, then serve it without a token (no webhooks fire, so it stays idle).
+    if super::local::is_enabled() {
+        if super::local::ensure_target(&target).is_err() {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    } else {
         let Some(token) = super::auth::get_session_token(&session).await else {
             return StatusCode::UNAUTHORIZED.into_response();
         };

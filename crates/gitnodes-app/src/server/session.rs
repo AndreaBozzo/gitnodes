@@ -71,11 +71,6 @@ pub(crate) fn __assert_gated() {}
 /// Pull Session + GitHub token (fails with `Unauthenticated` if missing).
 pub async fn require_session_and_token() -> Result<(Session, String), BrainError> {
     let s = session()?;
-    // Preview mode has no forge token; reads are served from the local
-    // projection and writes are denied downstream.
-    if super::local::is_enabled() {
-        return Ok((s, String::new()));
-    }
     let token = auth::get_session_token(&s)
         .await
         .ok_or(BrainError::Unauthenticated)?;
@@ -89,6 +84,7 @@ pub async fn require_target_read(
 ) -> Result<(Session, String, gitnodes_storage::RepositoryPermissions), BrainError> {
     // Preview mode: read-only access to the local working tree, no forge call.
     if super::local::is_enabled() {
+        super::local::ensure_target(target)?;
         return Ok((
             session()?,
             String::new(),

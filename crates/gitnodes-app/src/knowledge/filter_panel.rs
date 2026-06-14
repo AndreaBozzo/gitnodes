@@ -35,6 +35,7 @@ pub fn FilterPanel(
     #[prop(optional)] current_org: String,
     #[prop(optional)] current_repo: String,
     #[prop(optional)] current_branch: String,
+    #[prop(optional)] local_preview: bool,
 ) -> impl IntoView {
     let type_buttons = config.node_types
         .iter()
@@ -255,13 +256,15 @@ pub fn FilterPanel(
 
     view! {
         <aside class="w-64 shrink-0 border-r border-slate-800 bg-slate-900/40 flex flex-col h-full min-h-0">
-            <div class="px-5 pt-5 pb-3 shrink-0 border-b border-slate-800/60">
-                <BrainSwitcher
-                    current_org=(!current_org.is_empty()).then(|| current_org.clone())
-                    current_repo=(!current_repo.is_empty()).then(|| current_repo.clone())
-                    current_branch=(!current_branch.is_empty()).then(|| current_branch.clone())
-                />
-            </div>
+            {(!local_preview).then(|| view! {
+                <div class="px-5 pt-5 pb-3 shrink-0 border-b border-slate-800/60">
+                    <BrainSwitcher
+                        current_org=(!current_org.is_empty()).then(|| current_org.clone())
+                        current_repo=(!current_repo.is_empty()).then(|| current_repo.clone())
+                        current_branch=(!current_branch.is_empty()).then(|| current_branch.clone())
+                    />
+                </div>
+            })}
             <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-6">
                 {has_views.then(|| view! {
                     <section>

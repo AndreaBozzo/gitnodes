@@ -44,6 +44,7 @@ pub fn DetailPanel(
     edit_mode: RwSignal<EditMode>,
     graph_version: RwSignal<u64>,
     config: gitnodes_domain::BrainConfig,
+    #[prop(optional)] local_preview: bool,
 ) -> impl IntoView {
     let active_target = StoredValue::new(expect_context::<TargetRef>());
     let config = StoredValue::new(config);
@@ -268,77 +269,82 @@ pub fn DetailPanel(
                                     }).collect_view()}
                                 </div>
                                 <div class="flex items-center gap-3 mt-3 text-[11px]">
-                                    <a
-                                        href=github_url.clone()
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        class="text-teal-300 hover:text-teal-200"
-                                    >
-                                        "View on GitHub ↗"
-                                    </a>
-                                    <span class="text-slate-600">"·"</span>
+                                    {if local_preview {
+                                        view! {
+                                            <span class="text-brand-200">"Local working tree"</span>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <>
+                                                <a
+                                                    href=github_url.clone()
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    class="text-teal-300 hover:text-teal-200"
+                                                >
+                                                    "View on GitHub ↗"
+                                                </a>
+                                                <span class="text-slate-600">"·"</span>
+                                            </>
+                                        }.into_any()
+                                    }}
                                     <PathBreadcrumb
                                         path=path.clone()
                                         github_url=github_url.clone()
                                         active_path_prefix=active_path_prefix
+                                        local_preview=local_preview
                                     />
                                 </div>
                             </div>
                             <div class="flex items-center gap-2 shrink-0">
-                                {
+                                {(!local_preview).then(|| {
                                     let path_for_edit = path.clone();
-                                    view! {
-                                        <button
-                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/40 text-teal-200 hover:bg-teal-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:opacity-40 disabled:cursor-not-allowed"
-                                            aria-label="Edit"
-                                            disabled=move || loaded_file().is_none()
-                                            on:click=move |_| {
-                                                if let Some(bf) = loaded_file() {
-                                                    let prefill = config.with_value(|c| {
-                                                        EditPrefill::from_raw(
-                                                            &path_for_edit,
-                                                            &bf.sha,
-                                                            &bf.content,
-                                                            c,
-                                                        )
-                                                    });
-                                                    edit_mode.set(EditMode::Edit(Box::new(prefill)));
-                                                }
-                                            }
-                                        >
-                                            "Edit"
-                                        </button>
-                                    }
-                                }
-                                {
                                     let path_for_rename = path.clone();
                                     view! {
-                                        <button
-                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-slate-600 text-slate-300 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 disabled:opacity-40 disabled:cursor-not-allowed"
-                                            aria-label="Rename"
-                                            disabled=move || renaming.get() || loaded_sha().is_none() || rename_input.with(|r| r.is_some())
-                                            on:click=move |_| {
-                                                rename_error.set(String::new());
-                                                rename_status.set(String::new());
-                                                rename_input.set(Some(path_for_rename.clone()));
-                                            }
-                                        >
-                                            {move || if renaming.get() { "Renaming…" } else { "Rename" }}
-                                        </button>
+                                        <>
+                                            <button
+                                                class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/40 text-teal-200 hover:bg-teal-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                aria-label="Edit"
+                                                disabled=move || loaded_file().is_none()
+                                                on:click=move |_| {
+                                                    if let Some(bf) = loaded_file() {
+                                                        let prefill = config.with_value(|c| {
+                                                            EditPrefill::from_raw(
+                                                                &path_for_edit,
+                                                                &bf.sha,
+                                                                &bf.content,
+                                                                c,
+                                                            )
+                                                        });
+                                                        edit_mode.set(EditMode::Edit(Box::new(prefill)));
+                                                    }
+                                                }
+                                            >
+                                                "Edit"
+                                            </button>
+                                            <button
+                                                class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-slate-600 text-slate-300 hover:bg-slate-800 transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                aria-label="Rename"
+                                                disabled=move || renaming.get() || loaded_sha().is_none() || rename_input.with(|r| r.is_some())
+                                                on:click=move |_| {
+                                                    rename_error.set(String::new());
+                                                    rename_status.set(String::new());
+                                                    rename_input.set(Some(path_for_rename.clone()));
+                                                }
+                                            >
+                                                {move || if renaming.get() { "Renaming…" } else { "Rename" }}
+                                            </button>
+                                            <button
+                                                class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-rose-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                aria-label="Delete"
+                                                disabled=move || deleting.get() || loaded_sha().is_none() || delete_prompt.with(|p| p.is_some())
+                                                on:click=move |_| request_delete()
+                                            >
+                                                {move || if deleting.get() { "Deleting…" } else { "Delete" }}
+                                            </button>
+                                        </>
                                     }
-                                }
-                                {
-                                    view! {
-                                        <button
-                                            class="px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-rose-500 disabled:opacity-40 disabled:cursor-not-allowed"
-                                            aria-label="Delete"
-                                            disabled=move || deleting.get() || loaded_sha().is_none() || delete_prompt.with(|p| p.is_some())
-                                            on:click=move |_| request_delete()
-                                        >
-                                            {move || if deleting.get() { "Deleting…" } else { "Delete" }}
-                                        </button>
-                                    }
-                                }
+                                })}
                                 <button
                                     class="text-slate-500 hover:text-slate-200 text-lg leading-none transition-colors focus:outline-none focus:ring-1 focus:ring-slate-500 rounded px-1"
                                     aria-label="Close"
@@ -587,7 +593,11 @@ pub fn DetailPanel(
                                             <Show when=move || matches!(work_item.get(), Some(Ok(Some(_))))>
                                                 {move || match work_item.get() {
                                                     Some(Ok(Some(item))) => view! {
-                                                        <WorkItemCard item=item graph_version=graph_version />
+                                                        <WorkItemCard
+                                                            item=item
+                                                            graph_version=graph_version
+                                                            local_preview=local_preview
+                                                        />
                                                     }.into_any(),
                                                     _ => ().into_any(),
                                                 }}
@@ -903,6 +913,7 @@ fn PathBreadcrumb(
     path: String,
     github_url: String,
     active_path_prefix: RwSignal<Option<String>>,
+    #[prop(optional)] local_preview: bool,
 ) -> impl IntoView {
     let parts: Vec<String> = path.split('/').map(ToOwned::to_owned).collect();
     let last_index = parts.len().saturating_sub(1);
@@ -925,17 +936,28 @@ fn PathBreadcrumb(
                     <>
                         {(idx > 0).then(|| view! { <span class="text-slate-700">"/"</span> })}
                         {if is_file {
-                            view! {
-                                <a
-                                    href=github_url.clone()
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    class="max-w-[220px] truncate font-mono text-slate-400 hover:text-teal-200"
-                                    title=path.clone()
-                                >
-                                    {part}
-                                </a>
-                            }.into_any()
+                            if local_preview {
+                                view! {
+                                    <span
+                                        class="max-w-[220px] truncate font-mono text-slate-400"
+                                        title=path.clone()
+                                    >
+                                        {part}
+                                    </span>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <a
+                                        href=github_url.clone()
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        class="max-w-[220px] truncate font-mono text-slate-400 hover:text-teal-200"
+                                        title=path.clone()
+                                    >
+                                        {part}
+                                    </a>
+                                }.into_any()
+                            }
                         } else {
                             view! {
                                 <button
@@ -958,7 +980,11 @@ fn PathBreadcrumb(
 }
 
 #[component]
-fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
+fn WorkItemCard(
+    item: WorkItem,
+    graph_version: RwSignal<u64>,
+    #[prop(optional)] local_preview: bool,
+) -> impl IntoView {
     let active_target = expect_context::<TargetRef>();
     let state = work_item_state_label(&item.state);
     let state_class = work_item_state_class(&item.state);
@@ -1079,20 +1105,22 @@ fn WorkItemCard(item: WorkItem, graph_version: RwSignal<u64>) -> impl IntoView {
                 {binding_view}
                 {sync_view}
             </dl>
-            <WorkItemComments
-                target=active_target.clone()
-                brain_id=item.brain_id.clone()
-                binding=item.external_binding.clone()
-                graph_version=graph_version
-            />
-            <WorkItemControls
-                target=active_target.clone()
-                brain_id=brain_id
-                current_state=item.state.clone()
-                current_assignees=item.assignees.clone()
-                current_binding=item.external_binding.clone()
-                graph_version=graph_version
-            />
+            {(!local_preview).then(|| view! {
+                <WorkItemComments
+                    target=active_target.clone()
+                    brain_id=item.brain_id.clone()
+                    binding=item.external_binding.clone()
+                    graph_version=graph_version
+                />
+                <WorkItemControls
+                    target=active_target.clone()
+                    brain_id=brain_id
+                    current_state=item.state.clone()
+                    current_assignees=item.assignees.clone()
+                    current_binding=item.external_binding.clone()
+                    graph_version=graph_version
+                />
+            })}
         </section>
     }
 }

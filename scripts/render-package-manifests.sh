@@ -7,11 +7,23 @@ if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
 fi
 
 VERSION="${1#v}"
+RELEASE_REPOSITORY="${GITNODES_RELEASE_REPOSITORY:-AndreaBozzo/gitnodes}"
 # VERSION is interpolated into sed below, so reject anything outside a semver-ish
 # alphabet — a stray '/' or '&' would otherwise corrupt the rendered manifests.
 case "$VERSION" in
   ""|*[!0-9A-Za-z.+-]*)
     echo "error: VERSION must contain only [0-9A-Za-z.+-] (got '$VERSION')" >&2
+    exit 1
+    ;;
+esac
+case "$RELEASE_REPOSITORY" in
+  ""|/*|*/|*/*/*|*[!0-9A-Za-z._/-]*)
+    echo "error: GITNODES_RELEASE_REPOSITORY must be an owner/repo slug" >&2
+    exit 1
+    ;;
+  */*) ;;
+  *)
+    echo "error: GITNODES_RELEASE_REPOSITORY must be an owner/repo slug" >&2
     exit 1
     ;;
 esac
@@ -41,6 +53,7 @@ render() {
   input="$1"
   output="$2"
   sed \
+    -e "s|__REPOSITORY__|$RELEASE_REPOSITORY|g" \
     -e "s/__VERSION__/$VERSION/g" \
     -e "s/__SHA_LINUX_X64__/$SHA_LINUX_X64/g" \
     -e "s/__SHA_MACOS_X64__/$SHA_MACOS_X64/g" \

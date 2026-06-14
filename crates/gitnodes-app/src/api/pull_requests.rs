@@ -43,6 +43,9 @@ pub async fn list_open_prs(target: TargetRef) -> Result<Vec<PrSummary>, ApiError
 
     let target = super::target_from_ref(target).map_err(sfe)?;
     let (_s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
+    if crate::server::local::is_enabled() {
+        return Ok(Vec::new());
+    }
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
 
     storage

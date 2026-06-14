@@ -501,12 +501,17 @@ pub fn run_init(dir: Option<&str>) -> Result<(), String> {
         println!("  0. Install git, then `git init` in {where_}.");
     }
     println!(
-        "  1. Commit the starter knowledge base:\n     \
+        "  1. Explore it locally (no GitHub or login required):\n     \
+cd {where_}\n     \
+gitnodes preview\n  \
+2. Connect an AI agent with the read-only MCP server:\n     \
+gitnodes mcp .\n  \
+3. Commit the starter knowledge base:\n     \
 cd {where_}\n     \
 git add . && git commit -m \"Initialize GitNodes knowledge base\"\n  \
-2. Create a GitHub repo and push it:\n     \
+4. Create a GitHub repo and push it:\n     \
 gh repo create <name> --private --source=. --remote=origin --push\n  \
-3. Run it (reuses your `gh` login and opens your browser):\n     \
+5. Enable collaborative GitHub-backed editing (reuses your `gh` login):\n     \
 gitnodes serve\n"
     );
     Ok(())

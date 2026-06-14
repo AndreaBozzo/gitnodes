@@ -837,21 +837,23 @@ pub(crate) fn KnowledgeView(
                         })
                     }
                     <RefreshButton graph_version=graph_version sync_status=sync_status />
-                    <button
-                        class="ml-2 px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/60 text-teal-200 hover:bg-teal-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500"
-                        title="Create a new Brain document"
-                        on:click=move |_| {
-                            edit_mode.update(|m| {
-                                *m = if matches!(m, EditMode::Closed) {
-                                    EditMode::New
-                                } else {
-                                    EditMode::Closed
-                                };
-                            });
-                        }
-                    >
-                        {move || if editing.get() { "Close Editor" } else { "+ New" }}
-                    </button>
+                    {(!local_preview).then(|| view! {
+                        <button
+                            class="ml-2 px-2 py-1 rounded text-[10px] uppercase tracking-widest border border-teal-400/60 text-teal-200 hover:bg-teal-500/10 transition-colors focus:outline-none focus:ring-1 focus:ring-teal-500"
+                            title="Create a new Brain document"
+                            on:click=move |_| {
+                                edit_mode.update(|m| {
+                                    *m = if matches!(m, EditMode::Closed) {
+                                        EditMode::New
+                                    } else {
+                                        EditMode::Closed
+                                    };
+                                });
+                            }
+                        >
+                            {move || if editing.get() { "Close Editor" } else { "+ New" }}
+                        </button>
+                    })}
                 </div>
             </header>
             <OrphanBanner nodes=nodes config=config diagnostic=config_diagnostic />
@@ -869,6 +871,7 @@ pub(crate) fn KnowledgeView(
                     current_org=target_ref.org.clone()
                     current_repo=target_ref.repo.clone()
                     current_branch=target_ref.branch.clone()
+                    local_preview=local_preview
                 />
                 <Show when=move || editing.get()>
                     <EditorPanel
@@ -906,6 +909,7 @@ pub(crate) fn KnowledgeView(
                     edit_mode=edit_mode
                     graph_version=graph_version
                     config=config.get_value()
+                    local_preview=local_preview
                 />
             </div>
             <DetailBar

@@ -31,6 +31,7 @@ pub(super) async fn save_file_permission_aware(
     target: &TargetConfig,
     intent: WriteIntent,
 ) -> Result<WriteResult, BrainError> {
+    crate::server::local::ensure_writable()?;
     let permissions = crate::server::access::repository_permissions(storage, token).await?;
     let mut transaction =
         GitTransaction::new(message, user, author_email).upsert_text(path, content);
@@ -76,6 +77,7 @@ pub(super) async fn delete_file_permission_aware(
     author_email: &str,
     target: &TargetConfig,
 ) -> Result<WriteResult, BrainError> {
+    crate::server::local::ensure_writable()?;
     let permissions = crate::server::access::repository_permissions(storage, token).await?;
     let transaction = GitTransaction::new(message, user, author_email)
         .delete(path)
@@ -132,6 +134,7 @@ pub(super) async fn propose_transaction(
     title: &str,
     body: &str,
 ) -> Result<WriteResult, BrainError> {
+    crate::server::local::ensure_writable()?;
     let base_sha = upstream_storage.head_sha(token).await?;
     let branch = pr_branch_name(user, action, path);
     let (branch_storage, head) = if can_push_upstream {

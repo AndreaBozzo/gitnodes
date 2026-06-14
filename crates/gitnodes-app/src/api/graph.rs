@@ -115,13 +115,14 @@ pub async fn load_gitnodes_graph() -> Result<(Vec<Node>, Vec<Edge>), ApiError> {
 pub async fn refresh_gitnodes_graph(target: TargetRef) -> Result<(), ApiError> {
     use crate::server::session;
     use gitnodes_domain::TargetKey;
+    let target = super::target_from_ref(target).map_err(sfe)?;
+    let _ = session::require_target_read(&target).await.map_err(sfe)?;
     // Preview mode: re-read the working tree from disk instead of the forge.
     if crate::server::local::is_enabled() {
         return crate::server::local::rebuild_projection("manual_refresh")
             .await
             .map_err(ApiError::Internal);
     }
-    let target = super::target_from_ref(target).map_err(sfe)?;
     let (s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let key = TargetKey::from(&target);
@@ -424,6 +425,14 @@ pub async fn resolve_legacy_target(org: String, repo: String) -> Result<TargetRe
     use crate::server::session;
 
     validate_legacy_target_parts(&org, &repo)?;
+    if let Some(target) = crate::server::local::target() {
+        if target.org == org && target.repo == repo {
+            return Ok(target.into());
+        }
+        return Err(ApiError::PermissionDenied(
+            "local preview only exposes its active working tree".into(),
+        ));
+    }
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
     let http = session::github_http().map_err(sfe)?;

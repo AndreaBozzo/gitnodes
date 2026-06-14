@@ -30,6 +30,8 @@ use gitnodes_graph::{RawFile, is_included_md};
 use sha2::{Digest, Sha256};
 
 pub(crate) const MAX_MARKDOWN_BYTES: u64 = 1024 * 1024;
+const CONFIG_PATH: &str = ".gitnodes.yml";
+const LEGACY_CONFIG_PATH: &str = ".brain-config.yml";
 
 /// One indexable markdown file located by the working-tree scan, before its
 /// contents are read. `size` and `mtime` are the cheap signals the fingerprint
@@ -81,19 +83,22 @@ pub(crate) fn read_working_tree(root: &Path) -> Result<(BrainConfig, Vec<RawFile
     Ok((config, files))
 }
 
-/// Cheap content-independent signature of the working tree: the config file's
-/// size and mtime plus every indexable file's path, size, and mtime. A content
-/// edit changes size or mtime; a config edit is folded in because `.gitnodes.yml`
-/// shapes the projection even though it is not itself an indexed node.
+/// Cheap content-independent signature of the working tree: config metadata
+/// plus every indexable file's path, size, and mtime. A content edit changes
+/// size or mtime; config edits are folded in because configuration shapes the
+/// projection even though it is not itself an indexed node.
 fn working_tree_fingerprint(root: &Path, entries: &[ScanEntry]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    match std::fs::metadata(root.join(".gitnodes.yml")) {
-        Ok(meta) => {
-            meta.len().hash(&mut hasher);
-            hash_mtime(meta.modified().ok(), &mut hasher);
+    for config_path in [CONFIG_PATH, LEGACY_CONFIG_PATH] {
+        config_path.hash(&mut hasher);
+        match std::fs::metadata(root.join(config_path)) {
+            Ok(meta) => {
+                meta.len().hash(&mut hasher);
+                hash_mtime(meta.modified().ok(), &mut hasher);
+            }
+            // Distinguish "no config" from a present-but-empty config.
+            Err(_) => u64::MAX.hash(&mut hasher),
         }
-        // Distinguish "no config" from a present-but-empty config.
-        Err(_) => u64::MAX.hash(&mut hasher),
     }
     for entry in entries {
         entry.rel.hash(&mut hasher);
@@ -111,15 +116,16 @@ fn hash_mtime(mtime: Option<SystemTime>, hasher: &mut DefaultHasher) {
 }
 
 pub(crate) fn read_config(root: &Path) -> Result<BrainConfig, String> {
-    let config_path = root.join(".gitnodes.yml");
-    if config_path.is_file() {
-        let source = std::fs::read_to_string(&config_path)
-            .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?;
-        BrainConfig::parse(&source)
-            .map_err(|error| format!("{} is invalid: {error}", config_path.display()))
-    } else {
-        Ok(BrainConfig::default())
+    for name in [CONFIG_PATH, LEGACY_CONFIG_PATH] {
+        let config_path = root.join(name);
+        if config_path.is_file() {
+            let source = std::fs::read_to_string(&config_path)
+                .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?;
+            return BrainConfig::parse(&source)
+                .map_err(|error| format!("{} is invalid: {error}", config_path.display()));
+        }
     }
+    Ok(BrainConfig::default())
 }
 
 fn read_entries(entries: &[ScanEntry]) -> Result<Vec<RawFile>, String> {
@@ -299,6 +305,39 @@ mod tests {
         .expect("edit note");
         assert!(matches!(
             scan_for_refresh(dir.path(), Some(fingerprint)).expect("changed scan"),
+            RefreshScan::Changed { .. }
+        ));
+    }
+
+    #[test]
+    fn legacy_config_is_loaded_and_fingerprinted() {
+        let dir = TestDir::new();
+        let legacy = dir.path().join(".brain-config.yml");
+        std::fs::write(
+            &legacy,
+            "default_type: note\nnode_types:\n  - name: note\n    label: Note\n    directory: notes\n    accent: \"#112233\"\n",
+        )
+        .expect("write legacy config");
+
+        let first = match scan_for_refresh(dir.path(), None).expect("first scan") {
+            RefreshScan::Changed {
+                config,
+                fingerprint,
+                ..
+            } => {
+                assert!(config.lookup("note").is_some());
+                fingerprint
+            }
+            RefreshScan::Unchanged => panic!("first scan must rebuild"),
+        };
+
+        std::fs::write(
+            &legacy,
+            "default_type: long-memo\nnode_types:\n  - name: long-memo\n    label: Long Memo\n    directory: long-memos\n    accent: \"#445566\"\n",
+        )
+        .expect("edit legacy config");
+        assert!(matches!(
+            scan_for_refresh(dir.path(), Some(first)).expect("legacy config changed"),
             RefreshScan::Changed { .. }
         ));
     }

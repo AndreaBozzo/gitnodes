@@ -78,6 +78,11 @@ pub async fn serve_asset(
     // forge to proxy. The token check below would otherwise reject the request
     // (preview has no session token).
     if crate::server::local::is_enabled() {
+        if let Some(target) = target_from_path(uri.path(), &state.target)
+            && crate::server::local::ensure_target(&target).is_err()
+        {
+            return (StatusCode::NOT_FOUND, "asset target not found").into_response();
+        }
         return match crate::server::local::read_asset(&repo_path) {
             Ok(bytes) => serve_bytes(bytes, mime_for(&repo_path)),
             Err(error) => {

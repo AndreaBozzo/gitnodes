@@ -120,6 +120,9 @@ async fn load_work_item_comments_inner(
 
     let target = super::target_from_ref(target)?;
     let (_s, token, _permissions) = session::require_target_read(&target).await?;
+    if crate::server::local::is_enabled() {
+        return Ok(Vec::new());
+    }
     let storage = session::storage_for(target.clone())?;
     let Some(item) =
         crate::server::projection::load_work_item_by_brain_id(&target, &brain_id).await?
@@ -261,6 +264,7 @@ async fn apply_work_item_mutation(
 
     use super::write_orchestrator::{propose_transaction, should_fallback_to_pr};
 
+    crate::server::local::ensure_writable()?;
     super::limits::check_len("Work item id", &brain_id, super::limits::MAX_FIELD_LEN)?;
     if let WorkItemMutation::Assignees(ref names) = mutation {
         for name in names {

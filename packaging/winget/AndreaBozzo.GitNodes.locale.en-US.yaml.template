@@ -4,12 +4,12 @@ PackageIdentifier: AndreaBozzo.GitNodes
 PackageVersion: __VERSION__
 PackageLocale: en-US
 Publisher: Andrea Bozzo
-PublisherUrl: https://github.com/AndreaBozzo
-PublisherSupportUrl: https://github.com/AndreaBozzo/gitnodes/issues
+PublisherUrl: https://github.com/__REPOSITORY__
+PublisherSupportUrl: https://github.com/__REPOSITORY__/issues
 PackageName: GitNodes
-PackageUrl: https://github.com/AndreaBozzo/gitnodes
+PackageUrl: https://github.com/__REPOSITORY__
 License: GNU Affero General Public License v3.0 or later
-LicenseUrl: https://github.com/AndreaBozzo/gitnodes/blob/v__VERSION__/LICENSE-AGPL
+LicenseUrl: https://github.com/__REPOSITORY__/blob/v__VERSION__/LICENSE-AGPL
 ShortDescription: A knowledge graph over a Git repository of Markdown files.
 Description: >-
   GitNodes turns Markdown with YAML frontmatter into a navigable, editable

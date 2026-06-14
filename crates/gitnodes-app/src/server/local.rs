@@ -31,7 +31,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use gitnodes_domain::{BrainConfig, TargetConfig};
+use gitnodes_domain::{BrainConfig, BrainError, TargetConfig};
 use gitnodes_storage::RepositoryPermissions;
 
 use super::{projection, working_tree};
@@ -59,6 +59,34 @@ pub fn target() -> Option<TargetConfig> {
     LOCAL.get().map(|ctx| ctx.target.clone())
 }
 
+/// Require a request to address the one synthetic target exposed by preview.
+///
+/// Preview reuses target-explicit server functions, so this check prevents an
+/// arbitrary `TargetRef` from inheriting local read permissions merely because
+/// the process happens to be in preview mode.
+pub fn ensure_target(target: &TargetConfig) -> Result<(), BrainError> {
+    let Some(active) = self::target() else {
+        return Ok(());
+    };
+    if active == *target {
+        Ok(())
+    } else {
+        Err(BrainError::permission_denied(format!(
+            "local preview only serves {}/{}/{}",
+            active.org, active.repo, active.branch
+        )))
+    }
+}
+
+/// Reject every mutation before it can reach a forge-backed write path.
+pub fn ensure_writable() -> Result<(), BrainError> {
+    if is_enabled() {
+        Err(BrainError::permission_denied("local preview is read-only"))
+    } else {
+        Ok(())
+    }
+}
+
 /// The `.gitnodes.yml` parsed from the working tree (default when absent).
 pub fn config() -> Arc<BrainConfig> {
     LOCAL
@@ -80,6 +108,30 @@ pub fn read_file(path: &str) -> Result<String, String> {
         .get()
         .ok_or_else(|| "local preview not active".to_string())?;
     working_tree::read_confined_markdown(&ctx.root, path)
+}
+
+/// Read a configured template from `templates/`, confined to that directory.
+pub fn read_template(filename: &str) -> Result<String, String> {
+    let ctx = LOCAL
+        .get()
+        .ok_or_else(|| "local preview not active".to_string())?;
+    let template_root = std::fs::canonicalize(ctx.root.join("templates"))
+        .map_err(|error| format!("failed to open templates directory: {error}"))?;
+    let candidate = std::fs::canonicalize(template_root.join(filename))
+        .map_err(|error| format!("failed to open template {filename}: {error}"))?;
+    if !candidate.starts_with(&template_root) {
+        return Err("template path escapes the templates directory".to_string());
+    }
+    let metadata = std::fs::metadata(&candidate)
+        .map_err(|error| format!("failed to inspect template {filename}: {error}"))?;
+    if metadata.len() > working_tree::MAX_MARKDOWN_BYTES {
+        return Err(format!(
+            "template {filename} exceeds the {} byte limit",
+            working_tree::MAX_MARKDOWN_BYTES
+        ));
+    }
+    std::fs::read_to_string(&candidate)
+        .map_err(|error| format!("failed to read template {filename} as UTF-8: {error}"))
 }
 
 /// Read raw bytes for a repo-relative asset path (e.g. `assets/foo.png`) from
@@ -179,7 +231,8 @@ pub async fn rebuild_projection(reason: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::read_only_permissions;
+    use super::{ensure_target, read_only_permissions};
+    use gitnodes_domain::TargetConfig;
 
     #[test]
     fn read_only_permissions_allow_read_only() {
@@ -188,5 +241,15 @@ mod tests {
         assert!(!permissions.push, "preview must deny direct writes");
         assert!(!permissions.admin, "preview must deny admin");
         assert!(!permissions.maintain, "preview must deny maintain");
+    }
+
+    #[test]
+    fn target_check_is_a_noop_outside_preview() {
+        let target = TargetConfig {
+            org: "example".into(),
+            repo: "brain".into(),
+            branch: "main".into(),
+        };
+        ensure_target(&target).expect("normal server mode should not be constrained");
     }
 }

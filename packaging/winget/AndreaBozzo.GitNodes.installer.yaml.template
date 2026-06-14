@@ -12,7 +12,7 @@ Commands:
 - gitnodes
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/AndreaBozzo/gitnodes/releases/download/v__VERSION__/gitnodes-x86_64-pc-windows-msvc.zip
+  InstallerUrl: https://github.com/__REPOSITORY__/releases/download/v__VERSION__/gitnodes-x86_64-pc-windows-msvc.zip
   InstallerSha256: __SHA_WINDOWS_X64__
 ManifestType: installer
 ManifestVersion: 1.10.0

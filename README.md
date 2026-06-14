@@ -37,21 +37,35 @@ Get-Content .\install-gitnodes.ps1
 & .\install-gitnodes.ps1
 ```
 
-Then scaffold a knowledge base and run it:
+Then scaffold a knowledge base and open it locally:
 
 ```bash
-gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md, git-initialised
+gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md
 cd my-brain
+gitnodes preview            # opens the read-only graph; no GitHub or login
+```
+
+The same working tree is immediately available to coding agents:
+
+```bash
+gitnodes mcp .              # read-only stdio MCP server
+```
+
+When you want collaborative editing and pull-request workflows, publish it:
+
+```bash
 git add . && git commit -m "Initialize GitNodes knowledge base"
 gh repo create my-brain --private --source=. --remote=origin --push
-gitnodes serve              # discovers the repo, reuses `gh auth`, opens the browser
+gitnodes serve              # discovers the repo, reuses `gh auth`
 ```
 
 If needed, run `gh auth login` once before the commands above. GitNodes reads the
 repository and branch from the local Git checkout and uses the credential already
 stored by GitHub CLI; it does not copy that token into `.env` or another file.
 `GITHUB_PAT` remains available as an explicit single-user fallback.
-The scaffolded `AGENTS.md` teaches coding agents (Claude Code, Codex, Cursor, …)
+`gitnodes preview` keeps its SQLite projection and sessions in memory and never
+writes runtime state into the knowledge directory. The scaffolded `AGENTS.md`
+teaches coding agents (Claude Code, Codex, Cursor, …)
 the conventions of your brain so they can add and link notes correctly. GitNodes
 is built for humans and agents alike.
 

@@ -16,6 +16,7 @@ permissions:
 env:
   CARGO_LEPTOS_VERSION: "0.3.6"
   GITNODES_BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  GITNODES_RELEASE_REPOSITORY: ${{ github.repository }}
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
