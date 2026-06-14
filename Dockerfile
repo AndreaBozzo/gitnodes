@@ -77,6 +77,11 @@ WORKDIR /app
 COPY --from=builder /app/gitnodes_bin ./gitnodes-app
 COPY --from=builder /app/site_out ./target/site
 
+# Bundled demo brain for the public read-only demo (see the demo mode below).
+# It is inert in a normal deployment — nothing reads it unless GITNODES_PREVIEW_DIR
+# is set, so the production image simply carries a few KB it never touches.
+COPY examples/demo-brain ./demo-brain
+
 # Railway provides PORT at runtime; default to 3000 for local docker builds.
 ENV LEPTOS_OUTPUT_NAME="gitnodes"
 ENV LEPTOS_SITE_ROOT="target/site"
@@ -85,4 +90,8 @@ ENV LEPTOS_SITE_PKG_DIR="pkg"
 ENV SESSION_COOKIE_SECURE="1"
 EXPOSE 3000
 
-CMD sh -c "./gitnodes-app"
+# Default: run the full GitHub-backed server (`serve`).
+# Read-only demo: set GITNODES_PREVIEW_DIR=/app/demo-brain and
+# GITNODES_ALLOW_REMOTE_PREVIEW=1 to serve a brain read-only with no auth,
+# no GitHub credential, and an in-memory database. See docs/guides/DEMO_DEPLOY.md.
+CMD sh -c 'if [ -n "$GITNODES_PREVIEW_DIR" ]; then exec ./gitnodes-app preview "$GITNODES_PREVIEW_DIR"; else exec ./gitnodes-app; fi'

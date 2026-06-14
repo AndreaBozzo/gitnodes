@@ -1,0 +1,125 @@
+# The Meridian Program — a GitNodes demo knowledge base.
+#
+# A fictional near-future deep-space exploration program, modelled as a graph:
+# missions target worlds, fly spacecraft, carry instruments, are run by people
+# and organisations, and produce discoveries. The relationships live in each
+# note's YAML frontmatter (`link_fields`), so GitNodes draws them as typed edges
+# you can toggle in the canvas legend — that is the thing plain markdown can't do.
+#
+# Everything here is optional; a repo with no .gitnodes.yml uses a built-in
+# default. This file is itself part of the demo: read it to see how a taxonomy
+# is declared.
+
+default_type: concept
+
+node_types:
+  - name: mission
+    label: Mission
+    directory: missions
+    accent: "#ef4444"
+    title_key: title
+    body_label: Mission Brief
+    link_fields:
+      program: program        # which program this mission belongs to
+      target: body            # the world it explores
+      spacecraft: spacecraft  # the vehicle flown
+      lead: person            # principal investigator
+      operated_by: org        # operating agency
+
+  - name: spacecraft
+    label: Spacecraft
+    directory: spacecraft
+    accent: "#38bdf8"
+    title_key: title
+    body_label: Vehicle Notes
+    link_fields:
+      mission: mission
+      built_by: org
+      instruments: instrument # carried payload (a list)
+
+  - name: body
+    label: World
+    directory: bodies
+    accent: "#a855f7"
+    title_key: title
+    body_label: Profile
+    link_fields:
+      orbits: body            # moons point at their planet
+
+  - name: instrument
+    label: Instrument
+    directory: instruments
+    accent: "#f59e0b"
+    title_key: title
+    body_label: Spec
+    link_fields:
+      aboard: spacecraft
+      made_by: org
+
+  - name: person
+    label: Person
+    directory: people
+    accent: "#2dd4bf"
+    title_key: title
+    body_label: Bio
+    link_fields:
+      affiliation: org
+
+  - name: org
+    label: Organisation
+    directory: orgs
+    accent: "#0ea5e9"
+    title_key: title
+    body_label: About
+
+  - name: discovery
+    label: Discovery
+    directory: discoveries
+    accent: "#fb7185"
+    title_key: title
+    body_label: Finding
+    link_fields:
+      mission: mission        # the mission that found it
+      body: body              # the world it concerns
+
+  - name: concept
+    label: Concept
+    directory: concepts
+    accent: "#84cc16"
+    title_key: title
+    body_label: Explainer
+
+  - name: program
+    label: Program
+    directory: programs
+    accent: "#eab308"
+    title_key: title
+    body_label: Charter
+
+  - name: tag
+    label: Tag
+    directory: ""
+    accent: "#64748b"
+    creatable: false
+
+# Saved views are named, pre-filtered slices shown in the sidebar.
+views:
+  - name: "Tour: start here"
+    slug: tour
+    weight: -20
+    tags: [featured]
+  - name: Missions & worlds
+    slug: missions-worlds
+    types: [mission, body, program]
+  - name: The fleet
+    slug: fleet
+    types: [spacecraft, instrument]
+  - name: Ocean worlds
+    slug: ocean-worlds
+    tags: [ocean-world]
+  - name: Discoveries
+    slug: discoveries
+    types: [discovery]
+  - name: People & orgs
+    slug: people-orgs
+    types: [person, org]
