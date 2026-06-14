@@ -773,9 +773,9 @@ pub fn EditorPanel(
                                 let updating = is_edit.get();
                                 let path = edit_path.get().unwrap_or_else(|| "…".to_string());
                                 if updating {
-                                    format!("Update {path} via Brain UI")
+                                    format!("Update {path} via GitNodes")
                                 } else {
-                                    format!("Create {path} via Brain UI")
+                                    format!("Create {path} via GitNodes")
                                 }
                             }
                             prop:value=move || custom_msg.get()

@@ -970,7 +970,7 @@ impl Storage for GithubStorage {
         author_email: &str,
     ) -> Result<String, BrainError> {
         let folder_title = folder_path.rsplit('/').next().unwrap_or(folder_path);
-        let readme_content = format!("# {folder_title}\n\n(Section created via Brain UI)\n");
+        let readme_content = format!("# {folder_title}\n\n(Section created via GitNodes)\n");
         let file_path = format!("{folder_path}/README.md");
 
         self.save_file(

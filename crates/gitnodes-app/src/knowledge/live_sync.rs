@@ -424,7 +424,7 @@ pub fn SyncStatusBanner(sync_status: RwSignal<SyncStatus>) -> impl IntoView {
                         <span class="text-amber-100/80">
                             {move || {
                                 sync_status.get().message_or(
-                                    "A background sync failed. Brain UI is showing the last successful snapshot; use Refresh if the view looks out of date.",
+                                    "A background sync failed. GitNodes is showing the last successful snapshot; use Refresh if the view looks out of date.",
                                 )
                             }}
                         </span>

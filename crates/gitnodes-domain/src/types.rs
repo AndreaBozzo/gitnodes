@@ -232,7 +232,7 @@ pub struct BrainFilePayload {
     pub path: Option<String>,
     pub sha: Option<String>,
     /// Optional user-supplied commit message. Empty/None falls back to the
-    /// auto-generated "Update/Create X via Brain UI" message.
+    /// auto-generated "Update/Create X via GitNodes" message.
     #[serde(default)]
     pub commit_message: Option<String>,
     /// Frontmatter parsed from the original file on update. `save_brain_file`

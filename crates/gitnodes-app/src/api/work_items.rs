@@ -318,8 +318,8 @@ async fn apply_work_item_mutation(
         &path,
         permissions.push,
         prepared.transaction.clone(),
-        &format!("Propose work item update {brain_id} via Brain UI"),
-        &format!("Brain UI could not update `{path}` directly on `{}` and proposed the work item change through a pull request instead.", target.branch),
+        &format!("Propose work item update {brain_id} via GitNodes"),
+        &format!("GitNodes could not update `{path}` directly on `{}` and proposed the work item change through a pull request instead.", target.branch),
     )
     .await?;
     let pr_number = write.pr_number.unwrap_or_default();
@@ -506,17 +506,17 @@ async fn prepare_work_item_mutation(
     let new_content = format!("---\n{}---\n{}", new_front, body);
     let commit_msg = match &mutation {
         WorkItemMutation::State(state) => format!(
-            "chore({brain_id}): set state to {state:?} via Brain UI",
+            "chore({brain_id}): set state to {state:?} via GitNodes",
             state = state
         ),
         WorkItemMutation::Assignees(_) => {
-            format!("chore({brain_id}): update assignees via Brain UI")
+            format!("chore({brain_id}): update assignees via GitNodes")
         }
         WorkItemMutation::Binding(Some(_)) => {
-            format!("chore({brain_id}): bind external item via Brain UI")
+            format!("chore({brain_id}): bind external item via GitNodes")
         }
         WorkItemMutation::Binding(None) => {
-            format!("chore({brain_id}): unbind external item via Brain UI")
+            format!("chore({brain_id}): unbind external item via GitNodes")
         }
     };
     let author_email = format!("{user}@users.noreply.github.com");

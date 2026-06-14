@@ -236,7 +236,7 @@ pub async fn save_views(
     ensure_preview_sha(expected_sha.as_deref(), live_sha.as_deref()).map_err(sfe)?;
     let (cfg, new_yaml) = build_views_config(&existing_raw, views).map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
-    let commit_msg = "Update saved views via Brain UI".to_string();
+    let commit_msg = "Update saved views via GitNodes".to_string();
 
     match save_file_permission_aware(
         &storage,
@@ -347,7 +347,7 @@ fn views_transaction(
     author_email: &str,
 ) -> gitnodes_storage::GitTransaction {
     let transaction = gitnodes_storage::GitTransaction::new(
-        "Update saved views via Brain UI",
+        "Update saved views via GitNodes",
         user,
         author_email,
     )

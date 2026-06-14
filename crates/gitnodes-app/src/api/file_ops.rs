@@ -128,8 +128,8 @@ pub async fn rename_brain_file(
         &old_path,
         permissions.push,
         transaction,
-        &format!("Propose rename {old_path} to {new_path} via Brain UI"),
-        &format!("Brain UI could not rename `{old_path}` directly on `{}` and proposed the rename through a pull request instead.\n\nNew path: `{new_path}`\nRewritten referrers: {}", target.branch, updated_referrers.len()),
+        &format!("Propose rename {old_path} to {new_path} via GitNodes"),
+        &format!("GitNodes could not rename `{old_path}` directly on `{}` and proposed the rename through a pull request instead.\n\nNew path: `{new_path}`\nRewritten referrers: {}", target.branch, updated_referrers.len()),
     )
     .await
     .map_err(sfe)?;
@@ -204,9 +204,9 @@ async fn prepare_rename_transaction(
     let referrer_count = updated_referrers.len();
     let message = user_msg.unwrap_or_else(|| {
         if referrer_count == 0 {
-            format!("Rename {old_path} -> {new_path} via Brain UI")
+            format!("Rename {old_path} -> {new_path} via GitNodes")
         } else {
-            format!("Rename {old_path} -> {new_path} via Brain UI ({referrer_count} referrers)")
+            format!("Rename {old_path} -> {new_path} via GitNodes ({referrer_count} referrers)")
         }
     });
 
@@ -431,7 +431,7 @@ pub async fn upload_asset(
         ext,
     );
 
-    let commit_msg = format!("Upload {asset_path} via Brain UI");
+    let commit_msg = format!("Upload {asset_path} via GitNodes");
     let storage = session::storage_for(target).map_err(sfe)?;
     match storage
         .upload_binary(

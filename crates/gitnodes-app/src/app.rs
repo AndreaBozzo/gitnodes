@@ -45,6 +45,25 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <meta name="color-scheme" content="dark"/>
+                <meta name="theme-color" content="#090d16"/>
+                <meta
+                    name="description"
+                    content="GitNodes turns a GitHub repo of markdown into a browsable wiki, knowledge graph, and editing surface. Git stays the single source of truth."
+                />
+                <meta property="og:title" content="GitNodes"/>
+                <meta
+                    property="og:description"
+                    content="A knowledge graph over a Git repo of markdown: browse, link, and edit your notes with Git as the source of truth."
+                />
+                <meta property="og:type" content="website"/>
+                <meta property="og:image" content="/brand/gitnodes-mark.png"/>
+                <meta name="twitter:card" content="summary"/>
+                <meta name="twitter:title" content="GitNodes"/>
+                <meta
+                    name="twitter:description"
+                    content="A knowledge graph over a Git repo of markdown: browse, link, and edit your notes with Git as the source of truth."
+                />
+                <meta name="twitter:image" content="/brand/gitnodes-mark.png"/>
                 <AutoReload options=options.clone()/>
                 <HydrationScripts options/>
                 <MetaTags/>

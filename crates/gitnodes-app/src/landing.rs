@@ -87,10 +87,26 @@ pub fn Landing() -> impl IntoView {
                 <>
                 <header class="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4">
                     <div class="flex items-center gap-3 min-w-0">
-                        <div class="w-2 h-2 rounded-full bg-teal-400"></div>
-                        <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300 truncate">
-                            {brand_name()}
-                        </h1>
+                        // Show the GitNodes wordmark only for the default brand; custom
+                        // (white-label) deployments keep the configurable text treatment.
+                        {move || if brand_name() == "GitNodes" {
+                            view! {
+                                <img
+                                    src="/brand/gitnodes-wordmark-header.png"
+                                    alt="GitNodes"
+                                    class="h-7 w-auto"
+                                />
+                            }.into_any()
+                        } else {
+                            view! {
+                                <div class="flex items-center gap-3 min-w-0">
+                                    <div class="w-2 h-2 rounded-full bg-teal-400"></div>
+                                    <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300 truncate">
+                                        {brand_name()}
+                                    </h1>
+                                </div>
+                            }.into_any()
+                        }}
                     </div>
                     <span class="hidden sm:inline text-xs text-slate-500 truncate">
                         {target_label()}

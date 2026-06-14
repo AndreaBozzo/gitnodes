@@ -345,9 +345,9 @@ pub async fn save_brain_file(payload: BrainFilePayload) -> Result<WriteResult, A
     );
 
     let auto_msg = if payload.sha.is_some() {
-        format!("Update {} via Brain UI", file_path)
+        format!("Update {} via GitNodes", file_path)
     } else {
-        format!("Create {} via Brain UI", file_path)
+        format!("Create {} via GitNodes", file_path)
     };
     let commit_msg = sanitize_commit_message(payload.commit_message.as_deref()).unwrap_or(auto_msg);
 
@@ -449,7 +449,7 @@ pub async fn delete_brain_file(
     validate_markdown_path(&path).map_err(sfe)?;
     let author_email = format!("{}@users.noreply.github.com", user);
     let commit_msg = sanitize_commit_message(commit_message.as_deref())
-        .unwrap_or_else(|| format!("Delete {} via Brain UI", path));
+        .unwrap_or_else(|| format!("Delete {} via GitNodes", path));
 
     let storage = session::storage_for(target.clone()).map_err(sfe)?;
     match delete_file_permission_aware(
