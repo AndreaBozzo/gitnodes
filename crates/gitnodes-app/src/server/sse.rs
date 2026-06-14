@@ -221,9 +221,6 @@ pub async fn handle(
     session: Session,
     Query(params): Query<SseParams>,
 ) -> Response {
-    let Some(token) = super::auth::get_session_token(&session).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
     let target = match target_from_param(params.target.as_deref(), &state.default_target) {
         Ok(target) => target,
         Err(error) => {
@@ -234,15 +231,22 @@ pub async fn handle(
                 .into_response();
         }
     };
-    let storage = GithubStorage::new(state.http, target.clone());
-    if let Err(error) = super::access::require_read(&storage, &token).await {
-        tracing::warn!(
-            org = %target.org,
-            repo = %target.repo,
-            %error,
-            "SSE repository access denied"
-        );
-        return StatusCode::FORBIDDEN.into_response();
+    // Preview mode is read-only with no forge: skip the token + access check and
+    // serve an idle stream (no webhooks fire, so the channel stays quiet).
+    if !super::local::is_enabled() {
+        let Some(token) = super::auth::get_session_token(&session).await else {
+            return StatusCode::UNAUTHORIZED.into_response();
+        };
+        let storage = GithubStorage::new(state.http, target.clone());
+        if let Err(error) = super::access::require_read(&storage, &token).await {
+            tracing::warn!(
+                org = %target.org,
+                repo = %target.repo,
+                %error,
+                "SSE repository access denied"
+            );
+            return StatusCode::FORBIDDEN.into_response();
+        }
     }
     let key = TargetKey::from(&target);
 

@@ -149,6 +149,14 @@ pub async fn load(target: &TargetConfig, token: &str) -> Arc<BrainConfig> {
 }
 
 pub async fn load_with_diagnostic(target: &TargetConfig, token: &str) -> ConfigLoadSnapshot {
+    // Preview mode has no forge: the config was parsed from disk at boot and is
+    // refreshed on rebuild, so serve it directly instead of reaching for GitHub.
+    if crate::server::local::is_enabled() {
+        return ConfigLoadSnapshot {
+            config: crate::server::local::config(),
+            diagnostic: None,
+        };
+    }
     let key = TargetKey::from(target);
     if let Some(hit) = cache_get(&key) {
         return hit;

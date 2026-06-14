@@ -56,9 +56,6 @@ pub async fn serve_asset(
     if !auth::is_authenticated(&session).await {
         return (StatusCode::UNAUTHORIZED, "not authenticated").into_response();
     }
-    let Some(token) = auth::get_session_token(&session).await else {
-        return (StatusCode::UNAUTHORIZED, "no github token").into_response();
-    };
 
     // Parse the asset sub-path from the full URI rather than via a `Path<String>`
     // extractor. The handler is mounted under TWO nests (`/assets` and
@@ -76,6 +73,23 @@ pub async fn serve_asset(
     if repo_path.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
+
+    // Preview mode serves assets straight from the working tree — there is no
+    // forge to proxy. The token check below would otherwise reject the request
+    // (preview has no session token).
+    if crate::server::local::is_enabled() {
+        return match crate::server::local::read_asset(&repo_path) {
+            Ok(bytes) => serve_bytes(bytes, mime_for(&repo_path)),
+            Err(error) => {
+                tracing::debug!(%repo_path, %error, "preview asset not found");
+                (StatusCode::NOT_FOUND, "asset not found").into_response()
+            }
+        };
+    }
+
+    let Some(token) = auth::get_session_token(&session).await else {
+        return (StatusCode::UNAUTHORIZED, "no github token").into_response();
+    };
 
     let target =
         target_from_path(uri.path(), &state.target).unwrap_or_else(|| state.target.clone());
@@ -155,12 +169,15 @@ async fn fetch_and_serve(
 
     tracing::debug!(%url, bytes = bytes.len(), content_type, "asset proxy: served");
 
-    // Build the response explicitly so the Content-Type we set is the one
-    // sent. Returning `(StatusCode, HeaderMap, Vec<u8>)` works in many cases
-    // but tuple-element ordering with `Vec<u8>::into_response()` (which sets
-    // its own `application/octet-stream`) is fragile — being explicit avoids
-    // the browser receiving image bytes labeled as octet-stream and refusing
-    // to render them.
+    serve_bytes(bytes, content_type)
+}
+
+/// Wrap raw asset bytes in a response with an explicit Content-Type. Returning
+/// `(StatusCode, HeaderMap, Vec<u8>)` works in many cases but tuple-element
+/// ordering with `Vec<u8>::into_response()` (which sets its own
+/// `application/octet-stream`) is fragile — being explicit avoids the browser
+/// receiving image bytes labeled as octet-stream and refusing to render them.
+fn serve_bytes(bytes: impl Into<Body>, content_type: &'static str) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
@@ -168,7 +185,7 @@ async fn fetch_and_serve(
         // rebuild, but lets a freshly-uploaded replacement propagate within a
         // minute.
         .header(header::CACHE_CONTROL, "private, max-age=60")
-        .body(Body::from(bytes))
+        .body(bytes.into())
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build response").into_response())
 }
 

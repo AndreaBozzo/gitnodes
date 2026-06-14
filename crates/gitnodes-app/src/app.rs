@@ -196,7 +196,7 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Stylesheet id="leptos" href="/pkg/gitnodes.css"/>
-        <Title text="Brain"/>
+        <Title text="GitNodes"/>
 
         <LiveSync graph_version=graph_version sync_status=sync_status />
         <SyncStatusBanner sync_status=sync_status />

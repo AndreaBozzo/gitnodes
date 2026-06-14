@@ -56,9 +56,9 @@ pub(super) async fn save_file_permission_aware(
         path,
         permissions.push,
         transaction,
-        &format!("Propose {path} via Brain UI"),
+        &format!("Propose {path} via GitNodes"),
         &format!(
-            "Brain UI could not write directly to `{}` and proposed this change through a pull request instead.\n\nTouched path: `{path}`",
+            "GitNodes could not write directly to `{}` and proposed this change through a pull request instead.\n\nTouched path: `{path}`",
             target.branch
         ),
     )
@@ -98,9 +98,9 @@ pub(super) async fn delete_file_permission_aware(
         path,
         permissions.push,
         transaction,
-        &format!("Propose deleting {path} via Brain UI"),
+        &format!("Propose deleting {path} via GitNodes"),
         &format!(
-            "Brain UI could not delete `{path}` directly from `{}` and proposed the deletion through a pull request instead.",
+            "GitNodes could not delete `{path}` directly from `{}` and proposed the deletion through a pull request instead.",
             target.branch
         ),
     )

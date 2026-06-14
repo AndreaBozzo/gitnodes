@@ -114,6 +114,18 @@ pub struct WriteCapabilities {
 pub async fn get_write_capabilities(target: TargetRef) -> Result<WriteCapabilities, ApiError> {
     use crate::server::session;
 
+    // Preview mode is read-only: advertise read-only capabilities so the editor
+    // and detail panel hide every write/admin control. Server-side write gates
+    // still refuse independently.
+    if crate::server::local::is_enabled() {
+        return Ok(WriteCapabilities {
+            can_read: true,
+            can_write_default_branch: false,
+            can_review_via_pr: false,
+            can_admin_config: false,
+        });
+    }
+
     let (_s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let target = super::target_from_ref(target).map_err(sfe)?;
     let storage = session::storage_for(target).map_err(sfe)?;
@@ -165,8 +177,17 @@ pub async fn read_brain_file(target: TargetRef, path: String) -> Result<BrainFil
 
     let cfg = super::target_from_ref(target).map_err(sfe)?;
     let (_s, token, _permissions) = session::require_target_read(&cfg).await.map_err(sfe)?;
-    let storage = session::storage_for(cfg.clone()).map_err(sfe)?;
-    let (content, sha) = storage.read_file(&token, &path).await.map_err(sfe)?;
+    // Preview mode reads the blob straight from the working tree (no forge, no
+    // sha — there is no write path that would need it for concurrency control).
+    let (content, sha) = if crate::server::local::is_enabled() {
+        (
+            crate::server::local::read_file(&path).map_err(ApiError::Internal)?,
+            String::new(),
+        )
+    } else {
+        let storage = session::storage_for(cfg.clone()).map_err(sfe)?;
+        storage.read_file(&token, &path).await.map_err(sfe)?
+    };
 
     let (body, fm) = crate::markdown::split_frontmatter(&content);
     let rendered_html = crate::markdown::render_for_file(body, &path, &cfg);

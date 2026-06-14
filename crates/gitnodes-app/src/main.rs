@@ -193,8 +193,23 @@ mod route_protection_tests {
 }
 
 #[cfg(feature = "ssr")]
-#[tokio::main]
-async fn main() {
+fn main() {
+    // SSR rendering of a fully-populated brain recurses proportionally to the
+    // graph/markdown content, which can exceed tokio's default 2 MiB worker
+    // stack (seen first via `gitnodes preview`, where the projection is
+    // pre-seeded and every request is authenticated). Give the runtime threads
+    // a generous stack so a direct hit on a content-heavy page renders instead
+    // of aborting with a stack overflow.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .expect("failed to build tokio runtime")
+        .block_on(run());
+}
+
+#[cfg(feature = "ssr")]
+async fn run() {
     use axum::{
         Router,
         body::Body,
@@ -217,6 +232,8 @@ async fn main() {
     // Subcommand dispatch. `serve [dir]` (or no command) runs the server below.
     // The remaining commands exit without starting the web runtime.
     let argv: Vec<String> = std::env::args().collect();
+    // `preview [dir]` serves the local working tree read-only with no GitHub.
+    let mut local_preview = false;
     let serve_dir = match argv.get(1).map(String::as_str) {
         Some("init") => match gitnodes_app::cli::run_init(argv.get(2).map(String::as_str)) {
             Ok(()) => std::process::exit(0),
@@ -258,6 +275,15 @@ async fn main() {
             }
             argv.get(2).map(String::as_str)
         }
+        Some("preview") => {
+            if argv.len() > 3 {
+                eprintln!("error: `gitnodes preview` accepts at most one directory\n");
+                gitnodes_app::cli::print_usage();
+                std::process::exit(2);
+            }
+            local_preview = true;
+            argv.get(2).map(String::as_str)
+        }
         None => None,
         Some(other) => {
             eprintln!("error: unknown command '{other}'\n");
@@ -276,11 +302,17 @@ async fn main() {
     api::register_server_functions();
 
     dotenvy::dotenv().ok();
-    let discovery_notes = match gitnodes_app::cli::configure_local_serve() {
-        Ok(notes) => notes,
-        Err(message) => {
-            eprintln!("error: {message}");
-            std::process::exit(1);
+    // Preview mode skips GitHub discovery and `gh auth` entirely; it serves the
+    // local working tree only.
+    let discovery_notes = if local_preview {
+        Vec::new()
+    } else {
+        match gitnodes_app::cli::configure_local_serve() {
+            Ok(notes) => notes,
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
         }
     };
 
@@ -302,16 +334,41 @@ async fn main() {
         tracing::info!("{note}");
     }
 
-    let target_bootstrap = gitnodes_app::server::runtime_config::target_from_env_or_exit();
-    auth::init_login_org(
-        &target_bootstrap.target.org,
-        target_bootstrap.compact_locator,
-    )
-    .unwrap_or_else(|error| {
-        tracing::error!(%error, "failed to initialize login organization policy");
-        std::process::exit(1)
-    });
-    let target_cfg = target_bootstrap.target;
+    // Preview mode synthesizes its target from the working-tree directory and
+    // skips the login-org policy; otherwise resolve the GitHub target from env.
+    let target_cfg = if local_preview {
+        match gitnodes_app::server::local::activate(".") {
+            Ok(target) => {
+                tracing::info!(
+                    repo = %target.repo,
+                    "local preview mode active (read-only, no GitHub)"
+                );
+                // Preview has no OAuth login, but `login_org()` is read while
+                // building AppConfig during SSR; initialize it org-less so it is
+                // never an uninitialized panic.
+                auth::init_login_org(&target.org, true).unwrap_or_else(|error| {
+                    tracing::error!(%error, "failed to initialize login organization policy");
+                    std::process::exit(1)
+                });
+                target
+            }
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let target_bootstrap = gitnodes_app::server::runtime_config::target_from_env_or_exit();
+        auth::init_login_org(
+            &target_bootstrap.target.org,
+            target_bootstrap.compact_locator,
+        )
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "failed to initialize login organization policy");
+            std::process::exit(1)
+        });
+        target_bootstrap.target
+    };
     let brand_cfg = gitnodes_app::server::runtime_config::brand_from_env(&target_cfg);
 
     // Single pooled, **target-agnostic** HTTP client for the whole process.
@@ -326,8 +383,16 @@ async fn main() {
     // Persistent runtime store backed by SQLite.
     // Holds sessions, audit events, and the local graph projection.
     // Use a standard URL format. Default to local sqlite.
-    let db_url =
-        std::env::var("SESSION_DB_URL").unwrap_or_else(|_| "sqlite://data/sessions.db".to_string());
+    // Preview keeps its ephemeral state out of the user's content directory by
+    // using a fresh temp-file SQLite database (cleaned at boot).
+    let preview_db_path =
+        std::env::temp_dir().join(format!("gitnodes-preview-{}.db", std::process::id()));
+    let db_url = if local_preview {
+        let _ = std::fs::remove_file(&preview_db_path);
+        format!("sqlite://{}", preview_db_path.display())
+    } else {
+        std::env::var("SESSION_DB_URL").unwrap_or_else(|_| "sqlite://data/sessions.db".to_string())
+    };
 
     // Only attempt to create parent directories if it's a local SQLite file
     if db_url.starts_with("sqlite://") && !db_url.starts_with("sqlite://:memory:") {
@@ -377,6 +442,15 @@ async fn main() {
     gitnodes_app::server::audit::init(pool.clone());
     gitnodes_app::server::projection::init(pool.clone());
 
+    // Preview mode seeds the projection from the working tree now that the pool
+    // exists, the same way the read-only MCP server does.
+    if local_preview
+        && let Err(message) = gitnodes_app::server::local::rebuild_projection("preview-boot").await
+    {
+        eprintln!("error: failed to index local working tree: {message}");
+        std::process::exit(1);
+    }
+
     let event_bus = gitnodes_app::server::sse::EventBus::new();
     gitnodes_app::server::sse::init(event_bus.clone());
 
@@ -420,11 +494,17 @@ async fn main() {
         .unwrap_or(!cfg!(debug_assertions));
 
     // Encrypt OAuth tokens in the session store. An explicit env key wins;
-    // otherwise a private key is generated once under data/ and reused.
-    let session_key = gitnodes_app::server::session_key::load().unwrap_or_else(|error| {
-        tracing::error!(%error, "failed to load session encryption key");
-        std::process::exit(1)
-    });
+    // otherwise a private key is generated once under data/ and reused. Preview
+    // mode uses an ephemeral in-memory key so it never writes into the user's
+    // content directory (sessions are anonymous and read-only anyway).
+    let session_key = if local_preview {
+        tower_sessions::cookie::Key::generate()
+    } else {
+        gitnodes_app::server::session_key::load().unwrap_or_else(|error| {
+            tracing::error!(%error, "failed to load session encryption key");
+            std::process::exit(1)
+        })
+    };
     let session_layer = SessionManagerLayer::new(session_store)
         .with_same_site(SameSite::Lax)
         .with_secure(cookie_secure)
@@ -461,10 +541,15 @@ async fn main() {
         leptos_options.site_addr
     };
 
-    // Resolve single-user PAT mode (if `GITHUB_PAT` is set) before serving. This
-    // validates the token, records the operator identity, and enforces the
-    // loopback guardrail — it exits the process on a misconfiguration.
-    gitnodes_app::server::pat::init(&addr).await;
+    // Preview and PAT mode are mutually exclusive auth postures. Preview serves
+    // read-only and unauthenticated, so it only enforces the loopback guardrail;
+    // otherwise resolve single-user PAT mode (validates the token, records the
+    // operator identity, enforces the same guardrail) before serving.
+    if local_preview {
+        gitnodes_app::server::local::enforce_loopback(&addr);
+    } else {
+        gitnodes_app::server::pat::init(&addr).await;
+    }
 
     let routes = generate_route_list(App);
 
@@ -476,6 +561,20 @@ async fn main() {
     // reconnect-loop forever.
     async fn protect_knowledge(session: Session, request: Request<Body>, next: Next) -> Response {
         let path = request.uri().path();
+        // Preview mode is read-only with no forge: the landing route has no
+        // login to show, and the admin/operator/PR surfaces have no remote to
+        // act on. Bounce all of them to the graph server-side (covers every
+        // route variant, 3- and 4-segment), so these surfaces are hidden rather
+        // than rendering a raw authorization error.
+        if gitnodes_app::server::local::is_enabled() {
+            let is_forge_surface = path
+                .trim_start_matches('/')
+                .split('/')
+                .any(|segment| matches!(segment, "admin" | "pulls"));
+            if path == "/" || is_forge_surface {
+                return Redirect::to("/knowledge").into_response();
+            }
+        }
         if is_protected_path(path) && !auth::is_authenticated(&session).await {
             if path == "/sse" || path.starts_with("/sse/") {
                 axum::http::StatusCode::UNAUTHORIZED.into_response()

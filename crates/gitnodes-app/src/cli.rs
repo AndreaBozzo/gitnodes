@@ -63,6 +63,8 @@ gitnodes <command>\n\
 \n\
 COMMANDS:\n    \
 serve [dir]   Run the server for a local Git checkout (default: current dir).\n    \
+preview [dir] Browse a local folder of markdown in the graph UI — no GitHub,\n                  \
+no login, read-only (default: current dir).\n    \
 mcp [dir]     Serve read-only local knowledge tools to AI agents over stdio.\n    \
 init [dir]    Scaffold a starter brain (.gitnodes.yml + sample notes + AGENTS.md).\n    \
 agents [dir]  (Re)generate AGENTS.md from .gitnodes.yml so coding agents know\n                  \

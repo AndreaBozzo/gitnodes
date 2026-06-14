@@ -30,12 +30,15 @@ pub fn Landing() -> impl IntoView {
             .and_then(Result::ok)
     });
 
+    // Preview mode redirects `/` to the graph server-side (see `protect_knowledge`),
+    // so the landing page itself stays GitHub-login-only.
+
     let brand_name = move || {
         resolved_config.with(|config| {
             config
                 .as_ref()
                 .map(|c| c.brand.name.clone())
-                .unwrap_or_else(|| "Brain".to_string())
+                .unwrap_or_else(|| "GitNodes".to_string())
         })
     };
 
@@ -182,7 +185,7 @@ pub fn Landing() -> impl IntoView {
                     </div>
                 </main>
                 <footer class="px-6 py-4 border-t border-slate-800 text-xs text-slate-600 text-center space-y-1">
-                    <p>"Brain · Edge Administration"</p>
+                    <p>"GitNodes"</p>
                     <p>
                         "© 2026 Andrea Bozzo · AGPLv3 · "
                         <a

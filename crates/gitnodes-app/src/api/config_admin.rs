@@ -36,6 +36,10 @@ pub struct AppConfig {
     /// Organization required at login. `None` means org-less login; target
     /// repository permissions remain authoritative after authentication.
     pub login_org: Option<String>,
+    /// True when serving a read-only local working tree (`gitnodes preview`).
+    /// The landing page sends visitors straight to the graph in this mode.
+    #[serde(default)]
+    pub local_preview: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +83,7 @@ pub async fn get_app_config() -> Result<AppConfig, ApiError> {
         target,
         brand,
         login_org,
+        local_preview: crate::server::local::is_enabled(),
     })
 }
 

@@ -25,7 +25,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
 use crate::api::{
-    AccessibleTarget, AccessibleTargetState, FileQueryFilters, list_accessible_targets,
+    AccessibleTarget, AccessibleTargetState, AppConfig, FileQueryFilters, list_accessible_targets,
     list_brain_files, load_brain_config_status_for_target, load_gitnodes_graph_for_target,
     resolve_legacy_target,
 };
@@ -67,6 +67,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
 
     let graph_version = expect_context::<GraphVersion>().0;
     let sync_status = expect_context::<SyncStatusSignal>().0;
+    let app_config = expect_context::<Resource<Result<AppConfig, crate::api::ApiError>>>();
 
     // Reload whenever graph_version bumps (webhook / manual refresh) or the
     // target changes (user switched to a different repo via Brain Switcher).
@@ -97,6 +98,11 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                 match data.get() {
                     Some(Ok((target, nodes, edges, config_status, files))) => {
                         use super::page::KnowledgeViewProps;
+                        let local_preview = app_config
+                            .get()
+                            .and_then(Result::ok)
+                            .map(|a| a.local_preview)
+                            .unwrap_or(false);
                         super::page::KnowledgeView(KnowledgeViewProps {
                             nodes,
                             edges,
@@ -106,6 +112,7 @@ pub fn KnowledgePageForTarget() -> impl IntoView {
                             graph_version,
                             sync_status,
                             target_ref: target,
+                            local_preview,
                         })
                         .into_any()
                     }

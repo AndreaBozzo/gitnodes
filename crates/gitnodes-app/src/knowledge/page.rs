@@ -124,6 +124,7 @@ pub fn KnowledgePage() -> impl IntoView {
                             graph_version,
                             sync_status,
                             target_ref: TargetRef::from(app.target),
+                            local_preview: app.local_preview,
                         }).into_any()
                     }
                     (Some(Err(e)), _) | (_, Some(Err(e))) => view! {
@@ -160,6 +161,9 @@ pub(crate) fn KnowledgeView(
     graph_version: RwSignal<u64>,
     sync_status: RwSignal<SyncStatus>,
     target_ref: TargetRef,
+    /// Read-only local preview (`gitnodes preview`): forge-backed surfaces
+    /// (PRs, operator/admin status) are hidden because there is no forge.
+    local_preview: bool,
 ) -> impl IntoView {
     provide_context(target_ref.clone());
     let query = use_query_map();
@@ -673,31 +677,45 @@ pub(crate) fn KnowledgeView(
                             <h1 class="text-sm font-semibold uppercase tracking-wide text-slate-200">
                                 "Knowledge"
                             </h1>
-                            <span class="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-emerald-200">
-                                "Live"
-                            </span>
+                            {(!local_preview).then(|| view! {
+                                <span class="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-emerald-200">
+                                    "Live"
+                                </span>
+                            })}
                         </div>
                         {(!target_label.is_empty()).then(|| view! {
                             <div class="mt-0.5 truncate font-mono text-xs text-slate-500">{target_label.clone()}</div>
                         })}
                     </div>
                 </div>
-                <a
-                    href=pulls_href
-                    rel="external"
-                    class="rounded-md border border-slate-800 px-2.5 py-1 text-xs text-slate-400 hover:border-slate-700 hover:text-slate-200"
-                    title="View open pull requests for this target"
-                >
-                    "Pulls"
-                </a>
-                <a
-                    href=admin_href
-                    rel="external"
-                    class="rounded-md border border-slate-800 px-2.5 py-1 text-xs text-slate-400 hover:border-slate-700 hover:text-slate-200"
-                    title="Open projection, sync, sessions, and audit status"
-                >
-                    "Status"
-                </a>
+                // Forge-backed surfaces are hidden in read-only preview: there
+                // is no remote to open PRs against or operator state to inspect.
+                {(!local_preview).then(|| view! {
+                    <a
+                        href=pulls_href
+                        rel="external"
+                        class="rounded-md border border-slate-800 px-2.5 py-1 text-xs text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                        title="View open pull requests for this target"
+                    >
+                        "Pulls"
+                    </a>
+                    <a
+                        href=admin_href
+                        rel="external"
+                        class="rounded-md border border-slate-800 px-2.5 py-1 text-xs text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                        title="Open projection, sync, sessions, and audit status"
+                    >
+                        "Status"
+                    </a>
+                })}
+                {local_preview.then(|| view! {
+                    <span
+                        class="rounded-md border border-brand-400/30 bg-brand-400/10 px-2.5 py-1 text-xs font-medium text-brand-200"
+                        title="Serving a local working tree, read-only"
+                    >
+                        "Preview · read-only"
+                    </span>
+                })}
                 <div class="min-w-[240px] max-w-xl flex-1">
                     <label class="relative block" data-search-surface="true">
                         <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">

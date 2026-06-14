@@ -71,6 +71,11 @@ pub(crate) fn __assert_gated() {}
 /// Pull Session + GitHub token (fails with `Unauthenticated` if missing).
 pub async fn require_session_and_token() -> Result<(Session, String), BrainError> {
     let s = session()?;
+    // Preview mode has no forge token; reads are served from the local
+    // projection and writes are denied downstream.
+    if super::local::is_enabled() {
+        return Ok((s, String::new()));
+    }
     let token = auth::get_session_token(&s)
         .await
         .ok_or(BrainError::Unauthenticated)?;
@@ -82,6 +87,14 @@ pub async fn require_session_and_token() -> Result<(Session, String), BrainError
 pub async fn require_target_read(
     target: &TargetConfig,
 ) -> Result<(Session, String, gitnodes_storage::RepositoryPermissions), BrainError> {
+    // Preview mode: read-only access to the local working tree, no forge call.
+    if super::local::is_enabled() {
+        return Ok((
+            session()?,
+            String::new(),
+            super::local::read_only_permissions(),
+        ));
+    }
     let (session, token) = require_session_and_token().await?;
     let storage = storage_for(target.clone())?;
     let permissions = super::access::require_read(&storage, &token).await?;
@@ -128,6 +141,11 @@ pub async fn require_authenticated() -> Result<Session, BrainError> {
 /// backward compatibility. Splitting deployment administration from target
 /// administration is tracked as the next open-source security slice.
 pub async fn require_target_admin_session() -> Result<Session, BrainError> {
+    // Preview mode is read-only and unauthenticated: admin surfaces are denied
+    // outright so no forge call is attempted with an empty token.
+    if super::local::is_enabled() {
+        return Err(BrainError::Unauthenticated);
+    }
     let (session, token) = require_session_and_token().await?;
     let target = target_cfg()?;
     let storage = storage_for(target)?;

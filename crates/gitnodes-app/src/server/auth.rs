@@ -42,13 +42,19 @@ pub async fn get_session_user(session: &Session) -> Option<String> {
     if let Some(pat) = crate::server::pat::identity() {
         return Some(pat.login.clone());
     }
+    if crate::server::local::is_enabled() {
+        return Some("local-preview".to_string());
+    }
     gitnodes_auth::get_session_user(session).await
 }
 
 /// PAT-aware authentication check. In PAT mode the single operator is always
-/// authenticated; otherwise a live OAuth session is required.
+/// authenticated; in preview mode the anonymous visitor is always allowed
+/// (read-only); otherwise a live OAuth session is required.
 pub async fn is_authenticated(session: &Session) -> bool {
-    crate::server::pat::is_enabled() || gitnodes_auth::is_authenticated(session).await
+    crate::server::pat::is_enabled()
+        || crate::server::local::is_enabled()
+        || gitnodes_auth::is_authenticated(session).await
 }
 
 static LOGIN_ORG: OnceLock<Option<String>> = OnceLock::new();
@@ -112,8 +118,10 @@ pub fn login_org() -> Option<String> {
 
 /// Handler for `GET /auth/login`.
 pub async fn login(session: Session) -> impl IntoResponse {
-    // PAT mode has no OAuth App; the single operator is always signed in.
-    if crate::server::pat::is_enabled() {
+    // Neither PAT nor preview mode has an OAuth App; there is nothing to log
+    // into, so send the visitor straight to the graph. Reaching the OAuth path
+    // below would call `client_id()` and exit the process on missing env.
+    if crate::server::pat::is_enabled() || crate::server::local::is_enabled() {
         return Redirect::to("/knowledge").into_response();
     }
     let state = generate_state();

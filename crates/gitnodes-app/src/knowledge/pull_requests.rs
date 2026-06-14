@@ -112,7 +112,7 @@ pub fn PullRequestsPage() -> impl IntoView {
             <header class="px-6 py-4 border-b border-slate-800 flex items-center gap-3">
                 <div class="w-2 h-2 rounded-full bg-teal-400"></div>
                 <h1 class="text-sm font-semibold tracking-wide uppercase text-slate-300">
-                    "Brain · Pull Requests"
+                    "GitNodes · Pull Requests"
                 </h1>
                 <a
                     href=knowledge_href

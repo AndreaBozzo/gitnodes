@@ -8,9 +8,9 @@
        emits `var(--accent-{name}, {hex})`, so a custom type declared in
        `.gitnodes.yml` without a matching `--accent-*` here still renders
        its configured hex. Add/remove entries only to override centrally. */
-    --accent-concept: #2dd4bf;
+    --accent-concept: #00c0f0;
     --accent-adr: #f59e0b;
-    --accent-meeting: #a78bfa;
+    --accent-meeting: #9866f8;
     --accent-post-mortem: #f87171;
     --accent-project: #38bdf8;
     --accent-runbook: #4ade80;

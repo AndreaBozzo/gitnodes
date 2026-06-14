@@ -115,6 +115,12 @@ pub async fn load_gitnodes_graph() -> Result<(Vec<Node>, Vec<Edge>), ApiError> {
 pub async fn refresh_gitnodes_graph(target: TargetRef) -> Result<(), ApiError> {
     use crate::server::session;
     use gitnodes_domain::TargetKey;
+    // Preview mode: re-read the working tree from disk instead of the forge.
+    if crate::server::local::is_enabled() {
+        return crate::server::local::rebuild_projection("manual_refresh")
+            .await
+            .map_err(ApiError::Internal);
+    }
     let target = super::target_from_ref(target).map_err(sfe)?;
     let (s, token, _permissions) = session::require_target_read(&target).await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
@@ -176,6 +182,19 @@ pub enum AccessibleTargetState {
 #[server(ListAccessibleTargets, "/api", endpoint = "list_accessible_targets")]
 pub async fn list_accessible_targets() -> Result<Vec<AccessibleTarget>, ApiError> {
     use crate::server::session;
+
+    // Preview mode serves a single local working tree; the Brain Switcher shows
+    // just that target without any forge discovery.
+    if let Some(target) = crate::server::local::target() {
+        return Ok(vec![AccessibleTarget {
+            org: target.org,
+            repo: target.repo,
+            default_branch: target.branch.clone(),
+            active_branch: target.branch,
+            state: AccessibleTargetState::Accessible,
+            has_brain_config: true,
+        }]);
+    }
 
     let (s, token) = session::require_session_and_token().await.map_err(sfe)?;
     let user = session::session_user_or_fallback(&s).await;
