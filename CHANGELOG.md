@@ -12,8 +12,11 @@ versioning once public releases begin.
 - Starter brain scaffolding and generated `AGENTS.md`.
 - Single-file release builds and Homebrew/WinGet metadata generation.
 - GitNodes visual identity and prism-style graph nodes.
+- GitNodes wordmark in the app header, plus social/SEO metadata (description,
+  Open Graph, and Twitter card tags) so shared links render with a title and image.
 - End-to-end guides and an implementation-backed feature inventory.
 
 ### Changed
 
-- Renamed the workspace and crates from Brain UI to GitNodes.
+- Renamed the workspace and crates from Brain UI to GitNodes, including the
+  user-facing commit messages and in-app copy that mutations write to GitHub.

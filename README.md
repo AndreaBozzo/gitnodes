@@ -5,19 +5,33 @@
   </picture>
 </p>
 
-GitNodes turns a GitHub repository of markdown files into a navigable, editable
-knowledge graph. It reads and renders markdown with YAML frontmatter, writes new
-and edited documents back through the GitHub API, and visualizes the
-relationships between them as a force-directed graph. Node types and operational
-labels are driven by a `.gitnodes.yml` file in the target repo — there are no
-hardcoded types in the binary.
+<p align="center">
+  <strong>Turn a GitHub repo of markdown notes into a knowledge graph you — and your AI agents — can explore, search, and edit.</strong>
+</p>
 
-Git stays the single source of truth: SQLite is only a rebuildable,
-target-scoped projection that backs sessions, audit logs, and graph/work-item
-reads. The app is a Leptos (Rust) fullstack application — server-rendered with
-WASM hydration — supporting multi-repository routing, bidirectional work-item
-sync, permission-aware direct-write vs pull-request flows, saved views, and
-repo-structure navigation.
+GitNodes points at a GitHub repository of markdown files and makes it navigable: a
+force-directed graph of how your notes link together, a wiki-style reader, and an
+in-app editor that commits changes straight back to GitHub. Declare your own note
+types and relationships in a single `.gitnodes.yml` file and GitNodes builds the
+graph, the typed links, and a full-text search index for you.
+
+Your notes stay in Git — there is no separate database to migrate into and nothing
+to lock you in. Point a coding agent (Claude Code, Cursor, Codex, …) at the same
+repository over MCP and it can search and walk the graph instead of grepping blind,
+then write changes back as ordinary, reviewable commits.
+
+- **Browse** — explore the graph of your notes and their links, with ranked full-text search.
+- **Edit** — create, link, and rename notes in-app; each change lands as a direct commit or a pull request, following your GitHub permissions.
+- **Agent-native** — a read-only MCP server lets agents traverse your knowledge graph; they author back through Git, never behind your back.
+- **Git-native** — Git is the single source of truth. The local index is just a rebuildable projection: delete it and it rebuilds from `git clone` alone.
+
+<p align="center">
+  <img alt="GitNodes rendering a knowledge base as a force-directed graph" src="public/screenshots/graph.png" width="860">
+</p>
+<!-- TODO(launch): add the hosted demo link here once the Railway demo is live, e.g. "▶ Try the live demo". -->
+<p align="center">
+  <em>The brain above ships in <a href="examples/demo-brain"><code>examples/demo-brain</code></a> — run <code>gitnodes preview examples/demo-brain</code> to explore it yourself.</em>
+</p>
 
 ## Quickstart
 
@@ -283,6 +297,14 @@ Choose one authentication mode:
 | ---------------------- | ------- |
 | `GITHUB_PAT`           | Single-user mode: use this PAT for every GitHub request; no OAuth App required. |
 | `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` | Multi-user mode: GitHub OAuth App credentials. |
+
+> **OAuth scope note.** In multi-user OAuth mode, login requests GitHub's `repo`
+> scope — an OAuth App cannot be restricted to a single repository, so the issued
+> token can read and write *all* of the user's repositories. GitNodes stores it
+> encrypted at rest, uses it server-side only, and still gates every target by live
+> repository permissions (a user without `pull` sees nothing). For a tighter blast
+> radius, prefer single-user PAT mode (`GITHUB_PAT`, whose scopes you choose) or
+> install GitNodes as a GitHub App scoped to selected repositories.
 
 Optional:
 
