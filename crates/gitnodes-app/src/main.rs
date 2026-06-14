@@ -16,6 +16,21 @@
 #![recursion_limit = "512"]
 #![cfg_attr(not(test), warn(clippy::unwrap_used))]
 
+#[cfg(all(feature = "ssr", not(feature = "embed-assets")))]
+fn absolute_site_root(
+    base: &std::path::Path,
+    configured: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    let root = configured
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("target/site"));
+    if root.is_absolute() {
+        root
+    } else {
+        base.join(root)
+    }
+}
+
 #[cfg(feature = "ssr")]
 fn is_protected_path(path: &str) -> bool {
     path == "/knowledge"
@@ -92,7 +107,7 @@ fn is_same_origin(host: Option<&str>, origin: Option<&str>, sec_fetch_site: Opti
 
 #[cfg(all(test, feature = "ssr"))]
 mod route_protection_tests {
-    use super::{is_asset_path, is_protected_path, is_same_origin};
+    use super::{absolute_site_root, is_asset_path, is_protected_path, is_same_origin};
 
     #[test]
     fn asset_path_classification_covers_both_mounts() {
@@ -106,6 +121,23 @@ mod route_protection_tests {
         assert!(!is_asset_path("/Dritara-Digital/Brain/main/admin"));
         assert!(!is_asset_path("/api/save_brain_file"));
         assert!(!is_asset_path("/"));
+    }
+
+    #[test]
+    fn relative_site_root_stays_anchored_to_launch_directory() {
+        let launch_dir = std::path::Path::new("/opt/gitnodes");
+        assert_eq!(
+            absolute_site_root(launch_dir, None),
+            launch_dir.join("target/site")
+        );
+        assert_eq!(
+            absolute_site_root(launch_dir, Some("custom/site".into())),
+            launch_dir.join("custom/site")
+        );
+        assert_eq!(
+            absolute_site_root(launch_dir, Some("/srv/gitnodes/site".into())),
+            std::path::PathBuf::from("/srv/gitnodes/site")
+        );
     }
 
     #[test]
@@ -229,6 +261,10 @@ async fn run() {
     use tower_sessions::{Session, SessionManagerLayer, cookie::SameSite};
     use tower_sessions_sqlx_store::SqliteStore;
 
+    let launch_dir = std::env::current_dir().expect("resolve launch directory");
+    #[cfg(not(feature = "embed-assets"))]
+    let inherited_site_root = std::env::var_os("LEPTOS_SITE_ROOT");
+
     // Subcommand dispatch. `serve [dir]` (or no command) runs the server below.
     // The remaining commands exit without starting the web runtime.
     let argv: Vec<String> = std::env::args().collect();
@@ -302,6 +338,20 @@ async fn run() {
     api::register_server_functions();
 
     dotenvy::dotenv().ok();
+    #[cfg(not(feature = "embed-assets"))]
+    {
+        let configured_site_root = std::env::var_os("LEPTOS_SITE_ROOT");
+        let site_root_base = if inherited_site_root.is_some() || configured_site_root.is_none() {
+            launch_dir.clone()
+        } else {
+            std::env::current_dir().expect("resolve serve directory")
+        };
+        let site_root = absolute_site_root(&site_root_base, configured_site_root);
+        // SAFETY: startup has not spawned application tasks yet. Converting the
+        // path to absolute here prevents `serve [dir]` / `preview [dir]` from
+        // looking for `target/site` inside the knowledge repository.
+        unsafe { std::env::set_var("LEPTOS_SITE_ROOT", &site_root) };
+    }
     // Preview mode skips GitHub discovery and `gh auth` entirely; it serves the
     // local working tree only.
     let discovery_notes = if local_preview {

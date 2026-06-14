@@ -148,6 +148,43 @@ fn node_visual_radius(base_r: f32, is_selected: bool, is_hovered: bool) -> f32 {
     base_r + bump
 }
 
+fn prism_vertices(x: f32, y: f32, radius: f32) -> [(f32, f32); 6] {
+    [
+        (x, y - radius),
+        (x + radius * 0.72, y - radius * 0.28),
+        (x + radius * 0.58, y + radius * 0.48),
+        (x, y + radius),
+        (x - radius * 0.58, y + radius * 0.48),
+        (x - radius * 0.72, y - radius * 0.28),
+    ]
+}
+
+fn prism_points(x: f32, y: f32, radius: f32) -> String {
+    prism_vertices(x, y, radius)
+        .into_iter()
+        .map(|(px, py)| format!("{px:.3},{py:.3}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn prism_facet_path(x: f32, y: f32, radius: f32) -> String {
+    let center_y = y + radius * 0.08;
+    let upper_y = y - radius * 0.28;
+    let lower_y = y + radius * 0.48;
+    format!(
+        "M {x:.3} {:.3} L {x:.3} {center_y:.3} \
+         M {:.3} {upper_y:.3} L {x:.3} {center_y:.3} L {:.3} {upper_y:.3} \
+         M {:.3} {lower_y:.3} L {x:.3} {center_y:.3} L {:.3} {lower_y:.3} \
+         M {x:.3} {center_y:.3} L {x:.3} {:.3}",
+        y - radius,
+        x - radius * 0.72,
+        x + radius * 0.72,
+        x - radius * 0.58,
+        x + radius * 0.58,
+        y + radius,
+    )
+}
+
 fn node_base_radius(is_tag: bool, degree: usize) -> f32 {
     // Document nodes: linear scaling up to degree 4 (was 6). Past degree 4
     // the visual hub footprint was large enough to cover 2-3 of its
@@ -1085,6 +1122,19 @@ pub fn GraphCanvas(
                     } else {
                         "0.92"
                     };
+                    let node_transition = {
+                        let accent = accent.clone();
+                        move || {
+                            const TRANSITION: &str = "transition: r 200ms ease, points 200ms ease, stroke 200ms ease, stroke-width 200ms ease, filter 200ms ease;";
+                            if is_selected.get() {
+                                format!("{TRANSITION} filter: drop-shadow(0 0 2.4px {accent}); animation: brain-pulse 2.4s ease-in-out infinite;")
+                            } else if is_hovered.get() {
+                                format!("{TRANSITION} filter: drop-shadow(0 0 1.8px {accent});")
+                            } else {
+                                TRANSITION.to_string()
+                            }
+                        }
+                    };
 
                     view! {
                         <g
@@ -1092,46 +1142,69 @@ pub fn GraphCanvas(
                             style=move || format!("opacity:{}; transition: opacity 200ms ease;", if bright.get() { 1.0 } else { 0.15 })
                         >
                             <title>{title.clone()}</title>
-                            <circle
-                                cx=format!("{:.3}", x)
-                                cy=format!("{:.3}", y)
-                                r=move || {
-                                    format!(
-                                        "{:.3}",
-                                        node_visual_radius(base_r, is_selected.get(), is_hovered.get())
-                                    )
-                                }
-                                fill=accent.clone()
-                                fill-opacity=node_fill_opacity
-                                stroke={
-                                    let accent = accent.clone();
-                                    move || {
-                                        if is_selected.get() {
-                                            "#f8fafc".to_string()
-                                        } else {
-                                            accent.clone()
-                                        }
-                                    }
-                                }
-                                stroke-width=move || if is_selected.get() { "0.5" } else { "0.18" }
-                                style={
-                                    let accent = accent.clone();
-                                    // SVG presentation attributes (r, stroke, stroke-width, filter)
-                                    // are CSS-mapped, so a `transition` here crossfades hover/select
-                                    // states without any JS animation loop.
-                                    const TRANSITION: &str = "transition: r 200ms ease, stroke 200ms ease, stroke-width 200ms ease, filter 200ms ease;";
-                                    move || {
-                                        if is_selected.get() {
-                                            format!("{TRANSITION} filter: drop-shadow(0 0 2.4px {accent}); animation: brain-pulse 2.4s ease-in-out infinite;")
-                                        } else if is_hovered.get() {
-                                            format!("{TRANSITION} filter: drop-shadow(0 0 1.8px {accent});")
-                                        } else {
-                                            TRANSITION.to_string()
-                                        }
-                                    }
-                                }
-                                pointer-events="none"
-                            />
+                            {if is_tag {
+                                view! {
+                                    <>
+                                        <circle
+                                            cx=format!("{x:.3}")
+                                            cy=format!("{y:.3}")
+                                            r=move || format!("{:.3}", node_visual_radius(base_r, is_selected.get(), is_hovered.get()))
+                                            fill="none"
+                                            stroke={
+                                                let accent = accent.clone();
+                                                move || if is_selected.get() { "#f8fafc".to_string() } else { accent.clone() }
+                                            }
+                                            stroke-width=move || if is_selected.get() { "0.48" } else { "0.28" }
+                                            style=node_transition
+                                            pointer-events="none"
+                                        />
+                                        <circle
+                                            cx=format!("{x:.3}")
+                                            cy=format!("{y:.3}")
+                                            r=move || format!("{:.3}", node_visual_radius(base_r, is_selected.get(), is_hovered.get()) * 0.34)
+                                            fill=accent.clone()
+                                            fill-opacity="0.92"
+                                            pointer-events="none"
+                                        />
+                                    </>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <>
+                                        <polygon
+                                            points=move || prism_points(
+                                                x,
+                                                y,
+                                                node_visual_radius(base_r, is_selected.get(), is_hovered.get()),
+                                            )
+                                            fill=accent.clone()
+                                            fill-opacity=node_fill_opacity
+                                            stroke={
+                                                let accent = accent.clone();
+                                                move || if is_selected.get() { "#f8fafc".to_string() } else { accent.clone() }
+                                            }
+                                            stroke-width=move || if is_selected.get() { "0.5" } else { "0.22" }
+                                            stroke-linejoin="round"
+                                            style=node_transition
+                                            pointer-events="none"
+                                        />
+                                        <path
+                                            d=move || prism_facet_path(
+                                                x,
+                                                y,
+                                                node_visual_radius(base_r, is_selected.get(), is_hovered.get()),
+                                            )
+                                            fill="none"
+                                            stroke="#f8fafc"
+                                            stroke-opacity=move || if is_selected.get() { "0.72" } else { "0.38" }
+                                            stroke-width="0.12"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            pointer-events="none"
+                                        />
+                                    </>
+                                }.into_any()
+                            }}
                             <circle
                                 cx=format!("{:.3}", x)
                                 cy=format!("{:.3}", y)
@@ -1402,6 +1475,22 @@ mod tests {
         assert!(hit > idle);
         assert!(hit > hovered);
         assert!(hit > selected);
+    }
+
+    #[test]
+    fn prism_vertices_are_symmetric_and_fit_the_node_radius() {
+        let vertices = prism_vertices(10.0, 20.0, 4.0);
+        assert_eq!(vertices[0], (10.0, 16.0));
+        assert_eq!(vertices[3], (10.0, 24.0));
+        for (left, right) in [(vertices[5], vertices[1]), (vertices[4], vertices[2])] {
+            assert!((left.0 + right.0 - 20.0).abs() < f32::EPSILON);
+            assert!((left.1 - right.1).abs() < f32::EPSILON);
+        }
+        assert!(vertices.into_iter().all(|(x, y)| {
+            let dx = x - 10.0;
+            let dy = y - 20.0;
+            dx * dx + dy * dy <= 16.0 + f32::EPSILON
+        }));
     }
 
     #[test]
