@@ -1,0 +1,12 @@
+.git
+.github
+.codex
+.env
+.env.*
+!.env.example
+data
+dist
+node_modules
+target
+*.code-workspace
+.DS_Store

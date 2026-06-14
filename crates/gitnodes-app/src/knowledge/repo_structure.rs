@@ -361,9 +361,9 @@ fn normalized_prefix(prefix: &str) -> String {
 
 fn storage_key(current_org: &str, current_repo: &str) -> String {
     if current_org.is_empty() || current_repo.is_empty() {
-        "brain-ui:repo-tree:default".to_string()
+        "gitnodes:repo-tree:default".to_string()
     } else {
-        format!("brain-ui:repo-tree:{current_org}/{current_repo}")
+        format!("gitnodes:repo-tree:{current_org}/{current_repo}")
     }
 }
 
@@ -371,7 +371,13 @@ fn storage_key(current_org: &str, current_repo: &str) -> String {
 fn read_expanded(key: &str) -> HashSet<String> {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|storage| storage.get_item(key).ok().flatten())
+        .and_then(|storage| {
+            storage.get_item(key).ok().flatten().or_else(|| {
+                key.strip_prefix("gitnodes:")
+                    .map(|suffix| format!("brain-ui:{suffix}"))
+                    .and_then(|legacy| storage.get_item(&legacy).ok().flatten())
+            })
+        })
         .map(|raw| {
             raw.split('\n')
                 .map(str::trim)

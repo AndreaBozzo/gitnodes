@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn generated_key_roundtrips_through_file() {
         let path = std::env::temp_dir().join(format!(
-            "brain-ui-session-key-{}-{}",
+            "gitnodes-session-key-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));

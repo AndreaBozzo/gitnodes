@@ -189,7 +189,7 @@ pub fn Landing() -> impl IntoView {
                     <p>
                         "© 2026 Andrea Bozzo · AGPLv3 · "
                         <a
-                            href="https://github.com/AndreaBozzo/Brain_UI"
+                            href="https://github.com/AndreaBozzo/gitnodes"
                             rel="external noopener"
                             target="_blank"
                             class="underline hover:text-slate-400"

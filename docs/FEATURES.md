@@ -35,6 +35,7 @@ Status terms:
 | `gitnodes agents [dir]` | Available | Regenerates brain-specific agent instructions from `.gitnodes.yml`. |
 | `gitnodes preview [dir]` | Available | Read-only working-tree UI, in-memory projection, loopback-only by default. |
 | `gitnodes mcp [dir]` | Available | Read-only stdio server with fingerprint-based projection refresh. |
+| `gitnodes doctor [dir] [--json]` | Available | Validates brain structure and reports local/GitHub transition readiness. |
 | `gitnodes serve [dir]` | Available | Discovers GitHub target/branch and reuses `gh auth` when explicit auth is absent. |
 | Prebuilt installers | Planned | Scripts exist; usable after the public upstream publishes releases. |
 | Homebrew/WinGet packages | Planned | Metadata generation exists; external publication is not automated. |
@@ -64,6 +65,7 @@ Status terms:
 | `list_nodes` | Available | Enumerates/filter nodes. |
 | `read_node` | Available | Returns projected metadata and markdown body. |
 | `node_links` | Available | Traverses incoming/outgoing typed graph edges. |
+| `validate_brain` | Available | Read-only structural validation for agents. |
 | Agent writes through MCP | Not available | By design; agents edit files and use Git. |
 
 ## Editing and repository operations

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/AndreaBozzo/gitnodes/security/advisories/new
+    about: Report vulnerabilities privately.
+  - name: Documentation
+    url: https://github.com/AndreaBozzo/gitnodes/tree/master/docs
+    about: Read the guides, feature inventory, and operator notes.

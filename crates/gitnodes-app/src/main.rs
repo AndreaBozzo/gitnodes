@@ -261,6 +261,7 @@ async fn run() {
     use tower_sessions::{Session, SessionManagerLayer, cookie::SameSite};
     use tower_sessions_sqlx_store::SqliteStore;
 
+    #[cfg(not(feature = "embed-assets"))]
     let launch_dir = std::env::current_dir().expect("resolve launch directory");
     #[cfg(not(feature = "embed-assets"))]
     let inherited_site_root = std::env::var_os("LEPTOS_SITE_ROOT");
@@ -299,8 +300,35 @@ async fn run() {
                 }
             }
         }
+        Some("doctor") => {
+            let mut dir = None;
+            let mut json = false;
+            for argument in argv.iter().skip(2) {
+                if argument == "--json" {
+                    json = true;
+                } else if argument.starts_with('-') {
+                    eprintln!("error: unknown `gitnodes doctor` option {argument:?}");
+                    std::process::exit(2);
+                } else if dir.replace(argument.as_str()).is_some() {
+                    eprintln!("error: `gitnodes doctor` accepts at most one directory");
+                    std::process::exit(2);
+                }
+            }
+            match gitnodes_app::cli::run_doctor(dir, json) {
+                Ok(true) => std::process::exit(0),
+                Ok(false) => std::process::exit(1),
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("help") | Some("--help") | Some("-h") => {
             gitnodes_app::cli::print_usage();
+            std::process::exit(0);
+        }
+        Some("version") | Some("--version") | Some("-V") => {
+            println!("gitnodes {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         }
         Some("serve") => {

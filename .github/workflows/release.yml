@@ -15,6 +15,7 @@ permissions:
 
 env:
   CARGO_LEPTOS_VERSION: "0.3.6"
+  RUSTFLAGS: "-D warnings"
   GITNODES_BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
   GITNODES_RELEASE_REPOSITORY: ${{ github.repository }}
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -83,6 +84,16 @@ jobs:
       # Phase 2: rebuild the server binary embedding target/site → single file.
       - name: Build single-file binary
         run: cargo build --release -p gitnodes-app --bin gitnodes-app --no-default-features --features embed-assets
+
+      - name: Smoke-test CLI
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Windows) bin="target/release/gitnodes-app.exe" ;;
+            *) bin="target/release/gitnodes-app" ;;
+          esac
+          "$bin" --version
+          "$bin" --help
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'

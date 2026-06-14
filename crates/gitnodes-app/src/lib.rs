@@ -28,6 +28,8 @@ pub mod markdown;
 pub mod mcp;
 #[cfg(feature = "ssr")]
 pub mod server;
+#[cfg(feature = "ssr")]
+pub mod validation;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

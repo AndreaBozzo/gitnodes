@@ -78,3 +78,37 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  policy:
+    name: dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses sources
+
+  embedded-release:
+    name: embedded release smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: embedded-release
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build:css
+      - run: cargo install cargo-leptos --locked --version 0.3.6
+      - run: cargo leptos build --release -p gitnodes-app
+      - run: cargo clippy -p gitnodes-app --bin gitnodes-app --no-default-features --features embed-assets -- -D warnings
+      - run: cargo build --release -p gitnodes-app --bin gitnodes-app --no-default-features --features embed-assets
+      - run: target/release/gitnodes-app --version
+      - run: target/release/gitnodes-app --help

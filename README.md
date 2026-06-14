@@ -57,6 +57,7 @@ When you want collaborative editing and pull-request workflows, publish it:
 ```bash
 git add . && git commit -m "Initialize GitNodes knowledge base"
 gh repo create my-brain --private --source=. --remote=origin --push
+gitnodes doctor             # validates notes, Git state, remote, and gh auth
 gitnodes serve              # discovers the repo, reuses `gh auth`
 ```
 
@@ -96,13 +97,15 @@ It re-indexes the working tree before each request through the same SQLite
 projection and FTS5 search path as the web UI, so uncommitted notes are visible
 immediately. No PAT, GitHub login, push, or running web server is required.
 
-It exposes four tools:
+It exposes five tools:
 
 - **`search_brain`** — full-text search, ranked like the UI (type/tag/path filters).
 - **`list_nodes`** — enumerate notes, filtered by type, tag, or directory.
 - **`read_node`** — one note's projected metadata plus its markdown body.
 - **`node_links`** — walk a note's incoming and outgoing graph edges (body links,
   frontmatter links, shared tags) so the agent traverses the graph instead of grepping.
+- **`validate_brain`** — report malformed frontmatter, taxonomy mismatches,
+  invalid tags, and unresolved links without changing the working tree.
 
 ### Wiring it into your agent
 

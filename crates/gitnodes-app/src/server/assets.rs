@@ -132,7 +132,7 @@ async fn fetch_and_serve(
         .query(&[("ref", ref_name)])
         .bearer_auth(token)
         .header(header::ACCEPT, "application/vnd.github.raw")
-        .header(header::USER_AGENT, "brain-ui")
+        .header(header::USER_AGENT, "gitnodes")
         .send()
         .await
     {
@@ -265,7 +265,7 @@ mod tests {
             .and(query_param("ref", "main"))
             .and(header("authorization", "Bearer test-token"))
             .and(header("accept", "application/vnd.github.raw"))
-            .and(header("user-agent", "brain-ui"))
+            .and(header("user-agent", "gitnodes"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/vnd.github.raw; charset=utf-8")

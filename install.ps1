@@ -42,6 +42,25 @@ try {
   Write-Host "Downloading $asset ..."
   Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
 
+  if ($version -eq 'latest') {
+    $sumsUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS"
+  } else {
+    $sumsUrl = "https://github.com/$repo/releases/download/$version/SHA256SUMS"
+  }
+  $sumsFile = Join-Path $tmp 'SHA256SUMS'
+  Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsFile -UseBasicParsing
+  $escapedAsset = [Regex]::Escape($asset)
+  $entry = Get-Content $sumsFile |
+    Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+\*?$escapedAsset$" } |
+    Select-Object -First 1
+  if (-not $entry) { throw "$asset is not listed in SHA256SUMS" }
+  $expected = ([Regex]::Match($entry, '^([0-9a-fA-F]{64})')).Groups[1].Value.ToLowerInvariant()
+  $actual = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -ne $expected) {
+    throw "checksum mismatch for $asset (expected $expected, got $actual)"
+  }
+  Write-Host "Verified checksum."
+
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   $exe = Join-Path $tmp 'gitnodes.exe'
   if (-not (Test-Path $exe)) { throw "archive did not contain gitnodes.exe" }

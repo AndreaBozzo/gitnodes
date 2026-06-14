@@ -69,8 +69,8 @@ JSON-based clients use the same command:
 }
 ```
 
-The MCP server exposes `search_brain`, `list_nodes`, `read_node`, and
-`node_links`. It is deliberately read-only. Agents edit markdown in the
+The MCP server exposes `search_brain`, `list_nodes`, `read_node`, `node_links`,
+and `validate_brain`. It is deliberately read-only. Agents edit markdown in the
 checkout, following the generated `AGENTS.md`, then use Git for review and
 publication.
 
@@ -109,13 +109,14 @@ fallback where that mutation supports it.
 Before switching modes, use this short check:
 
 ```bash
-git status
-git push
+gitnodes doctor
 gitnodes serve
 ```
 
-If `serve` shows older content, first verify that the local commit was pushed to
-the branch printed at startup.
+`doctor` validates markdown/frontmatter, Git status, the GitHub remote, upstream
+synchronization, and GitHub CLI authentication. Use `--json` for scripts and
+agent workflows. If `serve` shows older content, first verify that the local
+commit was pushed to the branch printed at startup.
 
 ## Next steps
 
@@ -124,4 +125,3 @@ the branch printed at startup.
   [Feature inventory](../FEATURES.md).
 - Move from loopback use to a persistent service with
   [Deployment](DEPLOYMENT.md).
-

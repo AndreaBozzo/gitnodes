@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible GitNodes failure
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove tokens, secrets, private repository content, and personal data.
+
+  - type: input
+    id: version
+    attributes:
+      label: GitNodes version
+      description: Output of `gitnodes --version` or the commit SHA.
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Execution mode
+      options:
+        - preview
+        - MCP
+        - local serve
+        - hosted deployment
+        - release/install tooling
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps and redacted sample content/configuration.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include relevant redacted logs and `gitnodes doctor` output.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, installation method, and browser/agent client.
+    validations:
+      required: true

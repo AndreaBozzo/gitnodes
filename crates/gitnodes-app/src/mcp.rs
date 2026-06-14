@@ -148,6 +148,24 @@ struct NodeLinksResponse {
     links: Vec<LinkedNode>,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+struct ValidationDiagnosticResult {
+    severity: String,
+    code: String,
+    path: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct ValidateBrainResponse {
+    files_scanned: usize,
+    nodes_valid: usize,
+    errors: usize,
+    warnings: usize,
+    valid: bool,
+    diagnostics: Vec<ValidationDiagnosticResult>,
+}
+
 #[tool_router(server_handler)]
 impl GitNodesMcp {
     #[tool(
@@ -280,6 +298,36 @@ impl GitNodesMcp {
                 })
                 .collect(),
             path: params.path,
+        }))
+    }
+
+    #[tool(
+        name = "validate_brain",
+        description = "Validate the current GitNodes working tree without modifying it. Reports malformed frontmatter, type/config mismatches, invalid tags, and unresolved links."
+    )]
+    async fn validate_brain(&self) -> Result<Json<ValidateBrainResponse>, String> {
+        let root = Arc::clone(&self.root);
+        let report =
+            tokio::task::spawn_blocking(move || crate::validation::validate_working_tree(&root))
+                .await
+                .map_err(|error| format!("local validation task failed: {error}"))??;
+
+        Ok(Json(ValidateBrainResponse {
+            files_scanned: report.files_scanned,
+            nodes_valid: report.nodes_valid,
+            errors: report.errors,
+            warnings: report.warnings,
+            valid: report.is_valid(),
+            diagnostics: report
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| ValidationDiagnosticResult {
+                    severity: format!("{:?}", diagnostic.severity).to_lowercase(),
+                    code: diagnostic.code.to_string(),
+                    path: diagnostic.path,
+                    message: diagnostic.message,
+                })
+                .collect(),
         }))
     }
 }
@@ -478,7 +526,13 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            ["list_nodes", "node_links", "read_node", "search_brain"]
+            [
+                "list_nodes",
+                "node_links",
+                "read_node",
+                "search_brain",
+                "validate_brain"
+            ]
         );
 
         drop(writer);

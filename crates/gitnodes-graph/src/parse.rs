@@ -371,10 +371,15 @@ fn frontmatter_slug_to_path(slug: &str, directory: &str) -> Option<String> {
     if slug.is_empty() || directory.is_empty() {
         return None;
     }
-    if slug.ends_with(".md") {
-        Some(format!("{directory}/{slug}"))
+    let path = if slug == directory || slug.starts_with(&format!("{directory}/")) {
+        slug.to_string()
     } else {
-        Some(format!("{directory}/{slug}.md"))
+        format!("{directory}/{slug}")
+    };
+    if path.ends_with(".md") {
+        Some(path)
+    } else {
+        Some(format!("{path}.md"))
     }
 }
 
@@ -533,6 +538,18 @@ mod tests {
         assert_eq!(
             frontmatter_slug_to_path("/kanto/ash", "trainers").as_deref(),
             Some("trainers/kanto/ash.md")
+        );
+    }
+
+    #[test]
+    fn frontmatter_repo_path_is_not_prefixed_twice() {
+        assert_eq!(
+            frontmatter_slug_to_path("concepts/knowledge-graph.md", "concepts").as_deref(),
+            Some("concepts/knowledge-graph.md")
+        );
+        assert_eq!(
+            frontmatter_slug_to_path("/concepts/knowledge-graph", "concepts").as_deref(),
+            Some("concepts/knowledge-graph.md")
         );
     }
 }

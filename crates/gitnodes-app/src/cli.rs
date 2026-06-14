@@ -23,6 +23,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::Serialize;
+
 /// Starter brain payload, embedded from `examples/starter-brain/` so the
 /// scaffold and the published example stay one source of truth (and the config
 /// is covered by `gitnodes-domain`'s parse-validity test).
@@ -69,6 +71,8 @@ mcp [dir]     Serve read-only local knowledge tools to AI agents over stdio.\n  
 init [dir]    Scaffold a starter brain (.gitnodes.yml + sample notes + AGENTS.md).\n    \
 agents [dir]  (Re)generate AGENTS.md from .gitnodes.yml so coding agents know\n                  \
 the conventions of this knowledge base.\n    \
+doctor [dir]  Validate a local brain and report Git/GitHub transition readiness.\n    \
+version       Show the GitNodes version.\n    \
 help          Show this message.\n"
     );
 }
@@ -166,7 +170,8 @@ is the path or slug of another note).\n\
     s.push_str(
         "\n## Agent tools\n\n\
 When the `gitnodes` MCP server is configured in your agent, prefer its read-only \
-`search_brain`, `list_nodes`, `read_node`, and `node_links` tools for discovery. They read \
+`search_brain`, `list_nodes`, `read_node`, `node_links`, and `validate_brain` tools for \
+discovery and health checks. They read \
 the current working tree through the same projection and search engine as the GitNodes UI. \
 Use `node_links` to walk the graph from a note to its incoming and outgoing connections \
 instead of guessing relationships from the text.\n",
@@ -403,8 +408,20 @@ fn env_missing(name: &str) -> bool {
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
-        .args(args)
+    command_stdout_in(program, args, None)
+}
+
+fn command_stdout_in(
+    program: &str,
+    args: &[&str],
+    current_dir: Option<&Path>,
+) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    let output = command
         .output()
         .map_err(|error| format!("could not run `{program}`: {error}"))?;
     if !output.status.success() {
@@ -422,6 +439,19 @@ fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
     String::from_utf8(output.stdout)
         .map(|value| value.trim().to_string())
         .map_err(|_| format!("`{program} {}` returned non-UTF-8 output", args.join(" ")))
+}
+
+fn command_succeeds_in(program: &str, args: &[&str], current_dir: Option<&Path>) -> bool {
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn parse_github_repository(remote: &str) -> Result<String, String> {
@@ -546,6 +576,278 @@ fn suggest_repository_name(name: &str) -> String {
         out.push(normalized);
     }
     out.trim_matches(['.', '-', '_']).to_string()
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum DoctorStatus {
+    Ok,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorCheck {
+    name: &'static str,
+    status: DoctorStatus,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    gitnodes_version: &'static str,
+    path: String,
+    local_preview_ready: bool,
+    github_serve_ready: bool,
+    validation: crate::validation::ValidationReport,
+    checks: Vec<DoctorCheck>,
+}
+
+/// Validate a local brain and report whether its current checkout is ready to
+/// move from offline preview to GitHub-backed `serve`.
+pub fn run_doctor(dir: Option<&str>, json: bool) -> Result<bool, String> {
+    let requested = PathBuf::from(dir.unwrap_or("."));
+    let root = std::fs::canonicalize(&requested)
+        .map_err(|error| format!("failed to open {}: {error}", requested.display()))?;
+    if !root.is_dir() {
+        return Err(format!("{} is not a directory", root.display()));
+    }
+
+    let validation = crate::validation::validate_working_tree(&root)?;
+    let local_preview_ready = validation.is_valid();
+    let mut checks = vec![DoctorCheck {
+        name: "brain",
+        status: if local_preview_ready {
+            DoctorStatus::Ok
+        } else {
+            DoctorStatus::Error
+        },
+        detail: format!(
+            "{} valid node(s), {} error(s), {} warning(s)",
+            validation.nodes_valid, validation.errors, validation.warnings
+        ),
+    }];
+
+    let in_git = command_stdout_in("git", &["rev-parse", "--is-inside-work-tree"], Some(&root))
+        .is_ok_and(|value| value == "true");
+    checks.push(DoctorCheck {
+        name: "git",
+        status: if in_git {
+            DoctorStatus::Ok
+        } else {
+            DoctorStatus::Warning
+        },
+        detail: if in_git {
+            "working tree detected".to_string()
+        } else {
+            "not a Git working tree; run `git init` before publishing".to_string()
+        },
+    });
+
+    let mut clean = false;
+    let mut branch_ready = false;
+    let mut remote_ready = false;
+    let mut upstream_ready = false;
+    let mut synchronized = false;
+
+    if in_git {
+        match command_stdout_in("git", &["status", "--porcelain"], Some(&root)) {
+            Ok(status) if status.is_empty() => {
+                clean = true;
+                checks.push(DoctorCheck {
+                    name: "working-tree",
+                    status: DoctorStatus::Ok,
+                    detail: "no uncommitted changes".to_string(),
+                });
+            }
+            Ok(status) => checks.push(DoctorCheck {
+                name: "working-tree",
+                status: DoctorStatus::Warning,
+                detail: format!(
+                    "{} uncommitted path(s); `serve` reads GitHub, not these local edits",
+                    status.lines().count()
+                ),
+            }),
+            Err(error) => checks.push(DoctorCheck {
+                name: "working-tree",
+                status: DoctorStatus::Warning,
+                detail: error,
+            }),
+        }
+
+        match command_stdout_in("git", &["branch", "--show-current"], Some(&root)) {
+            Ok(branch) if !branch.is_empty() => {
+                branch_ready = true;
+                checks.push(DoctorCheck {
+                    name: "branch",
+                    status: DoctorStatus::Ok,
+                    detail: branch,
+                });
+            }
+            _ => checks.push(DoctorCheck {
+                name: "branch",
+                status: DoctorStatus::Warning,
+                detail: "detached HEAD or no current branch".to_string(),
+            }),
+        }
+
+        match command_stdout_in(
+            "git",
+            &["config", "--get", "remote.origin.url"],
+            Some(&root),
+        ) {
+            Ok(remote) => match parse_github_repository(&remote) {
+                Ok(repository) => {
+                    remote_ready = true;
+                    checks.push(DoctorCheck {
+                        name: "origin",
+                        status: DoctorStatus::Ok,
+                        detail: repository,
+                    });
+                }
+                Err(error) => checks.push(DoctorCheck {
+                    name: "origin",
+                    status: DoctorStatus::Warning,
+                    detail: error,
+                }),
+            },
+            Err(_) => checks.push(DoctorCheck {
+                name: "origin",
+                status: DoctorStatus::Warning,
+                detail: "no GitHub `origin` remote; create and push the repository".to_string(),
+            }),
+        }
+
+        if command_succeeds_in(
+            "git",
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ],
+            Some(&root),
+        ) {
+            upstream_ready = true;
+            let ahead = command_stdout_in(
+                "git",
+                &["rev-list", "--count", "@{upstream}..HEAD"],
+                Some(&root),
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+            let behind = command_stdout_in(
+                "git",
+                &["rev-list", "--count", "HEAD..@{upstream}"],
+                Some(&root),
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+            synchronized = ahead == 0 && behind == 0;
+            checks.push(DoctorCheck {
+                name: "upstream",
+                status: if synchronized {
+                    DoctorStatus::Ok
+                } else {
+                    DoctorStatus::Warning
+                },
+                detail: if synchronized {
+                    "local branch matches its upstream".to_string()
+                } else {
+                    format!("{ahead} commit(s) ahead, {behind} behind; push/pull before `serve`")
+                },
+            });
+        } else {
+            checks.push(DoctorCheck {
+                name: "upstream",
+                status: DoctorStatus::Warning,
+                detail: "current branch has no upstream; push with `git push -u origin HEAD`"
+                    .to_string(),
+            });
+        }
+    }
+
+    let github_auth = command_succeeds_in(
+        "gh",
+        &["auth", "status", "--hostname", "github.com"],
+        Some(&root),
+    );
+    checks.push(DoctorCheck {
+        name: "github-auth",
+        status: if github_auth {
+            DoctorStatus::Ok
+        } else {
+            DoctorStatus::Warning
+        },
+        detail: if github_auth {
+            "GitHub CLI authentication is available".to_string()
+        } else {
+            "`gh auth status` failed; run `gh auth login` before `serve`".to_string()
+        },
+    });
+
+    let github_serve_ready = local_preview_ready
+        && in_git
+        && clean
+        && branch_ready
+        && remote_ready
+        && upstream_ready
+        && synchronized
+        && github_auth;
+    let report = DoctorReport {
+        gitnodes_version: env!("CARGO_PKG_VERSION"),
+        path: root.display().to_string(),
+        local_preview_ready,
+        github_serve_ready,
+        validation,
+        checks,
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|error| format!("failed to serialize doctor report: {error}"))?
+        );
+    } else {
+        print_doctor_report(&report);
+    }
+
+    Ok(local_preview_ready)
+}
+
+fn print_doctor_report(report: &DoctorReport) {
+    println!("GitNodes doctor {}", report.path);
+    for check in &report.checks {
+        let marker = match check.status {
+            DoctorStatus::Ok => "ok",
+            DoctorStatus::Warning => "warn",
+            DoctorStatus::Error => "error",
+        };
+        println!("  [{marker}] {}: {}", check.name, check.detail);
+    }
+    for diagnostic in &report.validation.diagnostics {
+        let path = diagnostic
+            .path
+            .as_deref()
+            .map(|path| format!("{path}: "))
+            .unwrap_or_default();
+        println!(
+            "  [{:?}] {path}{} ({})",
+            diagnostic.severity, diagnostic.message, diagnostic.code
+        );
+    }
+    println!(
+        "\nLocal preview: {}\nGitHub-backed serve: {}",
+        readiness(report.local_preview_ready),
+        readiness(report.github_serve_ready)
+    );
+}
+
+fn readiness(ready: bool) -> &'static str {
+    if ready { "ready" } else { "not ready" }
 }
 
 /// Best-effort: open `url` in the default browser. Silent on failure (headless

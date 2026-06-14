@@ -850,13 +850,20 @@ pub fn EditorPanel(
 }
 
 #[cfg(not(feature = "ssr"))]
-const CUSTOM_MSG_PREF_KEY: &str = "brain-ui:commit-msg-open";
+const CUSTOM_MSG_PREF_KEY: &str = "gitnodes:commit-msg-open";
+#[cfg(not(feature = "ssr"))]
+const LEGACY_CUSTOM_MSG_PREF_KEY: &str = "brain-ui:commit-msg-open";
 
 #[cfg(not(feature = "ssr"))]
 fn read_custom_msg_pref() -> bool {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(CUSTOM_MSG_PREF_KEY).ok().flatten())
+        .and_then(|s| {
+            s.get_item(CUSTOM_MSG_PREF_KEY)
+                .ok()
+                .flatten()
+                .or_else(|| s.get_item(LEGACY_CUSTOM_MSG_PREF_KEY).ok().flatten())
+        })
         .is_some_and(|v| v == "1")
 }
 

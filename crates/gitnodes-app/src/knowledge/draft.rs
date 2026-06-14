@@ -62,9 +62,15 @@ pub struct Draft {
 /// - `path` = `Some("...")` for edit mode, `None` for new-doc mode.
 pub fn storage_key(repo_scope: &str, path: Option<&str>) -> String {
     match path {
-        Some(p) => format!("brain-ui:draft:v{DRAFT_SCHEMA_VERSION}:{repo_scope}:{p}"),
-        None => format!("brain-ui:draft:v{DRAFT_SCHEMA_VERSION}:{repo_scope}:new"),
+        Some(p) => format!("gitnodes:draft:v{DRAFT_SCHEMA_VERSION}:{repo_scope}:{p}"),
+        None => format!("gitnodes:draft:v{DRAFT_SCHEMA_VERSION}:{repo_scope}:new"),
     }
+}
+
+#[cfg(any(feature = "hydrate", test))]
+fn legacy_storage_key(key: &str) -> Option<String> {
+    key.strip_prefix("gitnodes:")
+        .map(|suffix| format!("brain-ui:{suffix}"))
 }
 
 #[cfg(feature = "hydrate")]
@@ -86,7 +92,9 @@ pub fn save(key: &str, draft: &Draft) {
 #[cfg(feature = "hydrate")]
 pub fn load(key: &str) -> Option<Draft> {
     let store = local_storage()?;
-    let raw = store.get_item(key).ok().flatten()?;
+    let raw = store.get_item(key).ok().flatten().or_else(|| {
+        legacy_storage_key(key).and_then(|legacy| store.get_item(&legacy).ok().flatten())
+    })?;
     serde_json::from_str(&raw).ok()
 }
 
@@ -96,6 +104,9 @@ pub fn clear(key: &str) {
         return;
     };
     let _ = store.remove_item(key);
+    if let Some(legacy) = legacy_storage_key(key) {
+        let _ = store.remove_item(&legacy);
+    }
 }
 
 #[cfg(feature = "hydrate")]
@@ -147,11 +158,15 @@ mod tests {
     fn key_scoping() {
         assert_eq!(
             storage_key("Dritara-Digital/Brain", None),
-            "brain-ui:draft:v2:Dritara-Digital/Brain:new"
+            "gitnodes:draft:v2:Dritara-Digital/Brain:new"
         );
         assert_eq!(
             storage_key("Dritara-Digital/Brain", Some("concepts/foo.md")),
-            "brain-ui:draft:v2:Dritara-Digital/Brain:concepts/foo.md"
+            "gitnodes:draft:v2:Dritara-Digital/Brain:concepts/foo.md"
+        );
+        assert_eq!(
+            legacy_storage_key("gitnodes:draft:v2:org/repo:new").as_deref(),
+            Some("brain-ui:draft:v2:org/repo:new")
         );
     }
 

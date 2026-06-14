@@ -77,10 +77,17 @@ pub(crate) fn scan_for_refresh(root: &Path, last: Option<u64>) -> Result<Refresh
 /// button), where the fingerprint short-circuit of [`scan_for_refresh`] is not
 /// needed.
 pub(crate) fn read_working_tree(root: &Path) -> Result<(BrainConfig, Vec<RawFile>), String> {
-    let entries = scan_entries(root)?;
     let config = read_config(root)?;
-    let files = read_entries(&entries)?;
+    let files = read_markdown_files(root)?;
     Ok((config, files))
+}
+
+/// Read all indexable markdown without parsing the optional GitNodes config.
+/// Validation uses this to report a malformed config alongside file-level
+/// diagnostics instead of aborting before the markdown can be inspected.
+pub(crate) fn read_markdown_files(root: &Path) -> Result<Vec<RawFile>, String> {
+    let entries = scan_entries(root)?;
+    read_entries(&entries)
 }
 
 /// Cheap content-independent signature of the working tree: config metadata

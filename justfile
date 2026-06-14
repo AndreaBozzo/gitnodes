@@ -1,4 +1,4 @@
-# Brain_UI dev workflow. Install `just` (https://github.com/casey/just) to use.
+# GitNodes dev workflow. Install `just` (https://github.com/casey/just) to use.
 
 default:
     @just --list
@@ -40,6 +40,17 @@ test:
     cargo test --workspace --exclude gitnodes-app
 
 check: fmt lint test
+
+# Supply-chain policy: accepted advisories, licenses, and registry sources.
+deny:
+    cargo deny check advisories licenses sources
+
+# CI-equivalent release artifact rehearsal (requires target/site from `just build`).
+embed-check:
+    cargo clippy -p gitnodes-app --bin gitnodes-app --no-default-features --features embed-assets -- -D warnings
+    cargo build --release -p gitnodes-app --bin gitnodes-app --no-default-features --features embed-assets
+    target/release/gitnodes-app --version
+    target/release/gitnodes-app --help
 
 # Docker build (multi-stage: Node CSS → Rust → debian slim).
 docker:
