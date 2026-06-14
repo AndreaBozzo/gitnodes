@@ -3,16 +3,29 @@
 A minimal example of a GitNodes knowledge base: a `.gitnodes.yml` config and a
 handful of linked markdown notes (two concepts, one ADR, one project).
 
-## Use it as a template
+## Try it locally
 
-The fastest way to get a repo GitNodes can read:
+From the GitNodes source checkout:
 
-1. Create a new GitHub repository.
-2. Copy the contents of this folder into it (including `.gitnodes.yml`).
-3. Point GitNodes at `owner/your-new-repo` via `TARGET_GITHUB_REPOSITORY`.
+```bash
+gitnodes preview examples/starter-brain
+```
 
 Open the graph and you'll see the notes connected by body links, the ADR's
 typed `decides_on:` edge, and shared tags.
+
+For a writable copy with its own Git history:
+
+```bash
+gitnodes init my-brain
+cd my-brain
+gitnodes preview
+```
+
+When ready for collaborative GitHub-backed editing, stop preview, commit and
+push the brain, authenticate with `gh auth login`, then run `gitnodes serve`.
+Preview reads the local working tree; serve reads the pushed GitHub branch.
+Follow the full [getting-started guide](../../docs/guides/GETTING_STARTED.md).
 
 ## What to look at
 

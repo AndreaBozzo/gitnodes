@@ -21,23 +21,23 @@ repo-structure navigation.
 
 ## Quickstart
 
-Install the prebuilt binary — no Rust toolchain or compiling:
+> **Pre-release status:** the installer scripts and package metadata are ready,
+> but the new public upstream has not published its first release yet. Build
+> from this checkout for now; the download commands become active after that
+> release.
 
 ```bash
-# macOS / Linux
-curl -fSLo install-gitnodes.sh https://raw.githubusercontent.com/AndreaBozzo/gitnodes/master/install.sh
-less install-gitnodes.sh
-sh install-gitnodes.sh
+rustup target add wasm32-unknown-unknown
+cargo install cargo-leptos --locked --version 0.3.6
+npm ci
+npm run build:css
+cargo leptos build --release
+cargo build --release -p gitnodes-app --bin gitnodes-app \
+  --no-default-features --features embed-assets
 ```
 
-```powershell
-# Windows (PowerShell)
-Invoke-WebRequest https://raw.githubusercontent.com/AndreaBozzo/gitnodes/master/install.ps1 -OutFile install-gitnodes.ps1
-Get-Content .\install-gitnodes.ps1
-& .\install-gitnodes.ps1
-```
-
-Then scaffold a knowledge base and open it locally:
+Put `target/release/gitnodes-app` (or `.exe`) on `PATH` as `gitnodes`, then
+scaffold a knowledge base and open it locally:
 
 ```bash
 gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md
@@ -45,7 +45,8 @@ cd my-brain
 gitnodes preview            # opens the read-only graph; no GitHub or login
 ```
 
-The same working tree is immediately available to coding agents:
+The same working tree is immediately available to coding agents. Configure the
+agent to launch this stdio command rather than running it manually:
 
 ```bash
 gitnodes mcp .              # read-only stdio MCP server
@@ -73,6 +74,20 @@ is built for humans and agents alike.
 > describes *that knowledge base's* taxonomy. It is distinct from the `AGENTS.md`
 > at the root of this repository, which guides contributors working on GitNodes
 > itself.
+
+The source boundary matters: `preview` and MCP read the local working tree,
+including uncommitted files; `serve` and deployments read the pushed GitHub
+branch. See the [end-to-end getting-started
+guide](docs/guides/GETTING_STARTED.md) before switching modes.
+
+## Documentation
+
+- [Getting started: local preview to GitHub-backed use](docs/guides/GETTING_STARTED.md)
+- [Configuration reference](docs/guides/CONFIGURATION.md)
+- [Deployment guide](docs/guides/DEPLOYMENT.md)
+- [Complete feature inventory and limitations](docs/FEATURES.md)
+- [Operator notes and recovery](docs/OPERATOR_NOTES.md)
+- [Roadmap](docs/ROADMAP.md)
 
 ## AI agent access
 
@@ -192,6 +207,13 @@ crates/
         config_loader.rs        # 30s TTL cache for .gitnodes.yml
         draft.rs                # localStorage autosave (schema v2)
 docs/
+  README.md
+  FEATURES.md
+  guides/
+    GETTING_STARTED.md
+    CONFIGURATION.md
+    DEPLOYMENT.md
+  OPERATOR_NOTES.md
   ROADMAP.md
 ```
 
@@ -265,6 +287,7 @@ Optional:
 | ------------------------- | ---------------------- | ------------------------------------------------ |
 | `TARGET_GITHUB_BRANCH`    | `main`                 | Branch to read/write. |
 | `GITNODES_ALLOW_REMOTE_PAT` | _(unset)_            | Set to `1` only when deliberately exposing PAT mode beyond loopback behind your own access control. |
+| `GITNODES_ALLOW_REMOTE_PREVIEW` | _(unset)_        | Set to `1` only when deliberately exposing read-only preview beyond loopback. |
 | `GITNODES_NO_OPEN`        | _(unset)_              | Disable automatically opening the browser on a loopback bind. |
 | `GITHUB_LOGIN_ORG`        | _(org-less)_           | Optional organization required at login. Target access remains gated by live repository permissions. |
 | `BRAND_NAME`              | `GitNodes`             | UI brand shown in the header and page title. |
@@ -287,8 +310,13 @@ Optional:
 | `GITHUB_API_BASE`         | `https://api.github.com` | GitHub REST API base for App-token minting and GHES-style test/deploy targets. |
 | `GITHUB_TOKEN`            | _(unset)_              | Fine-grained PAT used as a fallback when `GITHUB_APP_*` is unset or the App-token mint fails. Without any credential, inbound pushes are signalled as stale and reconciled on next manual refresh. |
 | `PENDING_SYNC_INTERVAL_SECS` | `60`                | Poll interval for the provider-sync outbox retry job. |
+| `RETENTION_INTERVAL_SECS` | `86400`                 | Session/audit retention sweep interval. |
+| `AUDIT_RETENTION_DAYS`    | `90`                    | Audit event retention window. |
 
 The OAuth app's callback URL must be `{host}/auth/callback`.
+
+See the [deployment guide](docs/guides/DEPLOYMENT.md) for authentication modes,
+persistence, webhooks, and the complete operator environment table.
 
 Existing deployments may keep `TARGET_GITHUB_ORG`, `TARGET_GITHUB_REPO`, and
 their legacy `GITHUB_*` aliases. Those split variables retain the historical
@@ -312,7 +340,9 @@ just dev          # cargo leptos watch
 
 Or without `just`: `npm install`, `npm run watch:css &`, `cargo leptos watch`.
 
-Put the three required values in `.env` (gitignored).
+For OAuth development, copy `.env.example` and fill its three primary values.
+For local checkout-based use, `gitnodes serve` can instead discover the target
+and reuse `gh auth` without an `.env`.
 
 ## Production build
 

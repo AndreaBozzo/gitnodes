@@ -494,7 +494,14 @@ pub fn run_init(dir: Option<&str>) -> Result<(), String> {
         .map(|s| s.success())
         .unwrap_or(false);
 
-    let where_ = root.display();
+    let absolute_root = std::path::absolute(&root).unwrap_or_else(|_| root.clone());
+    let where_ = absolute_root.display();
+    let repo_name = absolute_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(suggest_repository_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "my-brain".to_string());
     println!("Scaffolded a starter brain (with AGENTS.md for coding agents) in {where_}.\n");
     println!("Next steps:");
     if !git_ok {
@@ -502,19 +509,43 @@ pub fn run_init(dir: Option<&str>) -> Result<(), String> {
     }
     println!(
         "  1. Explore it locally (no GitHub or login required):\n     \
-cd {where_}\n     \
+cd \"{where_}\"\n     \
 gitnodes preview\n  \
-2. Connect an AI agent with the read-only MCP server:\n     \
-gitnodes mcp .\n  \
+     (Leave preview running while exploring; press Ctrl-C before publishing.)\n  \
+2. Configure your AI client to launch this read-only MCP command:\n     \
+gitnodes mcp \"{where_}\"\n     \
+     (stdio is client-managed; do not normally run this command by hand.)\n  \
 3. Commit the starter knowledge base:\n     \
-cd {where_}\n     \
+cd \"{where_}\"\n     \
 git add . && git commit -m \"Initialize GitNodes knowledge base\"\n  \
 4. Create a GitHub repo and push it:\n     \
-gh repo create <name> --private --source=. --remote=origin --push\n  \
+gh repo create \"{repo_name}\" --private --source=. --remote=origin --push\n  \
 5. Enable collaborative GitHub-backed editing (reuses your `gh` login):\n     \
 gitnodes serve\n"
     );
     Ok(())
+}
+
+fn suggest_repository_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut previous_dash = false;
+    for ch in name.chars() {
+        let normalized = if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            ch
+        } else {
+            '-'
+        };
+        if normalized == '-' {
+            if previous_dash {
+                continue;
+            }
+            previous_dash = true;
+        } else {
+            previous_dash = false;
+        }
+        out.push(normalized);
+    }
+    out.trim_matches(['.', '-', '_']).to_string()
 }
 
 /// Best-effort: open `url` in the default browser. Silent on failure (headless
@@ -644,5 +675,15 @@ mod tests {
         assert!(parse_github_repository("https://example.com/group/acme/notes.git").is_err());
         assert!(parse_github_repository("https://gitlab.com/acme/notes.git").is_err());
         assert!(parse_github_repository("not-a-remote").is_err());
+    }
+
+    #[test]
+    fn repository_name_suggestion_is_github_cli_friendly() {
+        assert_eq!(
+            suggest_repository_name("Team Brain 2026"),
+            "Team-Brain-2026"
+        );
+        assert_eq!(suggest_repository_name("  weird///name  "), "weird-name");
+        assert_eq!(suggest_repository_name("notes.git"), "notes.git");
     }
 }

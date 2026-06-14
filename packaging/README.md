@@ -8,7 +8,13 @@ GitNodes releases generate ready-to-publish metadata for:
 The templates live here so package definitions are reviewed with the code. The
 release workflow renders them with the release version and archive SHA-256
 checksums, then attaches the rendered files and `SHA256SUMS` to the GitHub
-release.
+release. Download URLs are rendered from the repository running the release
+workflow, so the metadata follows the new public upstream without hardcoding
+the current development repository.
+
+These files are release preparation, not evidence of a currently published
+package. The installer URLs, Homebrew formula, and WinGet manifests become
+usable after the public upstream publishes its first binary release.
 
 One-time publication still happens in the external package repositories:
 

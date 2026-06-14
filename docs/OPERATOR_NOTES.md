@@ -20,10 +20,11 @@ Shipped and considered stable:
   several repositories served by one deployment, each with its own projection,
   config cache, and SSE channel.
 - **Editing with permission-aware transactions** — save, delete, rename,
-  work-item mutation, config writes and asset uploads use the Git Data API
-  transaction layer. Users with `push` commit directly; protected branches or
-  limited contributors use automatic PR fallback. Temporary PR branches roll
-  back when a commit or PR creation fails.
+  work-item mutation, and config writes use the Git Data API transaction layer.
+  Users with `push` commit directly; supported mutations use automatic PR
+  fallback for protected branches or limited contributors. Asset upload is
+  direct-write only. Temporary PR branches roll back when a commit or PR
+  creation fails.
 - **Work items** — markdown documents as tasks with state, assignees, and
   bidirectional GitHub issue/PR binding; provider pushes are best-effort with
   a supervised retry outbox.
@@ -49,8 +50,9 @@ Accepted limitations tracked on the roadmap — do not treat these as bugs:
   Tokens are encrypted at rest and used server-side only; the GitHub App path
   is the properly scoped remediation.
 - **Binary assets are committed to the repo** (`assets/YYYY/MM/`). Asset
-  upload in a PR branch breaks live preview until merge; external blob storage
-  is a tracked future slice.
+  upload requires direct write permission, accepts PNG/JPEG/GIF/WebP up to
+  2 MiB, and rejects SVG. External blob storage and asset PR fallback are
+  tracked future slices.
 - **No issue auto-binding:** binding a work item to an existing GitHub issue is
   manual (number/URL).
 - **Rendered HTML is a trust boundary** (partial): markdown is sanitized
