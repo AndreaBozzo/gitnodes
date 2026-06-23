@@ -463,7 +463,12 @@ async fn run() {
     // Runtime store backed by SQLite. Normal servers persist sessions, audit
     // events, and projections; preview keeps the same schema entirely in memory.
     let db_url = if local_preview {
-        "sqlite::memory:".to_string()
+        // Named, shared-cache in-memory DB. Unnamed `sqlite::memory:` gives every
+        // pooled connection its *own* private database, so any connection churn
+        // serves a fresh, empty schema ("no such table: targets"). A shared cache
+        // makes all connections see the same database; it survives for as long as
+        // at least one connection stays open (pinned below).
+        "sqlite:file:gitnodes_preview?mode=memory&cache=shared".to_string()
     } else {
         std::env::var("SESSION_DB_URL").unwrap_or_else(|_| "sqlite://data/sessions.db".to_string())
     };
@@ -492,10 +497,23 @@ async fn run() {
         .expect("Valid database connection string")
         .create_if_missing(true)
         .busy_timeout(Duration::from_secs(5));
-    let pool = SqlitePoolOptions::new()
-        // A SQLite in-memory database is connection-local. Preview uses one
-        // pooled connection so sessions and the projection see the same schema.
-        .max_connections(if local_preview { 1 } else { 5 })
+    let mut pool_options = SqlitePoolOptions::new()
+        // Preview shares one in-memory database (see `db_url`); a single
+        // connection keeps sessions and the projection on the same schema.
+        .max_connections(if local_preview { 1 } else { 5 });
+    if local_preview {
+        // The shared in-memory database is destroyed when its last connection
+        // closes. sqlx otherwise reaps idle connections (~10 min) and recycles
+        // them past a max lifetime (~30 min); dropping the last one takes the
+        // whole schema — `targets`, the boot-seeded projection — with it, and the
+        // next request opens a fresh, empty database ("no such table: targets").
+        // Pin one connection open for the life of the process to hold it alive.
+        pool_options = pool_options
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None);
+    }
+    let pool = pool_options
         .connect_with(sqlite_opts)
         .await
         .expect("failed to open sessions SQLite pool");

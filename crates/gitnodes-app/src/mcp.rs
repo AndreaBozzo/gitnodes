@@ -388,11 +388,21 @@ pub async fn run(dir: Option<&str>) -> Result<(), String> {
         branch: "working-tree".to_string(),
     };
 
-    let options = SqliteConnectOptions::from_str("sqlite::memory:")
-        .map_err(|error| format!("failed to configure local projection: {error}"))?
-        .foreign_keys(true);
+    // Named, shared-cache in-memory DB: every pooled connection sees the same
+    // projection instead of unnamed `sqlite::memory:`, where each connection gets
+    // its own private database and a recycled connection would serve an empty one
+    // ("no such table").
+    let options =
+        SqliteConnectOptions::from_str("sqlite:file:gitnodes_mcp?mode=memory&cache=shared")
+            .map_err(|error| format!("failed to configure local projection: {error}"))?
+            .foreign_keys(true);
     let pool = SqlitePoolOptions::new()
+        // The shared in-memory projection is destroyed when its last connection
+        // closes, so pin one open for the life of the stdio session.
         .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
         .connect_with(options)
         .await
         .map_err(|error| format!("failed to open local projection: {error}"))?;

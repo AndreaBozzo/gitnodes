@@ -28,9 +28,13 @@
 //! Several boot invariants (app boot, session-store migration) are fail-fast at
 //! startup via `expect`/`process::exit`, so by the time the router answers a
 //! request they are definitionally true. We report them as static `true` rather
-//! than re-probing. The only live check worth doing is a `SELECT 1` against the
+//! than re-probing. The only live check worth doing is a small read against the
 //! single shared SQLite pool — which also backs sessions and audit, so one probe
-//! covers all three.
+//! covers all three. The read touches the projection's `targets` table rather
+//! than a bare `SELECT 1`: the preview demo runs on an in-memory database whose
+//! schema lives inside a single connection, and a hollow `SELECT 1` would still
+//! pass against a fresh, empty connection. Probing a real table makes readiness
+//! flip when the projection schema is actually gone.
 
 use std::collections::BTreeMap;
 
@@ -87,15 +91,20 @@ pub struct ReadyzReport {
 impl ReadyzReport {
     /// Run the readiness checks and assemble the report.
     ///
-    /// `sqlite` is the only live I/O check: a `SELECT 1` against the shared
-    /// pool. `projection_pool` reports whether `projection::init` has run.
+    /// `sqlite` is the only live I/O check: a read of the projection's `targets`
+    /// table against the shared pool, which proves both connectivity and that the
+    /// schema is present (see the module note on the in-memory preview database).
+    /// `projection_pool` reports whether `projection::init` has run.
     /// `session_store_migrated` is a static `true` — the migration is fail-fast
     /// at boot, so reaching this handler proves it succeeded.
     async fn collect() -> Self {
         let mut checks = BTreeMap::new();
 
         let sqlite = match projection::pool_handle() {
-            Some(pool) => match sqlx::query("SELECT 1").execute(pool).await {
+            Some(pool) => match sqlx::query("SELECT 1 FROM targets LIMIT 1")
+                .execute(pool)
+                .await
+            {
                 Ok(_) => CheckStatus::ok(),
                 Err(e) => CheckStatus::fail(format!("select failed: {e}")),
             },
@@ -154,16 +163,30 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// Readiness depends on the process-global projection pool (`init` is a
+    /// `OnceLock`), so the pool must live on the same runtime that runs the
+    /// checks. The two readiness assertions — the `collect()` logic and the real
+    /// `/readyz` route — therefore share one `#[tokio::test]`: splitting them
+    /// would make a pool created on one test's runtime, and stored in the global,
+    /// race and die when that runtime is dropped.
+    ///
+    /// The pool mirrors the real preview pool: a named shared-cache in-memory
+    /// database (so every connection sees the same schema) pinned open by one
+    /// connection (so it isn't recycled to an empty schema), migrated so the
+    /// readiness probe's read of the `targets` table succeeds.
     #[tokio::test]
-    async fn readyz_ready_when_pool_initialized() {
-        // An in-memory pool stands in for the shared SQLite pool. `init` is a
-        // process-global `OnceLock::set`; if another test in this binary already
-        // initialized it the ping still succeeds, so this stays robust.
+    async fn readyz_reports_ready_with_migrated_pool() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect("sqlite::memory:")
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .connect("sqlite:file:gitnodes_health_test?mode=memory&cache=shared")
             .await
             .expect("open in-memory sqlite");
+        projection::migrate(&pool)
+            .await
+            .expect("migrate projection");
         projection::init(pool);
 
         let report = ReadyzReport::collect().await;
@@ -171,19 +194,9 @@ mod tests {
         assert!(report.checks["sqlite"].ok);
         assert!(report.checks["projection_pool"].ok);
         assert!(report.checks["session_store_migrated"].ok);
-    }
 
-    /// Drive the real routes through a router to confirm wiring, status codes,
-    /// and body shape end-to-end without booting the full app.
-    #[tokio::test]
-    async fn routes_respond_without_auth() {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("open in-memory sqlite");
-        projection::init(pool);
-
+        // Drive the real routes through a router to confirm wiring, status codes,
+        // and body shape end-to-end without booting the full app.
         let app = Router::new()
             .route("/healthz", get(healthz))
             .route("/readyz", get(readyz));
