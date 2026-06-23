@@ -41,7 +41,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             archive: zip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -65,7 +65,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -111,7 +111,7 @@ jobs:
           Copy-Item target/release/gitnodes-app.exe dist/gitnodes.exe
           Compress-Archive -Path dist/gitnodes.exe -DestinationPath "gitnodes-${{ matrix.target }}.zip" -Force
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: gitnodes-${{ matrix.target }}.${{ matrix.archive }}
@@ -121,7 +121,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 

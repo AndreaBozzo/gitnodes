@@ -140,7 +140,10 @@ fn read_entries(entries: &[ScanEntry]) -> Result<Vec<RawFile>, String> {
     for entry in entries {
         let content = std::fs::read_to_string(&entry.abs)
             .map_err(|error| format!("failed to read {} as UTF-8: {error}", entry.abs.display()))?;
-        let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
+        let sha = Sha256::digest(content.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         files.push(RawFile {
             path: entry.rel.clone(),
             sha,
