@@ -49,10 +49,7 @@ RUN mkdir -p crates/gitnodes-domain/src && echo '' > crates/gitnodes-domain/src/
 RUN mkdir -p crates/gitnodes-graph/src && echo '' > crates/gitnodes-graph/src/lib.rs
 RUN mkdir -p crates/gitnodes-storage/src && echo '' > crates/gitnodes-storage/src/lib.rs
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo build --release -p gitnodes-app --features ssr 2>/dev/null || true
+RUN cargo build --release -p gitnodes-app --features ssr 2>/dev/null || true
 
 # Now copy real sources
 COPY . .
@@ -60,10 +57,7 @@ COPY --from=css-builder /app/crates/gitnodes-app/style/main.css ./crates/gitnode
 
 RUN find crates -type f -name "*.rs" -exec touch {} +
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    LEPTOS_SITE_ROOT=/app/.docker-site LEPTOS_SITE_PKG_DIR=pkg cargo leptos build --release -p gitnodes-app && \
+RUN LEPTOS_SITE_ROOT=/app/.docker-site LEPTOS_SITE_PKG_DIR=pkg cargo leptos build --release -p gitnodes-app && \
     cp target/release/gitnodes-app /app/gitnodes_bin && \
     cp -r /app/.docker-site /app/site_out
 
