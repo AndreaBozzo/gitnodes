@@ -27,7 +27,7 @@ tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
 http = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 dotenvy = { version = "0.15", optional = true }
-tower-sessions = { version = "0.14", features = ["private"], optional = true }
+tower-sessions = { version = "0.15", features = ["private"], optional = true }
 tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"], optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "migrate"], optional = true }
 time = { version = "0.3", optional = true }
