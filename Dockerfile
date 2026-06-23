@@ -62,9 +62,9 @@ RUN LEPTOS_SITE_ROOT=/app/.docker-site LEPTOS_SITE_PKG_DIR=pkg cargo leptos buil
     cp -r /app/.docker-site /app/site_out
 
 # ---- Runtime stage ----
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates libssl3t64 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
