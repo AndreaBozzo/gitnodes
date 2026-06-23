@@ -575,7 +575,7 @@ pub(super) fn merge_frontmatter(
     author: &str,
     config: &BrainConfig,
 ) -> String {
-    use rand::{Rng, distr::Alphanumeric};
+    use rand::{Rng, distributions::Alphanumeric};
     use serde_yaml::Value;
 
     if config.synthetic_tag_spec().map(|s| s.name.as_str()) == Some(payload.node_type.as_str()) {
@@ -625,7 +625,7 @@ pub(super) fn merge_frontmatter(
             .and_then(|value| value.as_str())
             .is_none_or(|value| value.trim().is_empty());
         if needs_brain_id {
-            let suffix = rand::rng()
+            let suffix = rand::thread_rng()
                 .sample_iter(&Alphanumeric)
                 .take(6)
                 .map(char::from)

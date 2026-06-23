@@ -1151,7 +1151,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "pulldown-cmark",
- "rand 0.9.4",
+ "rand 0.8.6",
  "reqwest",
  "rmcp",
  "schemars",
@@ -1182,7 +1182,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "gitnodes-domain",
- "rand 0.9.4",
+ "rand 0.8.6",
  "reqwest",
  "serde",
  "tower-sessions",

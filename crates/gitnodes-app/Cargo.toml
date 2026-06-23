@@ -33,7 +33,7 @@ sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runti
 time = { version = "0.3", optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
 serde_json = { version = "1" }
-rand = { version = "0.9", optional = true }
+rand = { version = "0.8", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 hmac = { version = "0.13", optional = true }
