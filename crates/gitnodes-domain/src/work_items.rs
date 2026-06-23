@@ -116,10 +116,10 @@ mod tests {
             content_path: Some("tasks/stabilize-webhook-sync.md".into()),
             external_binding: Some(ExternalWorkItemBinding {
                 system: ExternalWorkItemSystem::Github,
-                project: "AndreaBozzo/Brain_UI".into(),
+                project: "example-org/knowledge-base".into(),
                 item_key: "123".into(),
                 provider_id: Some("I_kwDO...".into()),
-                url: Some("https://github.com/AndreaBozzo/Brain_UI/issues/123".into()),
+                url: Some("https://github.com/example-org/knowledge-base/issues/123".into()),
             }),
             system_of_record: WorkItemSystemOfRecord::Split,
         };

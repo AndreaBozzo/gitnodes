@@ -128,7 +128,7 @@ node_types:
         &[raw(
             "tasks/stabilize-sync.md",
             "sha-task",
-            "---\ntype: task\ntopic: Stabilize sync\nbrain_id: task-sync-1\nstate: in-progress\nassignees: [alice, bob]\nexternal_binding:\n  system: github\n  project: AndreaBozzo/Brain_UI\n  item_key: \"42\"\n  url: https://github.com/AndreaBozzo/Brain_UI/issues/42\n---\n# Task: Stabilize sync\n\n## Description\nBody\n",
+            "---\ntype: task\ntopic: Stabilize sync\nbrain_id: task-sync-1\nstate: in-progress\nassignees: [alice, bob]\nexternal_binding:\n  system: github\n  project: example-org/knowledge-base\n  item_key: \"42\"\n  url: https://github.com/example-org/knowledge-base/issues/42\n---\n# Task: Stabilize sync\n\n## Description\nBody\n",
         )],
         &config,
     );
@@ -176,11 +176,14 @@ node_types:
     .unwrap();
 
     assert_eq!(binding.get::<String, _>("system"), "github");
-    assert_eq!(binding.get::<String, _>("project"), "AndreaBozzo/Brain_UI");
+    assert_eq!(
+        binding.get::<String, _>("project"),
+        "example-org/knowledge-base"
+    );
     assert_eq!(binding.get::<String, _>("item_key"), "42");
     assert_eq!(
         binding.get::<String, _>("url"),
-        "https://github.com/AndreaBozzo/Brain_UI/issues/42"
+        "https://github.com/example-org/knowledge-base/issues/42"
     );
 }
 
@@ -205,7 +208,7 @@ node_types:
         &[raw(
             "tasks/api-read.md",
             "sha-task",
-            "---\ntype: task\ntopic: API read\nbrain_id: task-api-1\nstatus: done\nassignees: [andrea]\nexternal_binding:\n  system: github\n  project: AndreaBozzo/Brain_UI\n  item_key: \"77\"\n  provider_id: I_kwDO123\n  url: https://github.com/AndreaBozzo/Brain_UI/issues/77\nsystem_of_record: split\n---\n# Task: API read\n",
+            "---\ntype: task\ntopic: API read\nbrain_id: task-api-1\nstatus: done\nassignees: [andrea]\nexternal_binding:\n  system: github\n  project: example-org/knowledge-base\n  item_key: \"77\"\n  provider_id: I_kwDO123\n  url: https://github.com/example-org/knowledge-base/issues/77\nsystem_of_record: split\n---\n# Task: API read\n",
         )],
         &config,
     );
@@ -227,7 +230,7 @@ node_types:
     assert!(item.labels.contains(&"brain:task".to_string()));
     let binding = item.external_binding.expect("binding must exist");
     assert_eq!(binding.item_key, "77");
-    assert_eq!(binding.project, "AndreaBozzo/Brain_UI");
+    assert_eq!(binding.project, "example-org/knowledge-base");
 }
 
 #[tokio::test]

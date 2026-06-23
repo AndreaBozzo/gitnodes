@@ -426,8 +426,8 @@ mod tests {
 
     fn test_cfg() -> TargetConfig {
         TargetConfig {
-            org: "Dritara-Digital".into(),
-            repo: "Brain".into(),
+            org: "example-org".into(),
+            repo: "knowledge-base".into(),
             branch: "main".into(),
         }
     }
@@ -445,7 +445,7 @@ mod tests {
             "concepts/foo.md",
             &test_cfg(),
         );
-        assert!(html.contains(r#"href="/Dritara-Digital/Brain/main/knowledge?path=adrs%2F001-git-centric-automation.md""#));
+        assert!(html.contains(r#"href="/example-org/knowledge-base/main/knowledge?path=adrs%2F001-git-centric-automation.md""#));
     }
 
     #[test]
@@ -456,7 +456,7 @@ mod tests {
             &test_cfg(),
         );
         assert!(html.contains(
-            r#"href="/Dritara-Digital/Brain/main/knowledge?path=templates%2FRunbook.md""#
+            r#"href="/example-org/knowledge-base/main/knowledge?path=templates%2FRunbook.md""#
         ));
     }
 
@@ -467,7 +467,7 @@ mod tests {
             "concepts/foo.md",
             &test_cfg(),
         );
-        assert!(html.contains(r#"src="https://raw.githubusercontent.com/Dritara-Digital/Brain/main/screenshots/graph.png""#));
+        assert!(html.contains(r#"src="https://raw.githubusercontent.com/example-org/knowledge-base/main/screenshots/graph.png""#));
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
             &test_cfg(),
         );
         assert!(
-            html.contains(r#"src="/Dritara-Digital/Brain/assets/2026/04/foo-abc.png""#),
+            html.contains(r#"src="/example-org/knowledge-base/assets/2026/04/foo-abc.png""#),
             "got: {html}"
         );
     }
@@ -597,7 +597,7 @@ mod tests {
         let url = resolve_cover_url("../assets/hero.png", "concepts/foo.md", &test_cfg());
         assert_eq!(
             url.as_deref(),
-            Some("/Dritara-Digital/Brain/assets/hero.png")
+            Some("/example-org/knowledge-base/assets/hero.png")
         );
     }
 
@@ -619,7 +619,9 @@ mod tests {
         let url = resolve_cover_url("../screenshots/x.png", "concepts/foo.md", &test_cfg());
         assert_eq!(
             url.as_deref(),
-            Some("https://raw.githubusercontent.com/Dritara-Digital/Brain/main/screenshots/x.png")
+            Some(
+                "https://raw.githubusercontent.com/example-org/knowledge-base/main/screenshots/x.png"
+            )
         );
     }
 

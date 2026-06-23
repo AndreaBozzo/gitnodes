@@ -865,21 +865,21 @@ mod merge_frontmatter_tests {
     #[test]
     fn related_section_uses_relative_links_from_nested_destination() {
         let out = build_related_section(
-            "concepts/sub_folder_test_brain_UI/README.md",
+            "concepts/sub_folder_test_knowledge_base/README.md",
             &[
-                "runbooks/uso-brain-ui.md".to_string(),
-                "concepts/TestbrainUI.md".to_string(),
+                "runbooks/using-gitnodes.md".to_string(),
+                "concepts/TestKnowledgeBase.md".to_string(),
             ],
         );
 
-        assert!(out.contains("- [uso-brain-ui](../../runbooks/uso-brain-ui.md)"));
-        assert!(out.contains("- [TestbrainUI](../TestbrainUI.md)"));
+        assert!(out.contains("- [using-gitnodes](../../runbooks/using-gitnodes.md)"));
+        assert!(out.contains("- [TestKnowledgeBase](../TestKnowledgeBase.md)"));
     }
 
     #[test]
     fn related_section_uses_same_directory_relative_links() {
         let out = build_related_section(
-            "runbooks/uso-brain-ui.md",
+            "runbooks/using-gitnodes.md",
             &["runbooks/another-runbook.md".to_string()],
         );
 

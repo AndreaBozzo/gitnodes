@@ -113,10 +113,22 @@ mod tests {
 
     #[test]
     fn generated_key_roundtrips_through_file() {
+        let test_name = std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
             "gitnodes-session-key-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            test_name
         ));
         let _ = fs::remove_file(&path);
 

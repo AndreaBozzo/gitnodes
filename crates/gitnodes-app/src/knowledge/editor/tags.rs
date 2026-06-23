@@ -132,8 +132,8 @@ mod tests {
     #[test]
     fn tag_helpers_split_manual_input_but_preserve_exact_suggestions() {
         assert_eq!(
-            tags_from_input(" #brain-ui, rustlang  ops "),
-            vec!["brain-ui", "rustlang", "ops"]
+            tags_from_input(" #gitnodes, rustlang  ops "),
+            vec!["gitnodes", "rustlang", "ops"]
         );
         assert_eq!(normalize_tag(" #customer success "), "customer success");
     }

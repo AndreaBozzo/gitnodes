@@ -517,9 +517,9 @@ impl From<TargetConfig> for GithubClient {
 /// User-facing branding copy (landing page title, access-denied messages).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrandConfig {
-    /// Display name shown in the header, e.g. "Dritara Brain".
+    /// Display name shown in the header, e.g. "Example Knowledge Base".
     pub name: String,
-    /// Organisation label shown in access-denied copy, e.g. "Dritara-Digital".
+    /// Organisation label shown in access-denied copy, e.g. "example-org".
     /// In practice this matches `TargetConfig::org` but kept separate to allow
     /// prettier display casing if ever needed.
     pub org_label: String,

@@ -260,7 +260,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(
-                "/repos/Dritara-Digital/Brain/contents/assets/2026/04/foo.png",
+                "/repos/example-org/knowledge-base/contents/assets/2026/04/foo.png",
             ))
             .and(query_param("ref", "main"))
             .and(header("authorization", "Bearer test-token"))
@@ -277,7 +277,7 @@ mod tests {
 
         let http = GithubHttp::new().expect("http client");
         let url = format!(
-            "{}/repos/Dritara-Digital/Brain/contents/assets/2026/04/foo.png",
+            "{}/repos/example-org/knowledge-base/contents/assets/2026/04/foo.png",
             server.uri()
         );
 
@@ -332,10 +332,13 @@ mod tests {
             repo: "fallback-repo".into(),
             branch: "main".into(),
         };
-        let target =
-            target_from_path("/Dritara-Digital/Brain/assets/2026/04/foo.png", &fallback).unwrap();
-        assert_eq!(target.org, "Dritara-Digital");
-        assert_eq!(target.repo, "Brain");
+        let target = target_from_path(
+            "/example-org/knowledge-base/assets/2026/04/foo.png",
+            &fallback,
+        )
+        .unwrap();
+        assert_eq!(target.org, "example-org");
+        assert_eq!(target.repo, "knowledge-base");
         // Branch always inherited from fallback — multi-tenant routes don't
         // carry the branch in the URL.
         assert_eq!(target.branch, "main");
@@ -362,7 +365,7 @@ mod tests {
         );
         // Multi-tenant route — `org` and `repo` segments are stripped.
         assert_eq!(
-            subpath_after_assets("/Dritara-Digital/Brain/assets/2026/04/foo.png"),
+            subpath_after_assets("/example-org/knowledge-base/assets/2026/04/foo.png"),
             Some("2026/04/foo.png")
         );
         // No `/assets/` segment at all → None (routing bug).

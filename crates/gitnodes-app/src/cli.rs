@@ -80,17 +80,20 @@ help          Show this message.\n"
 /// Render an `AGENTS.md` from a config, teaching any coding agent (Claude Code,
 /// Codex, Cursor, …) the conventions of this specific knowledge base. Generated
 /// from `.gitnodes.yml` so it always matches the live taxonomy.
-pub fn render_agents_md(cfg: &gitnodes_domain::BrainConfig, root: &Path) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::new();
-
+fn agent_mcp_path(root: &Path) -> String {
     // Absolute, forward-slashed path to this brain so the setup commands below
     // are copy-paste-ready. Forward slashes keep the JSON valid and work on
     // Windows too; `absolute` avoids touching the filesystem or the `\\?\` prefix.
-    let repo_path = std::path::absolute(root)
+    std::path::absolute(root)
         .unwrap_or_else(|_| root.to_path_buf())
         .to_string_lossy()
-        .replace('\\', "/");
+        .replace('\\', "/")
+}
+
+pub fn render_agents_md(cfg: &gitnodes_domain::BrainConfig, root: &Path) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    let repo_path = agent_mcp_path(root);
 
     s.push_str(
         "# AGENTS.md\n\n\
@@ -949,7 +952,8 @@ mod tests {
     #[test]
     fn agents_md_teaches_conventions() {
         let cfg = gitnodes_domain::BrainConfig::default();
-        let md = render_agents_md(&cfg, Path::new("/brains/example"));
+        let root = Path::new("/brains/example");
+        let md = render_agents_md(&cfg, root);
         // The non-obvious gotcha every agent must know.
         assert!(md.contains("[[wikilinks]]"));
         assert!(md.contains("standard markdown links"));
@@ -957,8 +961,11 @@ mod tests {
         assert!(md.contains("`concepts/`"));
         assert!(md.contains("GitNodes knowledge base"));
         // The MCP setup commands are filled in with this brain's real path.
-        assert!(md.contains("claude mcp add gitnodes -- gitnodes mcp \"/brains/example\""));
-        assert!(md.contains("\"args\": [\"mcp\", \"/brains/example\"]"));
+        let repo_path = agent_mcp_path(root);
+        assert!(md.contains(&format!(
+            "claude mcp add gitnodes -- gitnodes mcp \"{repo_path}\""
+        )));
+        assert!(md.contains(&format!("\"args\": [\"mcp\", \"{repo_path}\"]")));
     }
 
     #[test]

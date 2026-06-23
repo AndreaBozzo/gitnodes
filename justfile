@@ -1,5 +1,8 @@
 # GitNodes dev workflow. Install `just` (https://github.com/casey/just) to use.
 
+# Use native PowerShell when `just` runs on Windows; Unix keeps its default shell.
+set windows-shell := ["powershell.exe", "-NoProfile", "-Command"]
+
 default:
     @just --list
 

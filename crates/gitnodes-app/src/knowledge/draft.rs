@@ -157,12 +157,12 @@ mod tests {
     #[test]
     fn key_scoping() {
         assert_eq!(
-            storage_key("Dritara-Digital/Brain", None),
-            "gitnodes:draft:v2:Dritara-Digital/Brain:new"
+            storage_key("example-org/knowledge-base", None),
+            "gitnodes:draft:v2:example-org/knowledge-base:new"
         );
         assert_eq!(
-            storage_key("Dritara-Digital/Brain", Some("concepts/foo.md")),
-            "gitnodes:draft:v2:Dritara-Digital/Brain:concepts/foo.md"
+            storage_key("example-org/knowledge-base", Some("concepts/foo.md")),
+            "gitnodes:draft:v2:example-org/knowledge-base:concepts/foo.md"
         );
         assert_eq!(
             legacy_storage_key("gitnodes:draft:v2:org/repo:new").as_deref(),

@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn parse_extracts_block_sequence_tags() {
-        let raw = "---\ntype: task\ntopic: Brain_UI Development\ntags:\n- Brain\n- brain-ui\n- rustlang\n---\nbody";
+        let raw = "---\ntype: task\ntopic: Knowledge Base Development\ntags:\n- knowledge\n- gitnodes\n- rustlang\n---\nbody";
         let p = parse_file(
             raw,
             "tasks/BrainUI-Development-.md",
@@ -441,14 +441,14 @@ mod tests {
             &BrainConfig::default(),
         )
         .unwrap();
-        assert_eq!(p.tags, vec!["Brain", "brain-ui", "rustlang"]);
+        assert_eq!(p.tags, vec!["knowledge", "gitnodes", "rustlang"]);
     }
 
     #[test]
     fn parse_extracts_inline_sequence_tags() {
-        let raw = "---\ntype: runbook\ntags: [\"Brain\", \"brain-ui\", workflow]\n---\nbody";
+        let raw = "---\ntype: runbook\ntags: [\"knowledge\", \"gitnodes\", workflow]\n---\nbody";
         let p = parse_file(raw, "runbooks/usage.md", "sha", &BrainConfig::default()).unwrap();
-        assert_eq!(p.tags, vec!["Brain", "brain-ui", "workflow"]);
+        assert_eq!(p.tags, vec!["knowledge", "gitnodes", "workflow"]);
     }
 
     #[test]

@@ -1379,7 +1379,7 @@ mod cache_tests {
 
     #[test]
     fn target_key_format_is_org_repo_branch() {
-        let k = TargetKey::from(&target("dritara", "brain", "main"));
-        assert_eq!(k.as_str(), "dritara/brain/main");
+        let k = TargetKey::from(&target("example-org", "knowledge-base", "main"));
+        assert_eq!(k.as_str(), "example-org/knowledge-base/main");
     }
 }

@@ -33,6 +33,12 @@ then write changes back as ordinary, reviewable commits.
   <em>The brain above ships in <a href="examples/demo-brain"><code>examples/demo-brain</code></a> — run <code>gitnodes preview examples/demo-brain</code> to explore it yourself.</em>
 </p>
 
+## Early presentation
+
+GitNodes was presented publicly under its former working name, **Brain UI**, at
+Talent Garden Cosenza on 3 June 2026. The event recording is available on
+[LinkedIn](https://www.linkedin.com/events/7467916975424606209/).
+
 ## Quickstart
 
 > **Pre-release status:** the installer scripts and package metadata are ready,

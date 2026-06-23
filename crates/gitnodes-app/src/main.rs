@@ -113,12 +113,14 @@ mod route_protection_tests {
     fn asset_path_classification_covers_both_mounts() {
         // Both asset-proxy mounts get the locked-down CSP…
         assert!(is_asset_path("/assets/2026/04/a.png"));
-        assert!(is_asset_path("/Dritara-Digital/Brain/assets/2026/04/a.svg"));
+        assert!(is_asset_path(
+            "/example-org/knowledge-base/assets/2026/04/a.svg"
+        ));
         // …while every page/api surface keeps the permissive page CSP.
         assert!(!is_asset_path("/knowledge"));
-        assert!(!is_asset_path("/Dritara-Digital/Brain/knowledge"));
-        assert!(!is_asset_path("/Dritara-Digital/Brain/main/knowledge"));
-        assert!(!is_asset_path("/Dritara-Digital/Brain/main/admin"));
+        assert!(!is_asset_path("/example-org/knowledge-base/knowledge"));
+        assert!(!is_asset_path("/example-org/knowledge-base/main/knowledge"));
+        assert!(!is_asset_path("/example-org/knowledge-base/main/admin"));
         assert!(!is_asset_path("/api/save_brain_file"));
         assert!(!is_asset_path("/"));
     }
@@ -196,14 +198,14 @@ mod route_protection_tests {
             ("/assets/2026/04/a.png", true),
             ("/sse", true),
             ("/sse/events", true),
-            ("/Dritara-Digital/Brain/knowledge", true),
-            ("/Dritara-Digital/Brain/knowledge/foo", true),
-            ("/Dritara-Digital/Brain/admin", true),
-            ("/Dritara-Digital/Brain/admin/views", true),
-            ("/Dritara-Digital/Brain/assets/2026/04/a.png", true),
-            ("/Dritara-Digital/Brain/main/knowledge", true),
-            ("/Dritara-Digital/Brain/main/knowledge/foo", true),
-            ("/Dritara-Digital/Brain/main/admin", true),
+            ("/example-org/knowledge-base/knowledge", true),
+            ("/example-org/knowledge-base/knowledge/foo", true),
+            ("/example-org/knowledge-base/admin", true),
+            ("/example-org/knowledge-base/admin/views", true),
+            ("/example-org/knowledge-base/assets/2026/04/a.png", true),
+            ("/example-org/knowledge-base/main/knowledge", true),
+            ("/example-org/knowledge-base/main/knowledge/foo", true),
+            ("/example-org/knowledge-base/main/admin", true),
             ("/", false),
             ("/healthz", false),
             ("/readyz", false),
