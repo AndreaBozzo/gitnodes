@@ -5,6 +5,10 @@ GitNodes releases generate ready-to-publish metadata for:
 - Homebrew: `gitnodes.rb`
 - WinGet: the three `AndreaBozzo.GitNodes*.yaml` manifests
 
+The release installers live in [`../scripts/`](../scripts/): `install.sh` for
+macOS/Linux and `install.ps1` for Windows. Keeping executable release tooling
+there leaves this directory focused on package-manager metadata.
+
 The templates live here so package definitions are reviewed with the code. The
 release workflow renders them with the release version and archive SHA-256
 checksums, then attaches the rendered files and `SHA256SUMS` to the GitHub

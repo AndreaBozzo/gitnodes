@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # GitNodes installer for macOS and Linux.
 #
-#   curl -fSLo install-gitnodes.sh https://raw.githubusercontent.com/AndreaBozzo/gitnodes/master/install.sh
+#   curl -fSLo install-gitnodes.sh https://raw.githubusercontent.com/AndreaBozzo/gitnodes/main/scripts/install.sh
 #   less install-gitnodes.sh
 #   sh install-gitnodes.sh
 #

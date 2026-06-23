@@ -1,6 +1,6 @@
 # GitNodes installer for Windows (PowerShell).
 #
-#   Invoke-WebRequest https://raw.githubusercontent.com/AndreaBozzo/gitnodes/master/install.ps1 -OutFile install-gitnodes.ps1
+#   Invoke-WebRequest https://raw.githubusercontent.com/AndreaBozzo/gitnodes/main/scripts/install.ps1 -OutFile install-gitnodes.ps1
 #   Get-Content .\install-gitnodes.ps1
 #   & .\install-gitnodes.ps1
 #

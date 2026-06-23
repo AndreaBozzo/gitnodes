@@ -60,9 +60,9 @@ The command is the same for every client — `gitnodes mcp <path-to-this-repo>`;
 
 ```bash
 # Claude Code
-claude mcp add gitnodes -- gitnodes mcp "/home/andrea/Documenti/Brain_UI/examples/demo-brain"
+claude mcp add gitnodes -- gitnodes mcp "/absolute/path/to/demo-brain"
 # Codex CLI
-codex mcp add gitnodes -- gitnodes mcp "/home/andrea/Documenti/Brain_UI/examples/demo-brain"
+codex mcp add gitnodes -- gitnodes mcp "/absolute/path/to/demo-brain"
 ```
 
 For editors that use a JSON config (Cursor, Antigravity, Cline, Windsurf, Claude Desktop, …), add the standard `mcpServers` entry to your client's config file:
@@ -72,7 +72,7 @@ For editors that use a JSON config (Cursor, Antigravity, Cline, Windsurf, Claude
   "mcpServers": {
     "gitnodes": {
       "command": "gitnodes",
-      "args": ["mcp", "/home/andrea/Documenti/Brain_UI/examples/demo-brain"]
+      "args": ["mcp", "/absolute/path/to/demo-brain"]
     }
   }
 }
