@@ -111,7 +111,7 @@ jobs:
           Copy-Item target/release/gitnodes-app.exe dist/gitnodes.exe
           Compress-Archive -Path dist/gitnodes.exe -DestinationPath "gitnodes-${{ matrix.target }}.zip" -Force
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: gitnodes-${{ matrix.target }}.${{ matrix.archive }}
