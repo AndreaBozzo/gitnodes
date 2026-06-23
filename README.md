@@ -28,7 +28,9 @@ then write changes back as ordinary, reviewable commits.
 <p align="center">
   <img alt="GitNodes rendering a knowledge base as a force-directed graph" src="public/screenshots/graph.png" width="860">
 </p>
-<!-- TODO(launch): add the hosted demo link here once the Railway demo is live, e.g. "▶ Try the live demo". -->
+<p align="center">
+  <a href="https://gitnodes-demo-production.up.railway.app" rel="external">▶ Try the live demo</a>
+</p>
 <p align="center">
   <em>The brain above ships in <a href="examples/demo-brain"><code>examples/demo-brain</code></a> — run <code>gitnodes preview examples/demo-brain</code> to explore it yourself.</em>
 </p>
