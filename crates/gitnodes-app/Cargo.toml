@@ -41,7 +41,7 @@ sha2 = { version = "0.11", optional = true }
 jsonwebtoken = { version = "9", optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 ammonia = { version = "4", optional = true }
-infer = { version = "0.16", default-features = false, optional = true }
+infer = { version = "0.19", default-features = false, optional = true }
 tower_governor = { version = "0.7", optional = true }
 include_dir = { version = "0.7", optional = true }
 rmcp = { version = "1.7", default-features = false, features = ["macros", "server", "transport-io"], optional = true }
