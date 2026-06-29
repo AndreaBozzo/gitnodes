@@ -72,6 +72,16 @@ const STARTER_FILES: &[(&str, &str)] = &[
         ".cursor/rules/gitnodes.mdc",
         include_str!("../../../examples/starter-brain/.cursor/rules/gitnodes.mdc"),
     ),
+    // Codex and Antigravity read AGENTS.md natively, so they need no rules file —
+    // only the project-scoped MCP registration for the `gitnodes mcp` server.
+    (
+        ".codex/config.toml",
+        include_str!("../../../examples/starter-brain/.codex/config.toml"),
+    ),
+    (
+        ".agents/mcp_config.json",
+        include_str!("../../../examples/starter-brain/.agents/mcp_config.json"),
+    ),
 ];
 
 const GITIGNORE_HEADER: &str =
