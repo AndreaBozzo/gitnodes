@@ -51,23 +51,35 @@ Talent Garden Cosenza on 3 June 2026. The event recording is available on
 
 ## Quickstart
 
-> **Pre-release status:** the installer scripts and package metadata are ready,
-> but the new public upstream has not published its first release yet. Build
-> from this checkout for now; the download commands become active after that
-> release.
+> **Pre-release:** the install commands below go live when **GitNodes 0.1.0**
+> ships on **1 July 2026**. Until then, [build from source](#build-from-source).
+
+### Install
+
+**macOS / Linux** — download, review, run:
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install cargo-leptos --locked --version 0.3.6
-npm ci
-npm run build:css
-cargo leptos build --release
-cargo build --release -p gitnodes-app --bin gitnodes-app \
-  --no-default-features --features embed-assets
+curl -fSLo install-gitnodes.sh https://raw.githubusercontent.com/AndreaBozzo/gitnodes/main/scripts/install.sh
+less install-gitnodes.sh        # review before running
+sh install-gitnodes.sh
 ```
 
-Put `target/release/gitnodes-app` (or `.exe`) on `PATH` as `gitnodes`, then
-scaffold a knowledge base and open it locally:
+**Windows (PowerShell)** — download, review, run:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/AndreaBozzo/gitnodes/main/scripts/install.ps1 -OutFile install-gitnodes.ps1
+Get-Content .\install-gitnodes.ps1   # review before running
+& .\install-gitnodes.ps1
+```
+
+Both drop a single `gitnodes` binary on your `PATH` — no Rust toolchain, no
+compiling. Prefer to fetch it yourself? Grab an archive from
+[Releases](https://github.com/AndreaBozzo/gitnodes/releases/latest) and put
+`gitnodes` (or `gitnodes.exe`) on `PATH`.
+
+> Homebrew and WinGet packages follow shortly after the 0.1.0 release.
+
+### First run
 
 ```bash
 gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md
@@ -110,6 +122,22 @@ The source boundary matters: `preview` and MCP read the local working tree,
 including uncommitted files; `serve` and deployments read the pushed GitHub
 branch. See the [end-to-end getting-started
 guide](docs/guides/GETTING_STARTED.md) before switching modes.
+
+## Build from source
+
+Prefer to compile it yourself, or on a platform without a prebuilt binary?
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install cargo-leptos --locked --version 0.3.6
+npm ci
+npm run build:css
+cargo leptos build --release
+cargo build --release -p gitnodes-app --bin gitnodes-app \
+  --no-default-features --features embed-assets
+```
+
+Put `target/release/gitnodes-app` (or `.exe`) on `PATH` as `gitnodes`.
 
 ## Documentation
 
