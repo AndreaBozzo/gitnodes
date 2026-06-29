@@ -611,7 +611,17 @@ async fn run() {
         Ok(site) => {
             // SAFETY: startup is single-threaded here, before any config read or
             // task spawn observes the environment.
-            unsafe { std::env::set_var("LEPTOS_SITE_ROOT", &site) };
+            //
+            // The single-file binary runs without cargo-leptos's build
+            // environment, so get_configuration() would otherwise read an empty
+            // output name and HydrationScripts would emit `/pkg/.js` — the page
+            // renders server-side but never hydrates. Pin the build-time values
+            // (mirror `[package.metadata.leptos]` in Cargo.toml).
+            unsafe {
+                std::env::set_var("LEPTOS_SITE_ROOT", &site);
+                std::env::set_var("LEPTOS_OUTPUT_NAME", "gitnodes");
+                std::env::set_var("LEPTOS_ENV", "PROD");
+            }
             tracing::info!(site = %site.display(), "serving embedded web assets");
         }
         Err(error) => {
