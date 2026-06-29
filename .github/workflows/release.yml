@@ -114,6 +114,9 @@ jobs:
       - uses: softprops/action-gh-release@7c4723f7a335432393329f8f1c564994ce50185d # v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          # Any semver pre-release tag (v…-rc.1, v…-pre) flags the GitHub release
+          # as a pre-release so it never displaces the stable "Latest" badge.
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           files: gitnodes-${{ matrix.target }}.${{ matrix.archive }}
 
   package-metadata:
@@ -130,13 +133,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir dist
 
-      - name: Build checksums and package manifests
+      # Checksums ship for every release, including pre-releases, so testers can
+      # verify RC binaries.
+      - name: Build checksums
         shell: bash
         run: |
           cd dist
           sha256sum gitnodes-* > SHA256SUMS
-          cd ..
 
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            dist/SHA256SUMS
+
+      # Package-manager manifests (Homebrew/WinGet) are rendered for stable
+      # releases only. Pre-release tags (v…-rc/-pre) ship binaries + checksums
+      # for testing but must not advertise installable package metadata.
+      - name: Render package manifests
+        if: ${{ !contains(env.RELEASE_TAG, '-') }}
+        shell: bash
+        run: |
           sha_for() {
             awk -v name="$1" '$2 == name { print $1 }' dist/SHA256SUMS
           }
@@ -149,12 +169,12 @@ jobs:
             "$(sha_for gitnodes-x86_64-pc-windows-msvc.zip)" \
             dist/package-manifests
 
-      - name: Upload checksums and package manifests
+      - name: Upload package manifests
+        if: ${{ !contains(env.RELEASE_TAG, '-') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \
-            dist/SHA256SUMS \
             dist/package-manifests/*
