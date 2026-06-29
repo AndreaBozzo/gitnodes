@@ -37,6 +37,8 @@ pub struct WorkItem {
     pub system_of_record: WorkItemSystemOfRecord,
 }
 
+/// The category of a [`WorkItem`]: what kind of tracked artifact a node
+/// represents (a task, a discussion, a decision record, and so on).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkItemKind {
@@ -48,6 +50,7 @@ pub enum WorkItemKind {
     Quote,
 }
 
+/// Lifecycle position of a [`WorkItem`], from `Backlog` through `Done`/`Cancelled`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkItemState {
