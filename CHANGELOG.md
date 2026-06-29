@@ -5,6 +5,10 @@ versioning once public releases begin.
 
 ## Unreleased
 
+## 0.1.0 — 2026-06-30
+
+First public release.
+
 ### Added
 
 - Local read-only preview and MCP access over the working tree.

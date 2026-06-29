@@ -9,6 +9,14 @@
   <strong>Turn a GitHub repo of markdown notes into a knowledge graph you — and your AI agents — can explore, search, and edit.</strong>
 </p>
 
+<p align="center">
+  <a href="https://github.com/AndreaBozzo/gitnodes/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/AndreaBozzo/gitnodes/ci.yml?branch=main&label=CI&style=flat-square"></a>
+  <a href="https://github.com/AndreaBozzo/gitnodes/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/AndreaBozzo/gitnodes?style=flat-square&color=blue"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0 / Apache-2.0" src="https://img.shields.io/badge/license-AGPL--3.0%20%2F%20Apache--2.0-blue?style=flat-square"></a>
+  <img alt="Rust" src="https://img.shields.io/badge/rust-stable-CE412B?style=flat-square&logo=rust&logoColor=white">
+  <img alt="Built with Leptos" src="https://img.shields.io/badge/built%20with-Leptos%200.8-EF3939?style=flat-square">
+</p>
+
 GitNodes points at a GitHub repository of markdown files and makes it navigable: a
 force-directed graph of how your notes link together, a wiki-style reader, and an
 in-app editor that commits changes straight back to GitHub. Declare your own note
