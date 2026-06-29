@@ -39,6 +39,9 @@ gitnodes preview
 - `.gitnodes.yml`, with starter node types and a saved view;
 - linked example notes;
 - `AGENTS.md`, generated from the configured taxonomy;
+- ready-to-use agent config — `CLAUDE.md`, `.mcp.json`, `.claude/`, `.cursor/`,
+  `.codex/config.toml`, and `.agents/mcp_config.json` — wiring the read-only
+  `gitnodes mcp` server into Claude Code, Cursor, Codex, and Antigravity;
 - `.gitignore` entries for local secrets and runtime data;
 - a local Git repository when Git is available.
 
@@ -48,15 +51,26 @@ Edit markdown in an editor and refresh the graph to see the working-tree state.
 
 ## Connect an agent
 
-Do not normally launch `gitnodes mcp` by hand. Configure the agent client to
-launch it as a stdio subprocess:
+`gitnodes init` already writes config that registers the read-only `gitnodes mcp`
+server for the common clients, so opening the brain in your tool is usually all
+it takes:
+
+- **Claude Code** — `CLAUDE.md` (imports `AGENTS.md`) and `.mcp.json`, pre-approved
+  in `.claude/settings.json`.
+- **Cursor** — `.cursor/mcp.json` plus a `.cursor/rules` file that imports `AGENTS.md`.
+- **Codex** — `.codex/config.toml`; Codex reads `AGENTS.md` natively.
+- **Antigravity** — `.agents/mcp_config.json`; reads `AGENTS.md` natively.
+
+Do not normally launch `gitnodes mcp` by hand — the client launches it as a stdio
+subprocess. For a client without shipped config, register it manually with the
+same command:
 
 ```bash
 claude mcp add gitnodes -- gitnodes mcp /absolute/path/to/my-brain
 codex mcp add gitnodes -- gitnodes mcp /absolute/path/to/my-brain
 ```
 
-JSON-based clients use the same command:
+or the equivalent JSON entry:
 
 ```json
 {
