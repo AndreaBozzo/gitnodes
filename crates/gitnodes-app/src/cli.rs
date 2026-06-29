@@ -49,6 +49,29 @@ const STARTER_FILES: &[(&str, &str)] = &[
         "projects/trial-run.md",
         include_str!("../../../examples/starter-brain/projects/trial-run.md"),
     ),
+    // Agent config so the brain is ready for Claude Code, Cursor, et al. out of
+    // the box. CLAUDE.md imports AGENTS.md; `.mcp.json`/`.cursor/mcp.json`
+    // register the read-only `gitnodes mcp` server against this brain.
+    (
+        "CLAUDE.md",
+        include_str!("../../../examples/starter-brain/CLAUDE.md"),
+    ),
+    (
+        ".mcp.json",
+        include_str!("../../../examples/starter-brain/.mcp.json"),
+    ),
+    (
+        ".claude/settings.json",
+        include_str!("../../../examples/starter-brain/.claude/settings.json"),
+    ),
+    (
+        ".cursor/mcp.json",
+        include_str!("../../../examples/starter-brain/.cursor/mcp.json"),
+    ),
+    (
+        ".cursor/rules/gitnodes.mdc",
+        include_str!("../../../examples/starter-brain/.cursor/rules/gitnodes.mdc"),
+    ),
 ];
 
 const GITIGNORE_HEADER: &str =

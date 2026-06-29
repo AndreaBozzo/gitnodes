@@ -1,0 +1,17 @@
+---
+description: GitNodes repository conventions for AI agents and contributors
+alwaysApply: true
+---
+
+The canonical, tool-neutral guidance for working in this repository lives in
+AGENTS.md — follow it. Cursor does not read AGENTS.md automatically, so it is
+imported here.
+
+@AGENTS.md
+
+## Trying the knowledge graph
+
+GitNodes ships a read-only MCP server (`gitnodes mcp <brain>`). The example brain
+in `examples/demo-brain` carries its own `.mcp.json` / `.cursor/mcp.json`: open
+that folder as the workspace to let an agent traverse it with `search_brain`,
+`list_nodes`, `read_node`, and `node_links`.

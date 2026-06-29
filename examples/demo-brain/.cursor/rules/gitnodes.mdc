@@ -1,0 +1,17 @@
+---
+description: Conventions for reading and editing this GitNodes knowledge base
+alwaysApply: true
+---
+
+This repository is a **GitNodes knowledge base**: a graph of markdown notes with
+YAML frontmatter, where Git is the single source of truth. Follow the conventions
+in AGENTS.md. Cursor does not read AGENTS.md automatically, so it is imported here.
+
+@AGENTS.md
+
+## Using the knowledge graph
+
+A read-only MCP server named `gitnodes` is configured (see `.cursor/mcp.json`).
+Prefer its tools — `search_brain`, `list_nodes`, `read_node`, `node_links` — to
+explore the graph instead of grepping blindly. The server never writes; make edits
+as ordinary markdown commits, keeping each note's frontmatter valid.

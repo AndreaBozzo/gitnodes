@@ -8,3 +8,6 @@
 .env
 .env.local
 .codex
+# Personal, machine-local agent settings; the shared .claude/settings.json is committed.
+.claude/settings.local.json
+.cursor/mcp.local.json
