@@ -41,7 +41,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             archive: zip
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -61,11 +61,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           key: ${{ matrix.target }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "20"
 
@@ -111,7 +111,7 @@ jobs:
           Copy-Item target/release/gitnodes-app.exe dist/gitnodes.exe
           Compress-Archive -Path dist/gitnodes.exe -DestinationPath "gitnodes-${{ matrix.target }}.zip" -Force
 
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@7c4723f7a335432393329f8f1c564994ce50185d # v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: gitnodes-${{ matrix.target }}.${{ matrix.archive }}
@@ -121,7 +121,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 

@@ -19,7 +19,7 @@ jobs:
       matrix:
         job: [fmt, clippy-ssr, clippy-hydrate, test]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -27,7 +27,7 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           key: ${{ matrix.job }}
 
@@ -51,8 +51,8 @@ jobs:
     name: tailwind build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 20
           cache: npm
@@ -63,10 +63,10 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Cache RustSec advisory DB
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/advisory-db
@@ -75,7 +75,7 @@ jobs:
           restore-keys: |
             cargo-audit-${{ runner.os }}-
 
-      - uses: rustsec/audit-check@v2
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -83,8 +83,8 @@ jobs:
     name: dependency policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
         with:
           command: check advisories licenses sources
 
@@ -92,15 +92,15 @@ jobs:
     name: embedded release smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           key: embedded-release
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 20
           cache: npm
