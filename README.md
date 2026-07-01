@@ -51,12 +51,15 @@ Talent Garden Cosenza on 3 June 2026. The event recording is available on
 
 ## Quickstart
 
-> **Pre-release:** the install commands below go live when **GitNodes 0.1.0**
-> ships on **1 July 2026**. Until then, [build from source](#build-from-source).
-
 ### Install
 
-**macOS / Linux** — download, review, run:
+**Homebrew (macOS / Linux):**
+
+```bash
+brew install andreabozzo/tap/gitnodes
+```
+
+**macOS / Linux** — or download, review, run:
 
 ```bash
 curl -fSLo install-gitnodes.sh https://raw.githubusercontent.com/AndreaBozzo/gitnodes/main/scripts/install.sh
@@ -77,7 +80,9 @@ compiling. Prefer to fetch it yourself? Grab an archive from
 [Releases](https://github.com/AndreaBozzo/gitnodes/releases/latest) and put
 `gitnodes` (or `gitnodes.exe`) on `PATH`.
 
-> Homebrew and WinGet packages follow shortly after the 0.1.0 release.
+> A WinGet package (`winget install AndreaBozzo.GitNodes`) is pending review in
+> [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) and will work
+> once merged.
 
 ### First run
 
