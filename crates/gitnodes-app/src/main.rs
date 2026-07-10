@@ -834,9 +834,7 @@ form-action 'self'";
             .finish()
             .expect("valid rate-limit config"),
     );
-    let governor_layer = tower_governor::GovernorLayer {
-        config: governor_conf,
-    };
+    let governor_layer = tower_governor::GovernorLayer::new(governor_conf);
 
     // Private-repo asset proxy. Raw GitHub URLs would require the user's OAuth
     // token on `<img>` requests, which the browser can't attach — so we serve
