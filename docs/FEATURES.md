@@ -31,7 +31,7 @@ Status terms:
 
 | Capability | Status | Notes |
 |---|---|---|
-| `gitnodes init [dir]` | Available | Scaffolds config, notes, `AGENTS.md`, ignore rules, and best-effort `git init`. Refuses to overwrite scaffold paths. |
+| `gitnodes init [dir]` | Available | Scaffolds config, notes, `AGENTS.md`, agent config for Claude Code/Cursor/Codex/Antigravity (MCP wiring), ignore rules, and best-effort `git init`. Refuses to overwrite scaffold paths. |
 | `gitnodes agents [dir]` | Available | Regenerates brain-specific agent instructions from `.gitnodes.yml`. |
 | `gitnodes preview [dir]` | Available | Read-only working-tree UI, in-memory projection, loopback-only by default. |
 | `gitnodes mcp [dir]` | Available | Read-only stdio server with fingerprint-based projection refresh. |

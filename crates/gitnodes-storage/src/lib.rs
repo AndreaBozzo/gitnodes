@@ -756,10 +756,7 @@ fn template_cache_get(key: &TargetKey, filename: &str) -> Option<String> {
     let mut remove_target = false;
     let result = {
         let map = guard.get_mut(key)?;
-        let expired = match map.get(filename) {
-            Some(entry) => entry.stored_at.elapsed() > TEMPLATE_TTL,
-            None => return None,
-        };
+        let expired = map.get(filename)?.stored_at.elapsed() > TEMPLATE_TTL;
         if expired {
             map.remove(filename);
             remove_target = map.is_empty();

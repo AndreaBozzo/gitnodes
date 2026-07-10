@@ -49,6 +49,39 @@ const STARTER_FILES: &[(&str, &str)] = &[
         "projects/trial-run.md",
         include_str!("../../../examples/starter-brain/projects/trial-run.md"),
     ),
+    // Agent config so the brain is ready for Claude Code, Cursor, et al. out of
+    // the box. CLAUDE.md imports AGENTS.md; `.mcp.json`/`.cursor/mcp.json`
+    // register the read-only `gitnodes mcp` server against this brain.
+    (
+        "CLAUDE.md",
+        include_str!("../../../examples/starter-brain/CLAUDE.md"),
+    ),
+    (
+        ".mcp.json",
+        include_str!("../../../examples/starter-brain/.mcp.json"),
+    ),
+    (
+        ".claude/settings.json",
+        include_str!("../../../examples/starter-brain/.claude/settings.json"),
+    ),
+    (
+        ".cursor/mcp.json",
+        include_str!("../../../examples/starter-brain/.cursor/mcp.json"),
+    ),
+    (
+        ".cursor/rules/gitnodes.mdc",
+        include_str!("../../../examples/starter-brain/.cursor/rules/gitnodes.mdc"),
+    ),
+    // Codex and Antigravity read AGENTS.md natively, so they need no rules file —
+    // only the project-scoped MCP registration for the `gitnodes mcp` server.
+    (
+        ".codex/config.toml",
+        include_str!("../../../examples/starter-brain/.codex/config.toml"),
+    ),
+    (
+        ".agents/mcp_config.json",
+        include_str!("../../../examples/starter-brain/.agents/mcp_config.json"),
+    ),
 ];
 
 const GITIGNORE_HEADER: &str =

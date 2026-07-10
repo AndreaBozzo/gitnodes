@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gitnodes": {
+      "command": "gitnodes",
+      "args": ["mcp", "."]
+    }
+  }
+}

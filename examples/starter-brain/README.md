@@ -40,3 +40,7 @@ Follow the full [getting-started guide](../../docs/guides/GETTING_STARTED.md).
   It teaches coding agents (Claude Code, Codex, Cursor, …) this brain's
   conventions so they can add and link notes correctly. Regenerate it whenever
   you change the config.
+- Agent config — `CLAUDE.md`, `.mcp.json`, `.claude/`, `.cursor/`,
+  `.codex/config.toml`, and `.agents/mcp_config.json` — wires the read-only
+  `gitnodes mcp` server into Claude Code, Cursor, Codex, and Antigravity out of
+  the box.

@@ -17,6 +17,11 @@ gitnodes preview .     # read-only graph in your browser, no GitHub, no login
 gitnodes mcp .         # same notes, exposed to AI agents over stdio
 ```
 
+This brain ships ready-to-use agent config (`CLAUDE.md`, `.mcp.json`, `.claude/`,
+`.cursor/`, `.codex/config.toml`, `.agents/mcp_config.json`), so opening the
+folder in Claude Code, Cursor, Codex, or Antigravity wires up the read-only
+`gitnodes mcp` server automatically.
+
 ## What to look at
 
 - Open the **Tour: start here** saved view in the sidebar.

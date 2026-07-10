@@ -13,6 +13,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! The GitNodes application: a Leptos 0.8 fullstack web app (SSR binary + WASM
+//! hydrate) over an Axum server. This is the deployable crate.
+//!
+//! Server-only code is gated behind `feature = "ssr"`, client-only behind
+//! `hydrate`; the binary builds with `ssr`, the WASM lib with `hydrate`.
+//! Anything touching tokio/reqwest/sqlx must be `#[cfg(feature = "ssr")]`.
+//!
+//! Holds the Axum router (OAuth, webhook, SSE, `/api` server fns, asset proxy),
+//! the rebuildable SQLite projection, multi-target routing, the permission-aware
+//! write orchestrator, and the Leptos UI. Git is the single source of truth; the
+//! projection is a derived index, never a primary store.
+
 #![recursion_limit = "512"]
 #![cfg_attr(not(test), warn(clippy::unwrap_used))]
 

@@ -38,8 +38,38 @@ pub fn extract_site() -> std::io::Result<PathBuf> {
     }
     std::fs::create_dir_all(&root)?;
     SITE.extract(&root)?;
+    reconcile_wasm_name(&root)?;
     std::fs::write(&sentinel, build_id)?;
     Ok(root)
+}
+
+/// cargo-leptos (0.3.x) emits the hydrate module as `{output_name}.wasm`, but
+/// leptos 0.8's `HydrationScripts` loads it from `{output_name}_bg.wasm` when
+/// file hashing is off. cargo-leptos's own dev server reconciles this; the
+/// standalone binary must too, or the page renders but never hydrates. Provide
+/// the `_bg` name the runtime references. No-op when the build already matches.
+fn reconcile_wasm_name(root: &Path) -> std::io::Result<()> {
+    let pkg = root.join("pkg");
+    let Ok(entries) = std::fs::read_dir(&pkg) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("wasm") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if stem.ends_with("_bg") {
+            continue;
+        }
+        let bg = pkg.join(format!("{stem}_bg.wasm"));
+        if !bg.exists() {
+            std::fs::copy(&path, &bg)?;
+        }
+    }
+    Ok(())
 }
 
 /// Best-effort OS cache directory, falling back to the temp dir.

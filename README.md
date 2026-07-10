@@ -51,23 +51,40 @@ Talent Garden Cosenza on 3 June 2026. The event recording is available on
 
 ## Quickstart
 
-> **Pre-release status:** the installer scripts and package metadata are ready,
-> but the new public upstream has not published its first release yet. Build
-> from this checkout for now; the download commands become active after that
-> release.
+### Install
+
+**Homebrew (macOS / Linux):**
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install cargo-leptos --locked --version 0.3.6
-npm ci
-npm run build:css
-cargo leptos build --release
-cargo build --release -p gitnodes-app --bin gitnodes-app \
-  --no-default-features --features embed-assets
+brew install andreabozzo/tap/gitnodes
 ```
 
-Put `target/release/gitnodes-app` (or `.exe`) on `PATH` as `gitnodes`, then
-scaffold a knowledge base and open it locally:
+**macOS / Linux** — or download, review, run:
+
+```bash
+curl -fSLo install-gitnodes.sh https://raw.githubusercontent.com/AndreaBozzo/gitnodes/main/scripts/install.sh
+less install-gitnodes.sh        # review before running
+sh install-gitnodes.sh
+```
+
+**Windows (PowerShell)** — download, review, run:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/AndreaBozzo/gitnodes/main/scripts/install.ps1 -OutFile install-gitnodes.ps1
+Get-Content .\install-gitnodes.ps1   # review before running
+& .\install-gitnodes.ps1
+```
+
+Both drop a single `gitnodes` binary on your `PATH` — no Rust toolchain, no
+compiling. Prefer to fetch it yourself? Grab an archive from
+[Releases](https://github.com/AndreaBozzo/gitnodes/releases/latest) and put
+`gitnodes` (or `gitnodes.exe`) on `PATH`.
+
+> A WinGet package (`winget install AndreaBozzo.GitNodes`) is pending review in
+> [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) and will work
+> once merged.
+
+### First run
 
 ```bash
 gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md
@@ -110,6 +127,22 @@ The source boundary matters: `preview` and MCP read the local working tree,
 including uncommitted files; `serve` and deployments read the pushed GitHub
 branch. See the [end-to-end getting-started
 guide](docs/guides/GETTING_STARTED.md) before switching modes.
+
+## Build from source
+
+Prefer to compile it yourself, or on a platform without a prebuilt binary?
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install cargo-leptos --locked --version 0.3.6
+npm ci
+npm run build:css
+cargo leptos build --release
+cargo build --release -p gitnodes-app --bin gitnodes-app \
+  --no-default-features --features embed-assets
+```
+
+Put `target/release/gitnodes-app` (or `.exe`) on `PATH` as `gitnodes`.
 
 ## Documentation
 
@@ -322,37 +355,23 @@ Choose one authentication mode:
 > radius, prefer single-user PAT mode (`GITHUB_PAT`, whose scopes you choose) or
 > install GitNodes as a GitHub App scoped to selected repositories.
 
-Optional:
+Common optional settings:
 
-| Var                       | Default                | Purpose                                          |
-| ------------------------- | ---------------------- | ------------------------------------------------ |
-| `TARGET_GITHUB_BRANCH`    | `main`                 | Branch to read/write. |
-| `GITNODES_ALLOW_REMOTE_PAT` | _(unset)_            | Set to `1` only when deliberately exposing PAT mode beyond loopback behind your own access control. |
-| `GITNODES_ALLOW_REMOTE_PREVIEW` | _(unset)_        | Set to `1` only when deliberately exposing read-only preview beyond loopback. |
-| `GITNODES_NO_OPEN`        | _(unset)_              | Disable automatically opening the browser on a loopback bind. |
-| `GITHUB_LOGIN_ORG`        | _(org-less)_           | Optional organization required at login. Target access remains gated by live repository permissions. |
-| `BRAND_NAME`              | `GitNodes`             | UI brand shown in the header and page title. |
-| `BRAND_ORG_LABEL`         | repository owner       | Owner label used in access-denied copy. |
-| `SESSION_DB_URL`          | `sqlite://data/sessions.db` | SQLite database URL for sessions, audit log, and local projection |
-| `LEPTOS_SITE_ADDR`        | `127.0.0.1:3000`       | Bind address                                     |
-| `LEPTOS_SITE_ROOT`        | `target/site`          | Static asset root (prod)                         |
-| `SESSION_COOKIE_SECURE`   | `1` in release, `0` in debug | Marks the session cookie Secure. Override to `0` only for local HTTP dev. |
-| `SESSION_ENCRYPTION_KEY_FILE` | `data/session.key` | Persistent generated key file used when `SESSION_ENCRYPTION_KEY` is unset. |
-| `SESSION_ENCRYPTION_KEY`  | _(generated in key file)_ | Explicit base64 key (>=64 bytes decoded), useful for external secret management. |
-| `RUST_LOG`                | `gitnodes_app=info,warn` | tracing-subscriber env filter                  |
-| `WEBHOOK_SECRET`          | _(webhook disabled)_   | HMAC-SHA256 secret matching the GitHub webhook config. Setting it enables the endpoint. |
-| `ALLOW_INSECURE_WEBHOOKS` | `1` in debug, `0` in release | Explicitly allows unsigned `/webhook/github` requests. Dev-only escape hatch. |
-| `RATE_LIMIT_PER_SECOND`   | `2`                    | Per-IP request rate for the baseline governor.   |
-| `RATE_LIMIT_BURST`        | `60`                   | Per-IP burst capacity for the baseline governor. |
-| `GITHUB_APP_ID`           | _(unset)_              | GitHub App ID. With `GITHUB_APP_INSTALLATION_ID` and a private key, webhooks authenticate as the App (preferred over PAT). |
-| `GITHUB_APP_INSTALLATION_ID` | _(unset)_           | Installation ID from the App's `…/settings/installations/<id>` URL after installing on the target org. |
-| `GITHUB_APP_PRIVATE_KEY`  | _(unset)_              | Inline PEM of the App's private key. Newlines may be encoded as `\n` for single-line `.env` values. |
-| `GITHUB_APP_PRIVATE_KEY_PATH` | _(unset)_          | Alternative to `GITHUB_APP_PRIVATE_KEY` — path to a `.pem` file on disk. Preferred for k8s-style secret mounts. |
-| `GITHUB_API_BASE`         | `https://api.github.com` | GitHub REST API base for App-token minting and GHES-style test/deploy targets. |
-| `GITHUB_TOKEN`            | _(unset)_              | Fine-grained PAT used as a fallback when `GITHUB_APP_*` is unset or the App-token mint fails. Without any credential, inbound pushes are signalled as stale and reconciled on next manual refresh. |
-| `PENDING_SYNC_INTERVAL_SECS` | `60`                | Poll interval for the provider-sync outbox retry job. |
-| `RETENTION_INTERVAL_SECS` | `86400`                 | Session/audit retention sweep interval. |
-| `AUDIT_RETENTION_DAYS`    | `90`                    | Audit event retention window. |
+| Var                    | Default                     | Purpose |
+| ---------------------- | --------------------------- | ------- |
+| `TARGET_GITHUB_BRANCH` | `main`                      | Branch to read/write. |
+| `LEPTOS_SITE_ADDR` / `PORT` | `127.0.0.1:3000`       | Bind address. Hosts like Railway and Fly inject `PORT`. |
+| `SESSION_DB_URL`       | `sqlite://data/sessions.db` | SQLite path for sessions, audit log, and projection. Mount it persistently in production. |
+| `GITHUB_LOGIN_ORG`     | _(org-less)_                | Restrict login to an organization. Target access stays gated by live repository permissions. |
+| `BRAND_NAME`           | `GitNodes`                  | Brand shown in the header and page title. |
+| `RUST_LOG`             | `gitnodes_app=info,warn`    | tracing-subscriber filter. |
+
+Everything else has a safe default and is only needed for specific setups —
+webhook-driven sync (`WEBHOOK_SECRET`, the `GITHUB_APP_*` trio, `GITHUB_TOKEN`),
+per-IP rate limits, retention and sync-job tuning, explicit session-key
+management (`SESSION_ENCRYPTION_KEY*`), and the loopback escape hatches
+(`GITNODES_ALLOW_REMOTE_PAT`, `GITNODES_ALLOW_REMOTE_PREVIEW`, `GITNODES_NO_OPEN`).
+Most deployments never touch these.
 
 The OAuth app's callback URL must be `{host}/auth/callback`.
 

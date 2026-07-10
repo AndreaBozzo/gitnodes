@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+/// A single document in the graph: one markdown file, with its display fields,
+/// layout coordinates, and the repo path + GitHub SHA needed to edit it back.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub id: u32,
@@ -35,6 +37,9 @@ pub struct Node {
     pub sha: String,
 }
 
+/// How an edge was derived from the source markdown, used to style and explain
+/// links: `Body` (inline links), `Frontmatter(field)` (a related/see-also key),
+/// or `Tag` (a shared tag). Round-trips to a storage key via [`EdgeKind::storage_key`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
     #[default]
@@ -63,6 +68,8 @@ impl EdgeKind {
     }
 }
 
+/// A directed link between two [`Node`]s (by id), tagged with the [`EdgeKind`]
+/// that explains where the link came from.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Edge {
     pub from: u32,

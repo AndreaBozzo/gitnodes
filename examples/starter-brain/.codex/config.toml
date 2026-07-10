@@ -1,0 +1,6 @@
+# GitNodes read-only knowledge tools for OpenAI Codex.
+# Codex reads AGENTS.md natively for conventions; this only registers the
+# read-only `gitnodes mcp` server against this brain.
+[mcp_servers.gitnodes]
+command = "gitnodes"
+args = ["mcp", "."]
