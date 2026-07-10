@@ -81,9 +81,11 @@ jobs:
           npm ci
           npm run build:css
 
-      # Phase 1: produce target/site (WASM + JS + CSS) and the SSR server binary.
+      # Phase 1: produce target/site (WASM + JS + CSS). Frontend only — the
+      # released binary is the phase-2 embed-assets build (which implies ssr),
+      # so the phase-1 server binary would be built and then discarded.
       - name: cargo leptos build
-        run: cargo leptos build --release
+        run: cargo leptos build --release --frontend-only
 
       # Phase 2: rebuild the server binary embedding target/site → single file.
       - name: Build single-file binary

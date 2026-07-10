@@ -109,7 +109,11 @@ jobs:
       - uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2.83.0
         with:
           tool: cargo-leptos@0.3.6
-      - run: cargo leptos build --release -p gitnodes-app
+      # Frontend only: phase 1 exists to produce target/site for the embed
+      # step; the embed-assets build below already compiles the full server
+      # (embed-assets implies ssr), so building it here too would just pay
+      # the fat-LTO link twice.
+      - run: cargo leptos build --release --frontend-only -p gitnodes-app
       - run: cargo clippy -p gitnodes-app --bin gitnodes-app --no-default-features --features embed-assets -- -D warnings
       - run: cargo build --release -p gitnodes-app --bin gitnodes-app --no-default-features --features embed-assets
       - run: target/release/gitnodes-app --version
