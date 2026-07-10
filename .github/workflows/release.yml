@@ -69,8 +69,12 @@ jobs:
         with:
           node-version: "20"
 
+      # Prebuilt binary (checksum-verified by install-action) instead of
+      # `cargo install` from source — saves ~28 min on the Windows runner.
       - name: Install cargo-leptos
-        run: cargo install cargo-leptos --locked --version ${{ env.CARGO_LEPTOS_VERSION }}
+        uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2.83.0
+        with:
+          tool: cargo-leptos@${{ env.CARGO_LEPTOS_VERSION }}
 
       - name: Build CSS (Tailwind)
         run: |
