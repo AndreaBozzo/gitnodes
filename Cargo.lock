@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "gitnodes-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ammonia",
  "axum",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "gitnodes-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "gitnodes-domain",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "gitnodes-domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "gitnodes-graph"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gitnodes-domain",
  "serde_yaml",
@@ -1191,7 +1191,7 @@ dependencies = [
 
 [[package]]
 name = "gitnodes-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "futures-util",
