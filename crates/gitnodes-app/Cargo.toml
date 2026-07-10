@@ -44,7 +44,7 @@ ammonia = { version = "4", optional = true }
 infer = { version = "0.19", default-features = false, optional = true }
 tower_governor = { version = "0.7", optional = true }
 include_dir = { version = "0.7", optional = true }
-rmcp = { version = "1.7", default-features = false, features = ["macros", "server", "transport-io"], optional = true }
+rmcp = { version = "2.0", default-features = false, features = ["macros", "server", "transport-io"], optional = true }
 schemars = { version = "1.2", optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 gitnodes-domain = { path = "../gitnodes-domain" }
