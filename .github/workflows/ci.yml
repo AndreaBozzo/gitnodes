@@ -106,7 +106,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:css
-      - uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2.83.0
+      - uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
         with:
           tool: cargo-leptos@0.3.6
       # Frontend only: phase 1 exists to produce target/site for the embed
