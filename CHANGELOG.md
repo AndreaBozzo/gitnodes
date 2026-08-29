@@ -5,7 +5,7 @@ versioning once public releases begin.
 
 ## Unreleased
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-08-29
 
 A consolidation release: no new subsystems, but the packaging, dependencies,
 demo, and documentation are all brought back in line with what GitNodes
@@ -49,6 +49,21 @@ actually is.
   which made a green audit indistinguishable from a broken one.
 - Cleared the Dependabot backlog: tower-http 0.7, rmcp 2.2, time 0.3.53,
   http-body-util 0.1.4, tailwindcss 4.3.3, and five pinned GitHub Actions.
+
+## 0.1.1 — 2026-07-10
+
+Maintenance release; recorded here retroactively during the 0.2.0 pass, which
+found it had been tagged and published without a changelog entry.
+
+### Added
+
+- Homebrew install instructions (`brew install andreabozzo/tap/gitnodes`).
+
+### Fixed
+
+- Release CI: build only the frontend in phase 1, and install `cargo-leptos`
+  from a prebuilt binary rather than compiling it.
+- Clippy 1.97 `question_mark` lint in `template_cache_get`.
 
 ## 0.1.0 — 2026-07-01
 
