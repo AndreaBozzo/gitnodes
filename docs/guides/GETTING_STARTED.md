@@ -4,13 +4,23 @@ This guide takes one knowledge base from a local, read-only preview to
 GitHub-backed editing. No GitHub account or credential is needed until
 [Publish and serve it](#publish-and-serve-it).
 
-## Installation status
+## Install
 
-GitNodes is currently pre-release. The installer scripts and Homebrew/WinGet
-metadata are prepared for the public upstream, but they are not a usable
-installation path until that repository publishes its first release.
+Prebuilt releases are available through Homebrew and WinGet:
 
-For now, build from this checkout:
+```bash
+# macOS / Linux
+brew install andreabozzo/tap/gitnodes
+
+# Windows
+winget install AndreaBozzo.GitNodes
+```
+
+Alternatively, download the archive for your platform from
+[GitHub Releases](https://github.com/AndreaBozzo/gitnodes/releases/latest) and
+put `gitnodes` (`gitnodes.exe` on Windows) on `PATH`.
+
+To build from source instead:
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -22,7 +32,7 @@ cargo build --release -p gitnodes-app --bin gitnodes-app \
   --no-default-features --features embed-assets
 ```
 
-The self-contained executable is `target/release/gitnodes-app` on macOS/Linux
+The resulting self-contained executable is `target/release/gitnodes-app` on macOS/Linux
 and `target/release/gitnodes-app.exe` on Windows. Put it on `PATH` as
 `gitnodes`/`gitnodes.exe`.
 

@@ -134,11 +134,11 @@ The release workflow builds self-contained binaries for Linux x86-64, macOS
 x86-64/ARM64, and Windows x86-64, then publishes checksums and rendered
 Homebrew/WinGet metadata.
 
-The installer scripts, tap formula template, and WinGet templates are ready,
-but public downloads and package-manager publication depend on the new public
-upstream and its first release. Homebrew tap and WinGet submission remain
-explicit publication steps; generating release metadata does not publish those
-packages automatically.
+Public releases include platform archives and checksums. Homebrew is published
+through `andreabozzo/tap/gitnodes`; the Windows package is
+`AndreaBozzo.GitNodes` in WinGet. The release workflow renders package metadata,
+while publishing the tap update and WinGet submission remains an explicit
+release step.
 
 For failure recovery, see [Operator notes](../OPERATOR_NOTES.md).
 

@@ -1,6 +1,6 @@
 # Feature inventory
 
-This is the implementation-backed capability ledger as of June 14, 2026. Keep
+This is the implementation-backed capability ledger as of August 29, 2026. Keep
 it updated when behavior ships, changes mode, or gains a known limitation.
 
 Status terms:
@@ -37,8 +37,8 @@ Status terms:
 | `gitnodes mcp [dir]` | Available | Read-only stdio server with fingerprint-based projection refresh. |
 | `gitnodes doctor [dir] [--json]` | Available | Validates brain structure and reports local/GitHub transition readiness. |
 | `gitnodes serve [dir]` | Available | Discovers GitHub target/branch and reuses `gh auth` when explicit auth is absent. |
-| Prebuilt installers | Planned | Scripts exist; usable after the public upstream publishes releases. |
-| Homebrew/WinGet packages | Planned | Metadata generation exists; external publication is not automated. |
+| Prebuilt installers | Available | Release archives contain self-contained binaries and checksums. |
+| Homebrew/WinGet packages | Available | Published as `andreabozzo/tap/gitnodes` and `AndreaBozzo.GitNodes`. |
 
 ## Knowledge and graph UI
 

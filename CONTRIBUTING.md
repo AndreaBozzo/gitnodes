@@ -60,3 +60,19 @@ for large changes to be split into smaller slices.
 By contributing, you agree that your contribution is licensed under the
 license applicable to the files you modify: Apache-2.0 for the library crates
 and AGPL-3.0-or-later for the deployable application.
+
+## Regenerating the README motion hero
+
+The deterministic source for the README animation is
+`scripts/readme-hero.html`. Open it directly in a browser to inspect the loop.
+To regenerate the animated WebP, reduced-motion poster, and local review
+storyboard, install FFmpeg and Chrome or Edge, then run:
+
+```bash
+node scripts/render-readme-hero.mjs
+```
+
+The published assets are written to `public/screenshots/`; the storyboard is
+written under the ignored `target/` directory. Keep the labels, facts, and edge
+names synchronized with `examples/demo-brain`—the hero is intended to be real
+product evidence, not illustrative sample data.

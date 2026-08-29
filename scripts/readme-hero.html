@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GitNodes — your repository remembers why</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #020714; }
+    body { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    svg { display: block; width: 100%; height: 100%; }
+    text { text-rendering: geometricPrecision; }
+    .eyebrow { font-size: 11px; font-weight: 650; letter-spacing: 2.2px; }
+    .node-title { font-size: 15px; font-weight: 680; fill: #f8fbff; }
+    .node-meta { font-size: 11px; font-weight: 620; letter-spacing: .8px; }
+    .small { font-size: 12px; }
+  </style>
+</head>
+<body>
+<svg id="hero" viewBox="0 0 1200 675" role="img" aria-labelledby="title description">
+  <title id="title">GitNodes traces why the API gateway depended on Redis</title>
+  <desc id="description">An animated path connects a superseded Redis decision to the session store, a major checkout incident, its postmortem, and the accepted replacement decision.</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="72%">
+      <stop offset="0" stop-color="#0a1730"/>
+      <stop offset=".58" stop-color="#050c1c"/>
+      <stop offset="1" stop-color="#020714"/>
+    </radialGradient>
+    <linearGradient id="cyan" x1="0" y1="1" x2="1" y2="0">
+      <stop stop-color="#16d8ff"/><stop offset="1" stop-color="#8268ff"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="1" x2="1" y2="0">
+      <stop stop-color="#f59e0b"/><stop offset="1" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="coral" x1="0" y1="1" x2="1" y2="0">
+      <stop stop-color="#ef4444"/><stop offset="1" stop-color="#fb7185"/>
+    </linearGradient>
+    <linearGradient id="rose" x1="0" y1="1" x2="1" y2="0">
+      <stop stop-color="#f472b6"/><stop offset="1" stop-color="#fb7185"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="1" x2="1" y2="0">
+      <stop stop-color="#2dd4bf"/><stop offset="1" stop-color="#4ade80"/>
+    </linearGradient>
+    <filter id="soft-glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="line-glow" x="-30%" y="-200%" width="160%" height="500%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#7dd3fc" opacity=".08"/>
+    </pattern>
+    <symbol id="crystal" viewBox="-28 -34 56 68">
+      <path d="M0-32 25-10 21 18 0 33-22 17-25-10Z" fill="currentColor" opacity=".96"/>
+      <path d="M0-32 0 3-25-10Z" fill="#fff" opacity=".28"/>
+      <path d="M0-32 25-10 0 3Z" fill="#fff" opacity=".08"/>
+      <path d="M-25-10 0 3-22 17Z" fill="#020714" opacity=".25"/>
+      <path d="M25-10 0 3 21 18Z" fill="#020714" opacity=".42"/>
+      <path d="M-22 17 0 3 0 33Z" fill="#fff" opacity=".12"/>
+      <path d="M21 18 0 3 0 33Z" fill="#020714" opacity=".28"/>
+      <path d="M0-32V3M-25-10 0 3 25-10M-22 17 0 3 21 18M0 3V33" fill="none" stroke="#fff" stroke-width="1" opacity=".38"/>
+    </symbol>
+  </defs>
+
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <rect width="1200" height="675" fill="url(#dots)"/>
+  <circle id="ambient-glow" cx="600" cy="370" r="300" fill="#0ea5e9" opacity=".025"/>
+
+  <g id="brand" transform="translate(58 42)">
+    <g transform="translate(17 17)" color="#22d3ee"><use href="#crystal" x="-17" y="-20" width="34" height="40"/></g>
+    <text x="43" y="16" fill="#eef8ff" font-size="16" font-weight="720" letter-spacing=".2">GitNodes</text>
+    <text x="43" y="32" fill="#6f849f" font-size="9.5" font-weight="650" letter-spacing="1.5">DECISION TRACE</text>
+  </g>
+  <g transform="translate(1008 47)">
+    <circle cx="0" cy="0" r="3" fill="#2dd4bf"/>
+    <text x="13" y="4" fill="#6f849f" class="eyebrow" letter-spacing="1.4">DEMO BRAIN</text>
+  </g>
+
+  <g id="query" transform="translate(116 98)">
+    <rect width="968" height="82" rx="18" fill="#071225" stroke="#1a3552"/>
+    <rect x="1" y="1" width="966" height="80" rx="17" fill="none" stroke="#38bdf8" opacity=".08"/>
+    <circle cx="42" cy="41" r="15" fill="#0d2138" stroke="#1f5676"/>
+    <path d="M37 41h10M42 36v10" stroke="#66e4ff" stroke-width="1.6" stroke-linecap="round" opacity=".9"/>
+    <text x="76" y="33" fill="#68809d" font-size="10.5" font-weight="680" letter-spacing="1.6">ASK THE BRAIN</text>
+    <text id="query-text" x="76" y="58" fill="#eef8ff" font-size="20" font-weight="570">Why does api-gateway depend on Redis—and is that decision still in force?</text>
+    <g id="query-cursor"><rect x="842" y="39" width="2" height="23" rx="1" fill="#5ee6ff"/></g>
+  </g>
+
+  <g id="background-graph" opacity="0"></g>
+
+  <g id="trace-lines" fill="none" stroke-linecap="round">
+    <path class="base-line" d="M139 366 C201 315 247 314 307 349" stroke="#1c324c" stroke-width="2"/>
+    <path class="base-line" d="M327 349 C384 383 426 390 482 366" stroke="#1c324c" stroke-width="2"/>
+    <path class="base-line" d="M502 366 C560 329 610 319 672 342" stroke="#1c324c" stroke-width="2"/>
+    <path class="base-line" d="M692 342 C746 369 787 385 838 370" stroke="#1c324c" stroke-width="2"/>
+    <path class="base-line" d="M858 370 C913 345 957 343 1017 357" stroke="#1c324c" stroke-width="2"/>
+    <path id="line-0" d="M139 366 C201 315 247 314 307 349" stroke="#fbbf24" stroke-width="3" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1"/>
+    <path id="line-1" d="M327 349 C384 383 426 390 482 366" stroke="#35d8ff" stroke-width="3" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1"/>
+    <path id="line-2" d="M502 366 C560 329 610 319 672 342" stroke="#fb7185" stroke-width="3" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1"/>
+    <path id="line-3" d="M692 342 C746 369 787 385 838 370" stroke="#f472b6" stroke-width="3" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1"/>
+    <path id="line-4" d="M858 370 C913 345 957 343 1017 357" stroke="#4ade80" stroke-width="3" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1"/>
+    <path id="supersedes-base" d="M1035 339 C957 228 293 216 129 346" stroke="#263955" stroke-width="1.5" stroke-dasharray="4 8" opacity="0"/>
+    <path id="supersedes-line" d="M1035 339 C957 228 293 216 129 346" stroke="#8268ff" stroke-width="2.4" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1" opacity="0"/>
+  </g>
+
+  <g id="particle-layer" filter="url(#line-glow)"></g>
+
+  <g id="node-0" class="story-node" transform="translate(130 366)" opacity="0">
+    <circle r="43" fill="#f59e0b" opacity=".08"/>
+    <g color="#f59e0b"><use href="#crystal" x="-27" y="-33" width="54" height="66"/></g>
+    <g transform="translate(-72 62)">
+      <text id="node-0-status" text-anchor="middle" x="72" class="node-meta" fill="#fbbf24">DECISION · 2025</text>
+      <text text-anchor="middle" x="72" y="23" class="node-title">ADR-0004</text>
+      <text text-anchor="middle" x="72" y="43" class="small" fill="#d8b766">deploys: weekly → ~40/week</text>
+    </g>
+  </g>
+  <g id="node-1" class="story-node" transform="translate(317 349)" opacity="0">
+    <circle r="43" fill="#22d3ee" opacity=".08"/>
+    <g color="#22d3ee"><use href="#crystal" x="-27" y="-33" width="54" height="66"/></g>
+    <g transform="translate(-72 79)">
+      <text text-anchor="middle" x="72" class="node-meta" fill="#67e8f9">SYSTEM · TIER 1</text>
+      <text text-anchor="middle" x="72" y="23" class="node-title">session-store</text>
+      <text text-anchor="middle" x="72" y="43" class="small" fill="#8296ae">database promise · cache config</text>
+    </g>
+  </g>
+  <g id="node-2" class="story-node" transform="translate(492 366)" opacity="0">
+    <circle r="43" fill="#ef4444" opacity=".08"/>
+    <g color="#ef4444"><use href="#crystal" x="-27" y="-33" width="54" height="66"/></g>
+    <g transform="translate(-78 62)">
+      <text text-anchor="middle" x="78" class="node-meta" fill="#fb7185">INCIDENT · SEV-1</text>
+      <text text-anchor="middle" x="78" y="23" class="node-title">11 March outage</text>
+      <text text-anchor="middle" x="78" y="43" class="small" fill="#fb9ba8">40% logged out · 96 min</text>
+    </g>
+  </g>
+  <g id="node-3" class="story-node" transform="translate(682 342)" opacity="0">
+    <circle r="43" fill="#f472b6" opacity=".08"/>
+    <g color="#f472b6"><use href="#crystal" x="-27" y="-33" width="54" height="66"/></g>
+    <g transform="translate(-77 86)">
+      <text text-anchor="middle" x="77" class="node-meta" fill="#f9a8d4">POSTMORTEM</text>
+      <text text-anchor="middle" x="77" y="23" class="node-title">Every part worked</text>
+      <text text-anchor="middle" x="77" y="43" class="small" fill="#d59ab8">the system-level promise did not</text>
+    </g>
+  </g>
+  <g id="node-4" class="story-node" transform="translate(848 370)" opacity="0">
+    <circle r="39" fill="#4ade80" opacity=".08"/>
+    <g color="#4ade80"><use href="#crystal" x="-24" y="-30" width="48" height="60"/></g>
+    <g transform="translate(-69 65)">
+      <text text-anchor="middle" x="69" class="node-meta" fill="#4ade80">ISSUE · #145</text>
+      <text text-anchor="middle" x="69" y="23" class="node-title">Revisit strategy</text>
+      <text text-anchor="middle" x="69" y="43" class="small" fill="#8296ae">question the dependency</text>
+    </g>
+  </g>
+  <g id="node-5" class="story-node" transform="translate(1027 357)" opacity="0">
+    <circle r="50" fill="#4ade80" opacity=".1"/>
+    <g color="#35d399"><use href="#crystal" x="-29" y="-35" width="58" height="70"/></g>
+    <g transform="translate(-78 70)">
+      <text text-anchor="middle" x="78" class="node-meta" fill="#4ade80">DECISION · ACCEPTED</text>
+      <text text-anchor="middle" x="78" y="23" class="node-title">ADR-0009</text>
+      <text text-anchor="middle" x="78" y="43" class="small" fill="#8ee9b1">sessions move to signed cookies</text>
+    </g>
+  </g>
+
+  <g id="relation-labels" opacity="0">
+    <g transform="translate(183 300)"><rect width="77" height="24" rx="12" fill="#101c2e" stroke="#354961"/><text x="38.5" y="16" text-anchor="middle" fill="#91a6be" font-size="10" font-weight="650">AFFECTS</text></g>
+    <g transform="translate(346 381)"><rect width="84" height="24" rx="12" fill="#101c2e" stroke="#354961"/><text x="42" y="16" text-anchor="middle" fill="#91a6be" font-size="10" font-weight="650">AFFECTED BY</text></g>
+    <g transform="translate(547 299)"><rect width="86" height="24" rx="12" fill="#101c2e" stroke="#354961"/><text x="43" y="16" text-anchor="middle" fill="#91a6be" font-size="10" font-weight="650">POSTMORTEM</text></g>
+    <g transform="translate(745 380)"><rect width="82" height="24" rx="12" fill="#101c2e" stroke="#354961"/><text x="41" y="16" text-anchor="middle" fill="#91a6be" font-size="10" font-weight="650">ACTION ITEM</text></g>
+    <g transform="translate(902 322)"><rect width="86" height="24" rx="12" fill="#101c2e" stroke="#354961"/><text x="43" y="16" text-anchor="middle" fill="#91a6be" font-size="10" font-weight="650">RESULTED IN</text></g>
+    <g id="supersedes-label" transform="translate(530 219)" opacity="0"><rect width="140" height="26" rx="13" fill="#151039" stroke="#684fd1"/><text x="70" y="17" text-anchor="middle" fill="#b8a7ff" font-size="10" font-weight="720" letter-spacing=".8">SUPERSEDES</text></g>
+  </g>
+
+  <g id="answer" transform="translate(116 548)" opacity="0">
+    <line x1="0" y1="0" x2="968" y2="0" stroke="#19314a"/>
+    <circle cx="5" cy="42" r="4" fill="#4ade80"/>
+    <text x="24" y="31" fill="#7890aa" font-size="11" font-weight="680" letter-spacing="1.5">ANSWER, WITH HISTORY ATTACHED</text>
+    <text id="answer-main" x="24" y="58" fill="#f5fbff" font-size="23" font-weight="640">Your repository remembers why.</text>
+    <text id="answer-detail" x="24" y="86" fill="#7890aa" font-size="14">Markdown in Git · typed relationships · answers agents can trust</text>
+  </g>
+
+  <g id="progress" transform="translate(116 654)">
+    <rect width="968" height="2" rx="1" fill="#12263d"/>
+    <rect id="progress-fill" width="0" height="2" rx="1" fill="url(#cyan)"/>
+  </g>
+</svg>
+<script>
+  const clamp = (n, min = 0, max = 1) => Math.min(max, Math.max(min, n));
+  const ease = n => 1 - Math.pow(1 - clamp(n), 3);
+  const smooth = n => { n = clamp(n); return n * n * (3 - 2 * n); };
+  const stage = (t, start, end) => smooth((t - start) / (end - start));
+  const el = id => document.getElementById(id);
+  const setOpacity = (id, value) => el(id).setAttribute('opacity', clamp(value).toFixed(3));
+  const duration = 11.8;
+  const coords = [[130,366],[317,349],[492,366],[682,342],[848,370],[1027,357]];
+  const colors = ['#fbbf24','#35d8ff','#fb7185','#f472b6','#4ade80','#8268ff'];
+
+  // A deterministic ambient graph: visual depth without inventing fake content.
+  const ambientNodes = [
+    [80,285],[105,460],[194,250],[236,504],[302,240],[410,269],[455,498],
+    [501,252],[606,252],[625,482],[706,267],[844,246],[858,487],[930,271],
+    [1060,264],[1102,438],[1032,492]
+  ];
+  const ambientEdges = [[0,2],[0,1],[1,3],[2,4],[2,5],[3,6],[4,5],[4,7],[5,7],
+    [5,8],[6,9],[7,8],[8,10],[8,9],[9,12],[10,11],[10,12],[11,13],[11,14],
+    [12,13],[12,15],[13,14],[13,16],[14,15],[15,16]];
+  const ambient = el('background-graph');
+  ambientEdges.forEach(([a,b]) => {
+    const [x1,y1] = ambientNodes[a], [x2,y2] = ambientNodes[b];
+    ambient.insertAdjacentHTML('beforeend', `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#2b4868" stroke-width="1" opacity=".36"/>`);
+  });
+  ambientNodes.forEach(([x,y], i) => {
+    const c = ['#22d3ee','#38bdf8','#4ade80','#f59e0b','#f472b6'][i % 5];
+    const s = 8 + (i % 3) * 2;
+    ambient.insertAdjacentHTML('beforeend', `<g transform="translate(${x} ${y})" opacity=".52"><path d="M0-${s} ${s*.75}-${s*.28} ${s*.65} ${s*.55} 0 ${s} -${s*.65} ${s*.55} -${s*.75}-${s*.28}Z" fill="${c}"/><path d="M0-${s}V${s}M-${s*.75}-${s*.28} 0 0 ${s*.75}-${s*.28}" stroke="#fff" stroke-width=".6" opacity=".35"/></g>`);
+  });
+
+  function setTransform(id, x, y, scale = 1) {
+    el(id).setAttribute('transform', `translate(${x} ${y}) scale(${scale})`);
+  }
+
+  function renderFrame(seconds) {
+    const t = ((seconds % duration) + duration) % duration;
+    const graphIn = stage(t, 1.2, 2.0);
+    const outro = 1 - stage(t, 11.15, 11.75);
+
+    // Keep the product and question present in the encoded first frame. The
+    // graph fades away at the loop boundary, leaving the same meaningful frame
+    // the next cycle starts from.
+    setOpacity('brand', 1);
+    setOpacity('query', 1);
+    setOpacity('background-graph', graphIn * .32 * outro);
+    el('query').setAttribute('transform', 'translate(116 98)');
+    el('query-cursor').setAttribute('opacity', t < 1.8 ? ((Math.floor(t * 4) % 2) ? 1 : .18) : 0);
+
+    const nodeStarts = [1.25, 2.2, 3.15, 4.2, 5.2, 6.15];
+    document.querySelectorAll('.base-line').forEach((line, i) => {
+      line.setAttribute('opacity', (stage(t, nodeStarts[i + 1] - .35, nodeStarts[i + 1] + .15) * outro).toFixed(3));
+    });
+    coords.forEach(([x,y], i) => {
+      const enter = stage(t, nodeStarts[i], nodeStarts[i] + .55);
+      const activeWindow = stage(t, nodeStarts[i], nodeStarts[i] + .32) * (1 - stage(t, nodeStarts[i] + 1.05, nodeStarts[i] + 1.55));
+      const breathe = 1 + Math.sin(t * 3.2 + i) * .018 + activeWindow * .11;
+      setOpacity(`node-${i}`, enter * outro);
+      setTransform(`node-${i}`, x, y + (1 - ease(enter)) * 16, breathe);
+      const halo = el(`node-${i}`).querySelector('circle');
+      halo.setAttribute('opacity', (.07 + activeWindow * .2).toFixed(3));
+      if (activeWindow > .05) el(`node-${i}`).setAttribute('filter', 'url(#soft-glow)');
+      else el(`node-${i}`).removeAttribute('filter');
+    });
+
+    const lineStarts = [1.75, 2.7, 3.65, 4.7, 5.7];
+    lineStarts.forEach((start, i) => {
+      const p = ease(stage(t, start, start + .72));
+      const line = el(`line-${i}`);
+      line.setAttribute('stroke-dashoffset', (1 - p).toFixed(3));
+      line.setAttribute('opacity', (p * outro).toFixed(3));
+      if (p > 0 && p < 1) line.setAttribute('filter', 'url(#line-glow)');
+      else line.removeAttribute('filter');
+    });
+    setOpacity('relation-labels', stage(t, 5.55, 6.2) * outro);
+
+    const superIn = stage(t, 7.0, 8.0);
+    const superLine = el('supersedes-line');
+    setOpacity('supersedes-base', superIn * .8 * outro);
+    setOpacity('supersedes-line', superIn * outro);
+    superLine.setAttribute('stroke-dashoffset', (1 - ease(superIn)).toFixed(3));
+    setOpacity('supersedes-label', stage(t, 7.65, 8.15) * outro);
+
+    // Visually retire the old decision only after the superseding relationship arrives.
+    const retire = stage(t, 8.0, 8.7);
+    el('node-0-status').textContent = t >= 7.65 ? 'DECISION · SUPERSEDED' : 'DECISION · 2025';
+    el('node-0').setAttribute('opacity', ((1 - retire * .58) * stage(t, 1.35, 1.9) * outro).toFixed(3));
+    el('node-0').querySelector('circle').setAttribute('opacity', (.07 * (1 - retire)).toFixed(3));
+    const acceptedPulse = stage(t, 7.7, 8.3) * (1 - stage(t, 9.1, 9.8));
+    setTransform('node-5', 1027, 357, 1 + acceptedPulse * .1 + Math.sin(t * 3.2 + 5) * .018);
+
+    // Light particles make graph traversal legible even when the image is reduced.
+    const layer = el('particle-layer');
+    layer.innerHTML = '';
+    for (let i = 0; i < 5; i++) {
+      const p = stage(t, lineStarts[i], lineStarts[i] + .72);
+      if (p > .04 && p < .99) {
+        const [x1,y1] = coords[i], [x2,y2] = coords[i+1];
+        const x = x1 + (x2-x1) * p, y = y1 + (y2-y1) * p;
+        layer.insertAdjacentHTML('beforeend', `<circle cx="${x}" cy="${y}" r="5.5" fill="${colors[i]}"/><circle cx="${x}" cy="${y}" r="12" fill="${colors[i]}" opacity=".16"/>`);
+      }
+    }
+
+    const answer = stage(t, 8.35, 9.15) * outro;
+    setOpacity('answer', answer);
+    el('answer').setAttribute('transform', `translate(116 ${548 + (1 - ease(answer)) * 15})`);
+    el('progress-fill').setAttribute('width', (968 * clamp(t / duration)).toFixed(1));
+    el('progress').setAttribute('opacity', (outro * .7).toFixed(3));
+    el('ambient-glow').setAttribute('opacity', (.018 + stage(t, 1.4, 7.4) * .028 * outro).toFixed(3));
+  }
+
+  window.renderFrame = renderFrame;
+  const requested = new URLSearchParams(location.search).get('t');
+  if (requested !== null) {
+    renderFrame(Number(requested));
+  } else {
+    const started = performance.now();
+    const tick = now => { renderFrame((now - started) / 1000); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }
+</script>
+</body>
+</html>
