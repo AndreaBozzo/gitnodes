@@ -44,6 +44,9 @@ actually is.
   sanitiser on the markdown rendering path.
 - Updated h2 to 0.4.19 for RUSTSEC-2026-0258 (unbounded empty DATA frames), and
   event-listener to 5.4.2 for RUSTSEC-2026-0221 (unsound `Send`/`Sync`).
+- The `cargo audit` CI job now requests `checks: write`. It had been failing on
+  "Resource not accessible by integration" — a permissions error, not a finding —
+  which made a green audit indistinguishable from a broken one.
 - Cleared the Dependabot backlog: tower-http 0.7, rmcp 2.2, time 0.3.53,
   http-body-util 0.1.4, tailwindcss 4.3.3, and five pinned GitHub Actions.
 

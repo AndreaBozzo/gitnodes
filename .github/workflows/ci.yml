@@ -62,6 +62,12 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    # rustsec/audit-check publishes its findings as a check run; the default
+    # workflow token is read-only, which failed the job on a permissions error
+    # rather than on anything it found.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
