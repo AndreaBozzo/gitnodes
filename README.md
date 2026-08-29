@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="public/brand/gitnodes-wordmark-dark.png">
-    <img alt="GitNodes" src="public/brand/gitnodes-wordmark-light.png" width="460">
+    <source media="(prefers-color-scheme: dark)" srcset="public/brand/gitnodes-wordmark-dark.webp">
+    <img alt="GitNodes" src="public/brand/gitnodes-wordmark-light.webp" width="460">
   </picture>
 </p>
 

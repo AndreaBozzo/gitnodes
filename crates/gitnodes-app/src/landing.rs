@@ -92,7 +92,7 @@ pub fn Landing() -> impl IntoView {
                         {move || if brand_name() == "GitNodes" {
                             view! {
                                 <img
-                                    src="/brand/gitnodes-wordmark-header.png"
+                                    src="/brand/gitnodes-wordmark-header.webp"
                                     alt="GitNodes"
                                     class="h-7 w-auto"
                                 />
