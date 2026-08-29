@@ -1,10 +1,15 @@
-# The Meridian Program — a GitNodes demo knowledge base.
+# Harbor Engineering — a GitNodes demo knowledge base.
 #
-# A fictional near-future deep-space exploration program, modelled as a graph:
-# missions target worlds, fly spacecraft, carry instruments, are run by people
-# and organisations, and produce discoveries. The relationships live in each
-# note's YAML frontmatter (`link_fields`), so GitNodes draws them as typed edges
-# you can toggle in the canvas legend — that is the thing plain markdown can't do.
+# A fictional payments company's engineering knowledge, modelled as a graph:
+# decisions govern systems, systems fail, incidents get postmortems, postmortems
+# produce issues, and issues sometimes produce the next decision. That loop is
+# the point — it is the context an engineer reconstructs by hand every time they
+# ask "why is this built this way, and what did it cost us?"
+#
+# The relationships live in each note's YAML frontmatter (`link_fields`), so
+# GitNodes draws them as typed edges you can toggle in the canvas legend — the
+# thing a folder of plain markdown cannot do, and the thing an agent walking
+# this repo over MCP follows instead of grepping blind.
 #
 # Everything here is optional; a repo with no .gitnodes.yml uses a built-in
 # default. This file is itself part of the demo: read it to see how a taxonomy
@@ -13,74 +18,94 @@
 default_type: concept
 
 node_types:
-  - name: mission
-    label: Mission
-    directory: missions
-    accent: "#ef4444"
+  - name: adr
+    label: Decision
+    directory: decisions
+    accent: "#8b5cf6"
     title_key: title
-    body_label: Mission Brief
+    body_label: Decision Record
     link_fields:
-      program: program        # which program this mission belongs to
-      target: body            # the world it explores
-      spacecraft: spacecraft  # the vehicle flown
-      lead: person            # principal investigator
-      operated_by: org        # operating agency
+      supersedes: adr         # the decision this one replaces
+      affects: system         # systems this decision constrains (a list)
+      written_by: person
+      owned_by: team
 
-  - name: spacecraft
-    label: Spacecraft
-    directory: spacecraft
+  - name: system
+    label: System
+    directory: systems
     accent: "#38bdf8"
     title_key: title
-    body_label: Vehicle Notes
+    body_label: Service Notes
     link_fields:
-      mission: mission
-      built_by: org
-      instruments: instrument # carried payload (a list)
+      owned_by: team
+      depends_on: system      # runtime dependencies (a list)
+      runbooks: runbook       # operational procedures (a list)
+      governed_by: adr        # decisions that shaped it (a list)
 
-  - name: body
-    label: World
-    directory: bodies
-    accent: "#a855f7"
+  - name: incident
+    label: Incident
+    directory: incidents
+    accent: "#ef4444"
     title_key: title
-    body_label: Profile
+    body_label: Timeline
     link_fields:
-      orbits: body            # moons point at their planet
+      affected: system        # blast radius (a list)
+      runbook_used: runbook   # what responders reached for
+      commander: person
+      postmortem: postmortem
 
-  - name: instrument
-    label: Instrument
-    directory: instruments
+  - name: postmortem
+    label: Postmortem
+    directory: postmortems
+    accent: "#fb7185"
+    title_key: title
+    body_label: Analysis
+    link_fields:
+      incident: incident
+      written_by: person
+      root_cause_in: system
+      contributing_decision: adr   # the decision that set the trap
+      action_items: issue          # what it produced (a list)
+
+  - name: runbook
+    label: Runbook
+    directory: runbooks
     accent: "#f59e0b"
     title_key: title
-    body_label: Spec
+    body_label: Procedure
     link_fields:
-      aboard: spacecraft
-      made_by: org
+      system: system
+      owned_by: team
+
+  - name: issue
+    label: Issue
+    directory: issues
+    accent: "#22c55e"
+    title_key: title
+    body_label: Ticket
+    link_fields:
+      system: system
+      from_postmortem: postmortem  # the postmortem that filed it
+      assignee: person
+      resulted_in: adr             # work that produced a new decision
+
+  - name: team
+    label: Team
+    directory: teams
+    accent: "#0ea5e9"
+    title_key: title
+    body_label: Charter
+    link_fields:
+      lead: person
 
   - name: person
     label: Person
     directory: people
     accent: "#2dd4bf"
     title_key: title
-    body_label: Bio
+    body_label: Profile
     link_fields:
-      affiliation: org
-
-  - name: org
-    label: Organisation
-    directory: orgs
-    accent: "#0ea5e9"
-    title_key: title
-    body_label: About
-
-  - name: discovery
-    label: Discovery
-    directory: discoveries
-    accent: "#fb7185"
-    title_key: title
-    body_label: Finding
-    link_fields:
-      mission: mission        # the mission that found it
-      body: body              # the world it concerns
+      team: team
 
   - name: concept
     label: Concept
@@ -88,13 +113,6 @@ node_types:
     accent: "#84cc16"
     title_key: title
     body_label: Explainer
-
-  - name: program
-    label: Program
-    directory: programs
-    accent: "#eab308"
-    title_key: title
-    body_label: Charter
 
   - name: tag
     label: Tag
@@ -108,18 +126,19 @@ views:
     slug: tour
     weight: -20
     tags: [featured]
-  - name: Missions & worlds
-    slug: missions-worlds
-    types: [mission, body, program]
-  - name: The fleet
-    slug: fleet
-    types: [spacecraft, instrument]
-  - name: Ocean worlds
-    slug: ocean-worlds
-    tags: [ocean-world]
-  - name: Discoveries
-    slug: discoveries
-    types: [discovery]
-  - name: People & orgs
-    slug: people-orgs
-    types: [person, org]
+  - name: "The 11 March outage"
+    slug: outage-2026-03-11
+    weight: -10
+    tags: [outage-2026-03-11]
+  - name: Systems & owners
+    slug: systems-owners
+    types: [system, team]
+  - name: Decisions
+    slug: decisions
+    types: [adr]
+  - name: Incidents & postmortems
+    slug: incidents
+    types: [incident, postmortem]
+  - name: Open work
+    slug: open-work
+    types: [issue]

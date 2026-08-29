@@ -8,15 +8,15 @@ This repository is a **GitNodes knowledge base**: a graph of markdown notes that
 
 Each note declares a `type:` in its frontmatter; that decides which folder it belongs in and how it is styled.
 
-- **mission** → `missions/` — title in `title:`; typed links: `lead:` → person, `operated_by:` → org, `program:` → program, `spacecraft:` → spacecraft, `target:` → body
-- **spacecraft** → `spacecraft/` — title in `title:`; typed links: `built_by:` → org, `instruments:` → instrument, `mission:` → mission
-- **body** → `bodies/` — title in `title:`; typed links: `orbits:` → body
-- **instrument** → `instruments/` — title in `title:`; typed links: `aboard:` → spacecraft, `made_by:` → org
-- **person** → `people/` — title in `title:`; typed links: `affiliation:` → org
-- **org** → `orgs/` — title in `title:`
-- **discovery** → `discoveries/` — title in `title:`; typed links: `body:` → body, `mission:` → mission
+- **adr** → `decisions/` — title in `title:`; typed links: `affects:` → system, `owned_by:` → team, `supersedes:` → adr, `written_by:` → person
+- **system** → `systems/` — title in `title:`; typed links: `depends_on:` → system, `governed_by:` → adr, `owned_by:` → team, `runbooks:` → runbook
+- **incident** → `incidents/` — title in `title:`; typed links: `affected:` → system, `commander:` → person, `postmortem:` → postmortem, `runbook_used:` → runbook
+- **postmortem** → `postmortems/` — title in `title:`; typed links: `action_items:` → issue, `contributing_decision:` → adr, `incident:` → incident, `root_cause_in:` → system, `written_by:` → person
+- **runbook** → `runbooks/` — title in `title:`; typed links: `owned_by:` → team, `system:` → system
+- **issue** → `issues/` — title in `title:`; typed links: `assignee:` → person, `from_postmortem:` → postmortem, `resulted_in:` → adr, `system:` → system
+- **team** → `teams/` — title in `title:`; typed links: `lead:` → person
+- **person** → `people/` — title in `title:`; typed links: `team:` → team
 - **concept** → `concepts/` — title in `title:`
-- **program** → `programs/` — title in `title:`
 
 When unsure which type to use, default to `concept`.
 
@@ -60,9 +60,9 @@ The command is the same for every client — `gitnodes mcp <path-to-this-repo>`;
 
 ```bash
 # Claude Code
-claude mcp add gitnodes -- gitnodes mcp "/absolute/path/to/demo-brain"
+claude mcp add gitnodes -- gitnodes mcp "C:/dev/gitnodes/examples/demo-brain"
 # Codex CLI
-codex mcp add gitnodes -- gitnodes mcp "/absolute/path/to/demo-brain"
+codex mcp add gitnodes -- gitnodes mcp "C:/dev/gitnodes/examples/demo-brain"
 ```
 
 For editors that use a JSON config (Cursor, Antigravity, Cline, Windsurf, Claude Desktop, …), add the standard `mcpServers` entry to your client's config file:
@@ -72,7 +72,7 @@ For editors that use a JSON config (Cursor, Antigravity, Cline, Windsurf, Claude
   "mcpServers": {
     "gitnodes": {
       "command": "gitnodes",
-      "args": ["mcp", "/absolute/path/to/demo-brain"]
+      "args": ["mcp", "C:/dev/gitnodes/examples/demo-brain"]
     }
   }
 }
