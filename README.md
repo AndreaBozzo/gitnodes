@@ -51,7 +51,7 @@ end to end, with real tool calls and real output.
 - **Git-native** — Git is the single source of truth. The local index is a rebuildable projection: delete it and it rebuilds from `git clone` alone. No database to migrate into, nothing to lock you in.
 
 <p align="center">
-  <img alt="GitNodes rendering an engineering knowledge base as a force-directed graph" src="public/screenshots/graph.png" width="860">
+  <img alt="GitNodes rendering an engineering knowledge base as a force-directed graph" src="public/screenshots/graph.webp" width="860">
 </p>
 <p align="center">
   <a href="https://gitnodes-demo-production.up.railway.app" rel="external">▶ Try the live demo</a>
