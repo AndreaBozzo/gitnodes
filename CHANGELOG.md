@@ -39,7 +39,11 @@ actually is.
   opt-in features and are enabled per crate. The default TLS backend moves from
   native-tls to rustls, which **removes OpenSSL from the dependency tree
   entirely** — one less system library for the single-file binary to find.
-- Updated h2 to 0.4.19 for RUSTSEC-2026-0258 (unbounded empty DATA frames).
+- Updated ammonia to 4.1.4 for RUSTSEC-2026-0213 (XSS via SVG `animate`/`set`
+  tags, which bypassed attribute URL sanitisation). Ammonia is the HTML/CSS
+  sanitiser on the markdown rendering path.
+- Updated h2 to 0.4.19 for RUSTSEC-2026-0258 (unbounded empty DATA frames), and
+  event-listener to 5.4.2 for RUSTSEC-2026-0221 (unsound `Send`/`Sync`).
 - Cleared the Dependabot backlog: tower-http 0.7, rmcp 2.2, time 0.3.53,
   http-body-util 0.1.4, tailwindcss 4.3.3, and five pinned GitHub Actions.
 
