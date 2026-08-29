@@ -36,21 +36,13 @@
 
 The story above is not concept art. It is assembled from the linked markdown in
 [`examples/demo-brain`](examples/demo-brain): a useful decision made Redis a
-tier-1 dependency, 40% of users were logged out, the postmortem found the
-missing system-level promise, and a later ADR reversed the decision.
+tier-1 dependency, 40% of users were logged out, the postmortem opened issue
+#145, and the resulting ADR reversed the original decision.
 
-```text
-“Why does api-gateway depend on Redis—and is that decision still in force?”
-
-ADR-0004 ──affects──▶ session-store ◀──affected── 11 March outage
-    ▲                                             │ postmortem
-    │                                             ▼
-    └──supersedes── ADR-0009 ◀──resulted_in── #145 ◀──action_items── postmortem
-```
-
-An agent reaches that answer by traversing relationships, including the
-incoming `supersedes` edge that marks the original ADR as obsolete. Plain text
-search usually finds the old decision. GitNodes finds what happened to it.
+An agent reconstructs that history by traversing the real relationships between
+those notes—including the incoming `supersedes` edge that marks ADR-0004 as
+obsolete. Plain text search usually finds the old decision. GitNodes finds what
+happened to it.
 
 ## Why GitNodes
 
@@ -100,25 +92,14 @@ reuses your existing `gh auth` login.
 
 ## How it stays trustworthy
 
-```text
-markdown + YAML frontmatter                 browser UI
-            │                                   │
-            ├── rebuild ──▶ graph + search ◀────┤ read
-            │               projection          │
-            │                    ▲               │
-            │                    │               │
-            └──── ordinary commits / PRs ◀──────┘ write
-                                 ▲
-                                 │
-                       read-only MCP tools
-                                 │
-                              agents
-```
+GitNodes has one non-negotiable rule: **Git is the only content write target.**
 
-Git is the only content write target. The projection can be deleted and rebuilt
-from a clean clone. The local MCP server deliberately cannot write: agents edit
-the checkout under the repository's generated `AGENTS.md`, leaving ordinary,
-reviewable diffs.
+- **Every change stays reviewable.** Browser edits become ordinary commits or
+  pull requests, following the contributor's live GitHub permissions.
+- **The index is disposable.** Graph and search live in a SQLite projection
+  that can be deleted and rebuilt from a clean clone.
+- **Agents use the same truth.** MCP is deliberately read-only; agents edit the
+  checkout under its generated `AGENTS.md`, leaving ordinary Git diffs.
 
 ## Explore the details
 
