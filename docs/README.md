@@ -14,6 +14,7 @@ GitNodes serves two closely related workflows:
 | Move a local brain into collaborative GitHub-backed use | [Getting started: publish and serve](guides/GETTING_STARTED.md#publish-and-serve-it) |
 | Define node types, links, views, and work items | [Configuration](guides/CONFIGURATION.md) |
 | Run a persistent or multi-user instance | [Deployment](guides/DEPLOYMENT.md) |
+| See how an agent traverses the graph over MCP | [Agent walkthrough](guides/AGENT_WALKTHROUGH.md) |
 | Check whether a capability exists or has limits | [Feature inventory](FEATURES.md) |
 | Operate and recover a running instance | [Operator notes](OPERATOR_NOTES.md) |
 | Understand the product direction | [Roadmap](ROADMAP.md) |

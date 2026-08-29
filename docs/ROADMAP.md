@@ -39,8 +39,9 @@ The core is mature and in daily use:
   single-file binary with reviewed download installers, single-user PAT mode
   (no OAuth App), a `gitnodes init` starter scaffold, and a generated
   `AGENTS.md` so humans and coding agents are productive from minute one.
-  Read-only local/offline usage now runs with zero GitHub. Homebrew and WinGet
-  publishing are the next distribution step once the public upstream is live.
+  Read-only local/offline usage now runs with zero GitHub, and Homebrew and
+  WinGet both carry the package. Automating their per-release publication is the
+  remaining distribution gap.
 - **Write-path unification** — converging every mutation (save, delete, rename,
   config, assets, work items) onto the single atomic transaction layer, so all
   write paths share the same precondition and rollback guarantees.

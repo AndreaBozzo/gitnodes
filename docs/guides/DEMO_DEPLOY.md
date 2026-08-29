@@ -1,7 +1,7 @@
 # Hosting the public demo
 
 GitNodes ships a read-only demo brain ([`examples/demo-brain`](../../examples/demo-brain),
-"The Meridian Program") and the production `Dockerfile` can serve it with no
+"Harbor Engineering") and the production `Dockerfile` can serve it with no
 GitHub credential, no login, and an in-memory database. This is the safest
 possible public surface: `preview` mode has no write path and holds no secrets.
 

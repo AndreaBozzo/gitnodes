@@ -17,37 +17,48 @@
   <img alt="Built with Leptos" src="https://img.shields.io/badge/built%20with-Leptos%200.8-EF3939?style=flat-square">
 </p>
 
-GitNodes points at a GitHub repository of markdown files and makes it navigable: a
-force-directed graph of how your notes link together, a wiki-style reader, and an
-in-app editor that commits changes straight back to GitHub. Declare your own note
-types and relationships in a single `.gitnodes.yml` file and GitNodes builds the
-graph, the typed links, and a full-text search index for you.
+Your team's engineering knowledge is already written down. It is just scattered:
+an ADR in one repo, the incident it caused in a pager tool, the postmortem in a
+doc, the tickets that came out of it in a tracker, and the runbook that went
+stale when someone changed the infrastructure. Nothing connects them except the
+engineers who were there.
 
-Your notes stay in Git — there is no separate database to migrate into and nothing
-to lock you in. Point a coding agent (Claude Code, Cursor, Codex, …) at the same
-repository over MCP and it can search and walk the graph instead of grepping blind,
-then write changes back as ordinary, reviewable commits.
+GitNodes points at a GitHub repository of markdown files and makes those
+connections real. Declare your node types and their relationships in one
+`.gitnodes.yml` — decisions *affect* systems, incidents *have* postmortems,
+postmortems *file* issues — and GitNodes builds a navigable graph, typed links,
+and a full-text index over the notes you already write.
 
-- **Browse** — explore the graph of your notes and their links, with ranked full-text search.
-- **Edit** — create, link, and rename notes in-app; each change lands as a direct commit or a pull request, following your GitHub permissions.
-- **Agent-native** — a read-only MCP server lets agents traverse your knowledge graph; they author back through Git, never behind your back.
-- **Git-native** — Git is the single source of truth. The local index is just a rebuildable projection: delete it and it rebuilds from `git clone` alone.
+Then it hands the same graph to your coding agents. A read-only MCP server lets
+Claude Code, Cursor, or Codex walk those relationships instead of grepping, and
+write changes back as ordinary, reviewable commits.
+
+```
+"Why does api-gateway depend on Redis, and what did that decision cost us?"
+
+  ADR-0004 ──affects──▶ session-store ──▶ 11 March outage
+      ▲                                          │
+      └────supersedes──── ADR-0009 ◀──resulted_in─┴──▶ postmortem ──▶ #142 #143 #144 #145
+```
+
+Four `node_links` calls, not four systems and a colleague's memory. The
+[agent walkthrough](docs/guides/AGENT_WALKTHROUGH.md) runs exactly that question
+end to end, with real tool calls and real output.
+
+- **Agent-native** — read-only MCP tools (`search_brain`, `list_nodes`, `read_node`, `node_links`) let an agent traverse structure, not text. It authors back through Git, never behind your back.
+- **Typed relationships** — `supersedes`, `root_cause_in`, `action_items` are declared edges, so an agent can tell you a decision has been reversed instead of quoting it as current.
+- **Edit in place** — create, link, and rename notes in-app; each change lands as a direct commit or a pull request, following your GitHub permissions.
+- **Git-native** — Git is the single source of truth. The local index is a rebuildable projection: delete it and it rebuilds from `git clone` alone. No database to migrate into, nothing to lock you in.
 
 <p align="center">
-  <img alt="GitNodes rendering a knowledge base as a force-directed graph" src="public/screenshots/graph.png" width="860">
+  <img alt="GitNodes rendering an engineering knowledge base as a force-directed graph" src="public/screenshots/graph.png" width="860">
 </p>
 <p align="center">
   <a href="https://gitnodes-demo-production.up.railway.app" rel="external">▶ Try the live demo</a>
 </p>
 <p align="center">
-  <em>The brain above ships in <a href="examples/demo-brain"><code>examples/demo-brain</code></a> — run <code>gitnodes preview examples/demo-brain</code> to explore it yourself.</em>
+  <em>The brain above ships in <a href="examples/demo-brain"><code>examples/demo-brain</code></a> — 37 notes of a fictional payments company's engineering history. Run <code>gitnodes preview examples/demo-brain</code> to explore it yourself.</em>
 </p>
-
-## Early presentation
-
-GitNodes was presented publicly under its former working name, **Brain UI**, at
-Talent Garden Cosenza on 3 June 2026. The event recording is available on
-[LinkedIn](https://www.linkedin.com/events/7467916975424606209/).
 
 ## Quickstart
 
@@ -57,6 +68,12 @@ Talent Garden Cosenza on 3 June 2026. The event recording is available on
 
 ```bash
 brew install andreabozzo/tap/gitnodes
+```
+
+**WinGet (Windows):**
+
+```powershell
+winget install AndreaBozzo.GitNodes
 ```
 
 **macOS / Linux** — or download, review, run:
@@ -75,29 +92,40 @@ Get-Content .\install-gitnodes.ps1   # review before running
 & .\install-gitnodes.ps1
 ```
 
-Both drop a single `gitnodes` binary on your `PATH` — no Rust toolchain, no
-compiling. Prefer to fetch it yourself? Grab an archive from
+Every route drops a single `gitnodes` binary on your `PATH` — no Rust toolchain,
+no compiling. Prefer to fetch it yourself? Grab an archive from
 [Releases](https://github.com/AndreaBozzo/gitnodes/releases/latest) and put
 `gitnodes` (or `gitnodes.exe`) on `PATH`.
 
-> A WinGet package (`winget install AndreaBozzo.GitNodes`) is pending review in
-> [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) and will work
-> once merged.
+### See it before you commit to anything
 
-### First run
+```bash
+git clone https://github.com/AndreaBozzo/gitnodes
+gitnodes preview gitnodes/examples/demo-brain
+```
+
+That opens the demo brain read-only in your browser — no GitHub, no login, no
+config. Point your agent at the same folder:
+
+```bash
+gitnodes mcp gitnodes/examples/demo-brain    # read-only stdio MCP server
+```
+
+### Your own brain
 
 ```bash
 gitnodes init my-brain      # starter notes + .gitnodes.yml + AGENTS.md
 cd my-brain
-gitnodes preview            # opens the read-only graph; no GitHub or login
+gitnodes preview            # the graph, read-only
 ```
 
-The same working tree is immediately available to coding agents. Configure the
-agent to launch this stdio command rather than running it manually:
+The scaffolded `AGENTS.md` is generated from your `.gitnodes.yml` and teaches
+coding agents *your* taxonomy, so they add and link notes correctly from the
+first commit.
 
-```bash
-gitnodes mcp .              # read-only stdio MCP server
-```
+> This per-brain `AGENTS.md` describes *that knowledge base's* taxonomy. It is
+> distinct from the `AGENTS.md` at the root of this repository, which guides
+> contributors working on GitNodes itself.
 
 When you want collaborative editing and pull-request workflows, publish it:
 
@@ -108,25 +136,23 @@ gitnodes doctor             # validates notes, Git state, remote, and gh auth
 gitnodes serve              # discovers the repo, reuses `gh auth`
 ```
 
-If needed, run `gh auth login` once before the commands above. GitNodes reads the
-repository and branch from the local Git checkout and uses the credential already
-stored by GitHub CLI; it does not copy that token into `.env` or another file.
+Run `gh auth login` once first if needed. GitNodes reads the repository and
+branch from the local Git checkout and uses the credential already stored by
+GitHub CLI; it does not copy that token into `.env` or another file.
 `GITHUB_PAT` remains available as an explicit single-user fallback.
 `gitnodes preview` keeps its SQLite projection and sessions in memory and never
-writes runtime state into the knowledge directory. The scaffolded `AGENTS.md`
-teaches coding agents (Claude Code, Codex, Cursor, …)
-the conventions of your brain so they can add and link notes correctly. GitNodes
-is built for humans and agents alike.
-
-> This per-brain `AGENTS.md` is generated from your brain's `.gitnodes.yml` and
-> describes *that knowledge base's* taxonomy. It is distinct from the `AGENTS.md`
-> at the root of this repository, which guides contributors working on GitNodes
-> itself.
+writes runtime state into the knowledge directory.
 
 The source boundary matters: `preview` and MCP read the local working tree,
 including uncommitted files; `serve` and deployments read the pushed GitHub
 branch. See the [end-to-end getting-started
 guide](docs/guides/GETTING_STARTED.md) before switching modes.
+
+## Early presentation
+
+GitNodes was presented publicly under its former working name, **Brain UI**, at
+Talent Garden Cosenza on 3 June 2026. The event recording is available on
+[LinkedIn](https://www.linkedin.com/events/7467916975424606209/).
 
 ## Build from source
 
@@ -147,6 +173,7 @@ Put `target/release/gitnodes-app` (or `.exe`) on `PATH` as `gitnodes`.
 ## Documentation
 
 - [Getting started: local preview to GitHub-backed use](docs/guides/GETTING_STARTED.md)
+- [Agent walkthrough: reconstructing a decision over MCP](docs/guides/AGENT_WALKTHROUGH.md)
 - [Configuration reference](docs/guides/CONFIGURATION.md)
 - [Deployment guide](docs/guides/DEPLOYMENT.md)
 - [Complete feature inventory and limitations](docs/FEATURES.md)
@@ -205,15 +232,19 @@ client's MCP docs for the exact file:
 
 ### 60-second test
 
-Once the server is configured, ask your agent something that forces a graph hop,
-for example:
+Point the server at `examples/demo-brain` and ask your agent something that
+cannot be answered by reading any single note:
 
-> Use the gitnodes tools to find notes about *knowledge graphs*, then show me
-> what the top result links to and summarise it.
+> Use the gitnodes tools to tell me why api-gateway depends on Redis, and
+> whether that decision is still in force.
 
-A working setup will call `search_brain`, then `node_links` on the top hit's
-path, then `read_node` to pull the full note — discovering structure you never
-had to describe.
+A working setup calls `search_brain`, then `node_links` to follow
+`contributing_decision` back to ADR-0004 — and finds the *incoming* `supersedes`
+edge that says ADR-0009 has already reversed it. That last part is the test:
+grep cannot find a fact that is only recorded in a different document.
+
+The [agent walkthrough](docs/guides/AGENT_WALKTHROUGH.md) traces the whole
+sequence with real tool calls and real output.
 
 ### Letting an agent maintain the brain
 
