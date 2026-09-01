@@ -27,7 +27,7 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: ${{ matrix.job }}
 
@@ -103,7 +103,7 @@ jobs:
         with:
           components: clippy
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: embedded-release
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
