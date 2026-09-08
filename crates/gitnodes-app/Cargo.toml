@@ -46,7 +46,7 @@ tower_governor = { version = "0.8", optional = true }
 include_dir = { version = "0.7", optional = true }
 rmcp = { version = "2.0", default-features = false, features = ["macros", "server", "transport-io"], optional = true }
 schemars = { version = "1.2", optional = true }
-pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 gitnodes-domain = { path = "../gitnodes-domain" }
 gitnodes-graph = { path = "../gitnodes-graph" }
 gitnodes-storage = { path = "../gitnodes-storage", optional = true }
